@@ -119,7 +119,7 @@ packages/        保留的实验性/扩展包
 
 ## 来源说明
 
-本项目基于 Gan-Xing/CodexBridge 的代码基础进行个人化改造，当前版本聚焦于微信接入、桌面管理面板和 Windows 安装包体验。
+本项目基于 Gan-Xing/CodexBridge(https://github.com/Gan-Xing/CodexBridge.git) 的代码基础进行个人化改造，当前版本聚焦于微信接入、桌面管理面板和 Windows 安装包体验。
 
 本仓库保留原项目来源说明。当前代码树和上游引用中未发现独立 `LICENSE` 文件，因此未擅自新增或修改许可证类型。如后续上游补充许可证，应按上游许可证要求继续保留版权和授权说明。
 
