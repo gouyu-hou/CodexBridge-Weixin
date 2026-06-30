@@ -165,6 +165,7 @@ const ADMIN_PAGE_CLIENT_TTL_MS = 15_000;
 const ADMIN_PREFERENCES_FILE = 'weixin-admin-preferences.json';
 const ADMIN_FAVICON_PATH = path.resolve(process.cwd(), 'assets', 'windows', 'codexbridge-weixin.ico');
 const ADMIN_FAVICON_PNG_PATH = path.resolve(process.cwd(), 'assets', 'windows', 'codexbridge-weixin.png');
+const ADMIN_DONATE_QR_PATH = path.resolve(process.cwd(), 'assets', 'donate', 'wechat-reward.png');
 
 export class WeixinAdminServer {
   constructor({
@@ -292,6 +293,10 @@ export class WeixinAdminServer {
     }
     if (req.method === 'GET' && pathname === '/favicon.png') {
       this.writePngIcon(res);
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/donate/wechat-reward.png') {
+      this.writeDonateQr(res);
       return;
     }
     if (req.method === 'GET' && pathname === '/api/state') {
@@ -1823,6 +1828,20 @@ export class WeixinAdminServer {
     });
     res.end(icon);
   }
+
+  private writeDonateQr(res: ServerResponse) {
+    if (!fs.existsSync(ADMIN_DONATE_QR_PATH)) {
+      this.writeJson(res, 404, { error: 'donate qr not found' });
+      return;
+    }
+    const image = fs.readFileSync(ADMIN_DONATE_QR_PATH);
+    res.writeHead(200, {
+      'content-type': 'image/png',
+      'cache-control': 'no-store, max-age=0',
+      'content-length': image.length,
+    });
+    res.end(image);
+  }
 }
 
 export function resolveWeixinAdminServerOptions({
@@ -3227,6 +3246,27 @@ function renderAdminHtml() {
       overflow-wrap: anywhere;
       line-height: 1.55;
     }
+    .donate-body {
+      padding: 18px;
+      display: grid;
+      gap: 12px;
+      justify-items: center;
+      text-align: center;
+    }
+    .donate-body img {
+      width: min(320px, 78vw);
+      aspect-ratio: 1 / 1;
+      object-fit: contain;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: #ffffff;
+      padding: 10px;
+    }
+    .donate-note {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
     @media (max-width: 860px) {
       .grid {
         grid-template-columns: 1fr;
@@ -3283,6 +3323,7 @@ function renderAdminHtml() {
         <button id="bridge-start">启动微信桥接</button>
         <button id="bridge-restart">重启微信桥接</button>
         <button class="danger" id="bridge-stop">停止微信桥接</button>
+        <button id="donate-open">支持项目</button>
         <button id="refresh-btn">刷新列表</button>
       </div>
     </div>
@@ -3742,6 +3783,19 @@ function renderAdminHtml() {
         <span class="muted" id="history-count"></span>
       </div>
       <div class="history-body" id="history-body"></div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="donate-modal" hidden>
+    <div class="modal-card" style="width:min(420px, 100%);">
+      <div class="modal-head">
+        <h2>支持项目</h2>
+        <button id="donate-close">关闭</button>
+      </div>
+      <div class="donate-body">
+        <img src="/donate/wechat-reward.png" alt="微信收款码" />
+        <div class="donate-note">如果这个工具帮到了你，可以用微信扫码支持一下。感谢你的鼓励。</div>
+      </div>
     </div>
   </div>
 
@@ -4293,6 +4347,14 @@ function renderAdminHtml() {
     function closeSessionHistory() {
       historySessionId = null;
       $('history-modal').hidden = true;
+    }
+
+    function openDonateModal() {
+      $('donate-modal').hidden = false;
+    }
+
+    function closeDonateModal() {
+      $('donate-modal').hidden = true;
     }
 
     function formatSessionAccounts(session) {
@@ -5155,10 +5217,23 @@ function renderAdminHtml() {
       setMessage('已取消', false);
     };
     $('sessions-refresh').onclick = () => loadSessions().catch((error) => setMessage(error.message, true));
+    $('donate-open').onclick = () => openDonateModal();
+    $('donate-close').onclick = () => closeDonateModal();
+    $('donate-modal').addEventListener('click', (event) => {
+      if (event.target === $('donate-modal')) {
+        closeDonateModal();
+      }
+    });
     $('history-close').onclick = () => closeSessionHistory();
     $('history-modal').addEventListener('click', (event) => {
       if (event.target === $('history-modal')) {
         closeSessionHistory();
+      }
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        if (!$('donate-modal').hidden) closeDonateModal();
+        if (!$('history-modal').hidden) closeSessionHistory();
       }
     });
     $('history-search').addEventListener('keydown', (event) => {
