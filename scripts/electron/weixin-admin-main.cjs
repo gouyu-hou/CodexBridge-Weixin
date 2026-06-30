@@ -10,7 +10,7 @@ const ROOT_DIR = path.resolve(__dirname, '..', '..');
 const PROJECT_PARENT = path.dirname(ROOT_DIR);
 const args = parseArgs(process.argv.slice(2));
 const stateDir = path.resolve(args.stateDir || process.env.CODEXBRIDGE_STATE_DIR || defaultStateDir());
-const envFile = path.resolve(args.envFile || defaultServiceEnvFile());
+const envFile = path.resolve(args.envFile || preferredServiceEnvFile(stateDir));
 const defaultCwd = path.resolve(args.cwd || PROJECT_PARENT);
 const serviceLogsDir = path.join(stateDir, 'logs');
 const serviceStdoutLog = path.join(serviceLogsDir, 'weixin-bridge.out.log');
@@ -656,6 +656,21 @@ function defaultStateDir() {
 
 function defaultServiceEnvFile() {
   return path.join(ROOT_DIR, 'weixin.service.env');
+}
+
+function preferredServiceEnvFile(resolvedStateDir) {
+  const preferencePath = path.join(resolvedStateDir, 'runtime', 'weixin-admin-preferences.json');
+  const preference = safeJsonRead(preferencePath);
+  const preferred = normalizeString(preference.serviceEnvFile);
+  return preferred || defaultServiceEnvFile();
+}
+
+function safeJsonRead(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return {};
+  }
 }
 
 function resolveAdminUrl(env) {

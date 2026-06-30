@@ -162,6 +162,7 @@ const MAX_LOG_RETENTION_DAYS = 365;
 const MAX_LOG_CLEANUP_INTERVAL_MINUTES = 24 * 60;
 const DEFAULT_PAGE_CLOSE_SHUTDOWN_GRACE_MS = 3000;
 const ADMIN_PAGE_CLIENT_TTL_MS = 15_000;
+const ADMIN_PREFERENCES_FILE = 'weixin-admin-preferences.json';
 const ADMIN_FAVICON_PATH = path.resolve(process.cwd(), 'assets', 'windows', 'codexbridge-weixin.ico');
 const ADMIN_FAVICON_PNG_PATH = path.resolve(process.cwd(), 'assets', 'windows', 'codexbridge-weixin.png');
 
@@ -497,6 +498,7 @@ export class WeixinAdminServer {
       apiKeyConfigured: Boolean(apiKey),
       apiKeyMasked: maskSecret(apiKey),
       serviceEnvFile: resolveServiceEnvFile(this.env),
+      serviceEnvPreferenceFile: this.resolveAdminPreferencesFile(),
       restartRequired: false,
     };
   }
@@ -1110,6 +1112,13 @@ export class WeixinAdminServer {
     };
     if (next.modelProvider) {
       const provider = next.modelProvider;
+      const currentServiceEnvFile = resolveServiceEnvFile(this.env);
+      const serviceEnvFileChanged = provider.serviceEnvFile !== currentServiceEnvFile;
+      const currentApiKey = normalizeEnvString(this.env.CODEX_COMPAT_API_KEY);
+      if (serviceEnvFileChanged) {
+        this.saveServiceEnvFilePreference(provider.serviceEnvFile);
+        setEnvValue(this.env, 'CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE', provider.serviceEnvFile);
+      }
       setEnvValue(this.env, 'CODEX_DEFAULT_PROVIDER_PROFILE_ID', provider.profileId);
       setEnvValue(this.env, 'CODEX_COMPAT_PROVIDER_ID', provider.providerId);
       setEnvValue(this.env, 'CODEX_COMPAT_PROVIDER_NAME', provider.providerName);
@@ -1127,6 +1136,10 @@ export class WeixinAdminServer {
       if (provider.apiKey !== null) {
         setEnvValue(this.env, 'CODEX_COMPAT_API_KEY', provider.apiKey);
         envValues.CODEX_COMPAT_API_KEY = provider.apiKey;
+      } else if (serviceEnvFileChanged) {
+        if (currentApiKey) {
+          envValues.CODEX_COMPAT_API_KEY = currentApiKey;
+        }
       }
     }
     persistEnvValues(resolveServiceEnvFile(this.env), envValues);
@@ -1152,12 +1165,28 @@ export class WeixinAdminServer {
   }
 
   private async handleCleanupLogs(res: ServerResponse) {
-    const cleanup = await this.cleanupLogs('manual');
+    const cleanup = await this.clearActiveLogs('manual');
     this.writeJson(res, 200, {
       ok: true,
       cleanup,
-      logs: this.buildLogSummary(),
+      logs: this.readLogs({ lineLimit: 500 }),
     });
+  }
+
+  private resolveAdminPreferencesFile() {
+    return path.join(this.stateDir, 'runtime', ADMIN_PREFERENCES_FILE);
+  }
+
+  private saveServiceEnvFilePreference(serviceEnvFile: string) {
+    const filePath = this.resolveAdminPreferencesFile();
+    const existing = readJsonFile(filePath);
+    const next = {
+      ...(isRecord(existing) ? existing : {}),
+      serviceEnvFile,
+      updatedAt: new Date().toISOString(),
+    };
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
   }
 
   private async handleAlertTest(req: IncomingMessage, res: ServerResponse) {
@@ -1452,6 +1481,67 @@ export class WeixinAdminServer {
       settings,
       actions,
     };
+  }
+
+  private async clearActiveLogs(reason: string) {
+    const startedAt = new Date().toISOString();
+    const summary = this.buildLogResetSummary({ reason, startedAt });
+    const actions: Array<{
+      path: string;
+      action: string;
+      beforeBytes: number;
+      afterBytes: number;
+      error?: string;
+    }> = [];
+    for (const entry of this.resolveLogFiles()) {
+      const beforeBytes = safeStat(entry.path)?.size ?? 0;
+      try {
+        fs.mkdirSync(path.dirname(entry.path), { recursive: true });
+        const content = entry.kind === 'stdout' ? summary : '';
+        fs.writeFileSync(entry.path, content, 'utf8');
+        actions.push({
+          path: entry.path,
+          action: entry.kind === 'stdout' ? 'reset_active_log_with_summary' : 'cleared_active_log',
+          beforeBytes,
+          afterBytes: safeStat(entry.path)?.size ?? 0,
+        });
+      } catch (error) {
+        actions.push({
+          path: entry.path,
+          action: 'failed',
+          beforeBytes,
+          afterBytes: safeStat(entry.path)?.size ?? beforeBytes,
+          error: formatError(error),
+        });
+      }
+    }
+    return {
+      enabled: true,
+      reason,
+      startedAt,
+      actions,
+    };
+  }
+
+  private buildLogResetSummary({ reason, startedAt }: { reason: string; startedAt: string }) {
+    const settings = this.buildSettings();
+    const bridge = this.bridgeControl?.status?.() ?? { running: true };
+    const concurrency = settings.concurrency;
+    return [
+      '[CodexBridge] running log reset',
+      `cleared_at: ${startedAt}`,
+      `reason: ${reason}`,
+      `state_dir: ${this.stateDir}`,
+      `service_env_file: ${resolveServiceEnvFile(this.env)}`,
+      `admin_url: ${this.binding?.url ?? '-'}`,
+      `primary_account_id: ${this.primaryAccountId() || '-'}`,
+      `bridge_running: ${Boolean(bridge.running)}`,
+      `max_concurrent_turns: ${concurrency.maxConcurrentTurns}`,
+      `event_dispatch_concurrency: ${concurrency.eventDispatchConcurrency}`,
+      `attachment_processing_concurrency: ${concurrency.attachmentProcessingConcurrency}`,
+      `account_poll_concurrency: ${concurrency.accountPollConcurrency}`,
+      '',
+    ].join('\n');
   }
 
   private listLogCleanupTargets(logsDir: string) {
@@ -1851,6 +1941,14 @@ function persistEnvValues(filePath: string, values: Record<string, string>) {
   fs.writeFileSync(filePath, content, 'utf8');
 }
 
+function readJsonFile(filePath: string) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+  } catch {
+    return null;
+  }
+}
+
 async function readJsonBody(req: IncomingMessage, maxBytes = JSON_BODY_LIMIT_BYTES): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -1991,6 +2089,7 @@ function normalizeModelProviderPatch(
     model: string;
     modelIds: string;
     capabilities: string;
+    serviceEnvFile?: string;
   },
 ) {
   const model = normalizeEnvString(raw.model) ?? current.model;
@@ -2006,6 +2105,7 @@ function normalizeModelProviderPatch(
   const providerId = normalizeProviderId(raw.providerId) ?? current.providerId;
   const profileId = normalizeProviderId(raw.profileId) ?? current.profileId;
   const capabilities = normalizeProviderCapabilities(raw.capabilities) ?? current.capabilities;
+  const serviceEnvFile = normalizeServiceEnvFile(raw.serviceEnvFile, current.serviceEnvFile);
   return {
     profileId,
     providerId,
@@ -2015,7 +2115,20 @@ function normalizeModelProviderPatch(
     model,
     modelIds: normalizeEnvString(raw.modelIds) ?? model,
     capabilities,
+    serviceEnvFile,
   };
+}
+
+function normalizeServiceEnvFile(value: unknown, fallback: string | undefined) {
+  const raw = normalizeEnvString(value) ?? normalizeEnvString(fallback);
+  if (!raw) {
+    throw new Error('serviceEnvFile is required');
+  }
+  const resolved = path.resolve(raw);
+  if (!path.basename(resolved)) {
+    throw new Error('serviceEnvFile must be a file path');
+  }
+  return resolved;
 }
 
 function normalizeProviderId(value: unknown) {
@@ -3366,7 +3479,7 @@ function renderAdminHtml() {
             <span class="promo-sub">一个 key 直连 GPT-5.5 / GPT-5.4 等模型 · 支持 Claude Code · 免代理 · 按量计费 · 接口地址已自动填好</span>
           </div>
           <div class="promo-actions">
-            <a class="promo-link" href="https://ztoken.app/" target="_blank" rel="noopener">前往 ztoken.app</a>
+            <a class="promo-link" href="https://ztoken.app/register?aff=8M7CSMLY5J77" target="_blank" rel="noopener">前往 ztoken.app</a>
             <button id="promo-copy">复制链接</button>
           </div>
         </div>
@@ -3406,15 +3519,15 @@ function renderAdminHtml() {
             <div class="readonly-line" id="provider-key-status">-</div>
           </div>
           <div class="field provider-span">
-            <label>配置文件</label>
-            <div class="readonly-line" id="provider-env-file">-</div>
+            <label for="provider-env-file">配置文件</label>
+            <input id="provider-env-file" autocomplete="off" placeholder="例如 D:\\IT_learn\\codex_weixin\\CodexBridge\\weixin.service.env" />
           </div>
           <div class="actions">
             <button class="primary" id="provider-save">保存模型配置</button>
           </div>
         </div>
         <div class="help-line">
-          没有 API key？可在 <a href="https://ztoken.app/" target="_blank" rel="noopener">ztoken.app</a> 注册中转站获取（OpenAI 兼容接口，支持 GPT-5.5 / GPT-5.4）。API key 留空表示保留当前已保存的 key。
+          没有 API key？可在 <a href="https://ztoken.app/register?aff=8M7CSMLY5J77" target="_blank" rel="noopener">ztoken.app</a> 注册中转站获取（OpenAI 兼容接口，支持 GPT-5.5 / GPT-5.4）。API key 留空表示保留当前已保存的 key。
         </div>
       </div>
     </section>
@@ -3579,6 +3692,7 @@ function renderAdminHtml() {
         <h2>运行日志</h2>
         <div class="toolbar">
           <button id="logs-cleanup">立即清理</button>
+          <button id="logs-copy">复制日志</button>
           <button id="logs-refresh">刷新日志</button>
         </div>
       </div>
@@ -4234,10 +4348,16 @@ function renderAdminHtml() {
         + ' 天，单文件上限 ' + fmtBytes(settings.maxBytes || 10485760);
     }
 
+    function renderLogs(data) {
+      renderLogSummary(data);
+      const files = Array.isArray(data && data.files) ? data.files : [];
+      const hasContent = files.some((file) => String(file && file.text || '').trim());
+      $('logs-box').textContent = hasContent ? (data.text || '(暂无日志)') : '(暂无日志)';
+    }
+
     async function loadLogs() {
       const data = await requestJson('/api/logs?limit=300');
-      renderLogSummary(data);
-      $('logs-box').textContent = data.text || '(暂无日志)';
+      renderLogs(data);
     }
 
     function renderBridge(bridge) {
@@ -4449,7 +4569,7 @@ function renderAdminHtml() {
       $('provider-key-status').textContent = state.currentModelProvider.apiKeyConfigured
         ? ('已配置：' + (state.currentModelProvider.apiKeyMasked || '********'))
         : '未配置';
-      $('provider-env-file').textContent = state.currentModelProvider.serviceEnvFile || '-';
+      $('provider-env-file').value = state.currentModelProvider.serviceEnvFile || '';
     }
 
     function applyProviderPreset(presetKey) {
@@ -4467,8 +4587,12 @@ function renderAdminHtml() {
       const model = getSelectedModel();
       const baseUrl = $('provider-base-url').value.trim();
       const apiKey = $('provider-api-key').value.trim();
+      const serviceEnvFile = $('provider-env-file').value.trim();
       if (!model) {
         throw new Error('请填写模型名称');
+      }
+      if (!serviceEnvFile) {
+        throw new Error('请填写配置文件路径');
       }
       const lowerBaseUrl = baseUrl.toLowerCase();
       if (!lowerBaseUrl.startsWith('http://') && !lowerBaseUrl.startsWith('https://')) {
@@ -4481,7 +4605,8 @@ function renderAdminHtml() {
         baseUrl,
         model,
         modelIds: model,
-        capabilities: preset.capabilities || current.capabilities || 'default'
+        capabilities: preset.capabilities || current.capabilities || 'default',
+        serviceEnvFile
       };
       if (apiKey) {
         payload.apiKey = apiKey;
@@ -4587,10 +4712,31 @@ function renderAdminHtml() {
     async function cleanupLogsNow() {
       $('settings-message').textContent = '正在清理日志...';
       const data = await requestJson('/api/logs/cleanup', { method: 'POST' });
-      renderLogSummary(data.logs || {});
-      await loadLogs();
+      renderLogs(data.logs || {});
       const count = data.cleanup && Array.isArray(data.cleanup.actions) ? data.cleanup.actions.length : 0;
       $('settings-message').textContent = count ? ('已清理 ' + count + ' 个日志文件') : '无需清理';
+    }
+
+    async function copyLogsNow() {
+      const text = String($('logs-box').textContent || '');
+      if (!text.trim() || text.trim() === '(暂无日志)') {
+        setMessage('暂无可复制的日志', true);
+        return;
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.setAttribute('readonly', 'readonly');
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setMessage('日志已复制');
     }
 
     function renderPairing(pairing) {
@@ -5045,7 +5191,7 @@ function renderAdminHtml() {
       setMessage(error.message, true);
     });
     $('promo-copy').onclick = () => {
-      const url = 'https://ztoken.app/';
+      const url = 'https://ztoken.app/register?aff=8M7CSMLY5J77';
       const notify = () => {
         $('provider-message').textContent = '已复制中转站地址：' + url;
       };
@@ -5061,6 +5207,7 @@ function renderAdminHtml() {
       $('settings-message').textContent = error.message;
       setMessage(error.message, true);
     });
+    $('logs-copy').onclick = () => copyLogsNow().catch((error) => setMessage(error.message, true));
     $('logs-refresh').onclick = () => loadLogs().catch((error) => setMessage(error.message, true));
     $('export-backup').onclick = () => {
       window.location.href = '/api/export';

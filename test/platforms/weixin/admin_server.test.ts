@@ -365,6 +365,7 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
           modelIds: 'qwen-plus',
           capabilities: 'qwen',
           apiKey: 'new-key',
+          serviceEnvFile: envFile,
         },
       }),
     });
@@ -398,6 +399,7 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
           modelIds: 'qwen-max',
           capabilities: 'qwen',
           apiKey: '',
+          serviceEnvFile: envFile,
         },
       }),
     });
@@ -405,6 +407,59 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     const secondEnvText = fs.readFileSync(envFile, 'utf8');
     assert.match(secondEnvText, /^CODEX_COMPAT_DEFAULT_MODEL=qwen-max$/mu);
     assert.match(secondEnvText, /^CODEX_COMPAT_API_KEY=new-key$/mu);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer can move model provider settings to a custom service env file', async () => {
+  const stateDir = makeTempStateDir();
+  const oldEnvFile = path.join(stateDir, 'service.env');
+  const newEnvFile = path.join(stateDir, 'custom', 'new-service.env');
+  fs.writeFileSync(oldEnvFile, 'CODEX_COMPAT_API_KEY=old-key\n', 'utf8');
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const env: Record<string, string> = {
+    CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: oldEnvFile,
+    CODEX_COMPAT_API_KEY: 'old-key',
+  };
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env,
+    port: 0,
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/settings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        modelProvider: {
+          profileId: 'openai-default',
+          providerId: 'openai-compatible',
+          providerName: 'OpenAI Compatible',
+          baseUrl: 'https://ztoken.app/',
+          model: 'gpt-5.5',
+          modelIds: 'gpt-5.5',
+          capabilities: 'default',
+          apiKey: '',
+          serviceEnvFile: newEnvFile,
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+
+    assert.equal(env.CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE, newEnvFile);
+    assert.equal(body.settings.modelProvider.serviceEnvFile, newEnvFile);
+    assert.match(fs.readFileSync(newEnvFile, 'utf8'), /^CODEX_COMPAT_DEFAULT_MODEL=gpt-5\.5$/mu);
+    assert.match(fs.readFileSync(newEnvFile, 'utf8'), /^CODEX_COMPAT_API_KEY=old-key$/mu);
+    assert.doesNotMatch(fs.readFileSync(oldEnvFile, 'utf8'), /^CODEX_COMPAT_DEFAULT_MODEL=/mu);
+    const preference = JSON.parse(fs.readFileSync(path.join(stateDir, 'runtime', 'weixin-admin-preferences.json'), 'utf8'));
+    assert.equal(preference.serviceEnvFile, newEnvFile);
   } finally {
     await server.stop();
   }
@@ -461,6 +516,43 @@ test('WeixinAdminServer compacts large logs and deletes expired rotated logs', a
     assert.match(compactedText, /latest important line/);
     assert.doesNotMatch(compactedText, /early line/);
     assert.equal(fs.existsSync(rotatedLog), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer manually clears active logs for the panel', async () => {
+  const stateDir = makeTempStateDir();
+  const logDir = path.join(stateDir, 'logs');
+  fs.mkdirSync(logDir, { recursive: true });
+  const outLog = path.join(logDir, 'weixin-bridge.out.log');
+  const errLog = path.join(logDir, 'weixin-bridge.err.log');
+  fs.writeFileSync(outLog, 'old stdout line\n', 'utf8');
+  fs.writeFileSync(errLog, 'old stderr line\n', 'utf8');
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    port: 0,
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/logs/cleanup`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+
+    assert.equal(body.cleanup.actions.filter((action: any) => action.action === 'reset_active_log_with_summary').length, 1);
+    assert.equal(body.cleanup.actions.filter((action: any) => action.action === 'cleared_active_log').length, 1);
+    const outText = fs.readFileSync(outLog, 'utf8');
+    assert.match(outText, /\[CodexBridge\] running log reset/u);
+    assert.match(outText, /state_dir:/u);
+    assert.doesNotMatch(outText, /old stdout line/u);
+    assert.equal(fs.readFileSync(errLog, 'utf8'), '');
+    assert.match(body.logs.text, /running log reset/u);
+    assert.doesNotMatch(body.logs.text, /old stderr line/u);
   } finally {
     await server.stop();
   }
