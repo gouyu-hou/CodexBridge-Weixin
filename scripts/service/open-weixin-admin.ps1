@@ -160,7 +160,7 @@ function Start-BridgeHidden {
     "--root-dir", (Quote-WindowsArgument $RootDir),
     "--home-dir", (Quote-WindowsArgument $HomeDir),
     "--state-dir", (Quote-WindowsArgument $StateDir),
-    "--env-file", (Quote-WindowsArgument $EnvFile),
+    "--service-env-file", (Quote-WindowsArgument $EnvFile),
     "--stdout-log", (Quote-WindowsArgument $StdoutLog),
     "--stderr-log", (Quote-WindowsArgument $StderrLog)
   )

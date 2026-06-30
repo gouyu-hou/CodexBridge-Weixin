@@ -238,7 +238,7 @@ function startService(env) {
     '--root-dir', ROOT_DIR,
     '--home-dir', os.homedir(),
     '--state-dir', stateDir,
-    '--env-file', envFile,
+    '--service-env-file', envFile,
     '--stdout-log', serviceStdoutLog,
     '--stderr-log', serviceStderrLog,
     '--cwd', defaultCwd,
