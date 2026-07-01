@@ -6,7 +6,6 @@ import test from 'node:test';
 import { WeixinBridgeRuntime } from '../../src/runtime/weixin_bridge_runtime.js';
 import { WeixinMetricsStore } from '../../src/runtime/weixin_metrics_store.js';
 import { postAlert, resetAlertDebounceForTests } from '../../src/runtime/alert_webhook.js';
-import { WeixinAutomationService, WeixinAutomationStore } from '../../src/platforms/weixin/automation_store.js';
 import { createI18n } from '../../src/i18n/index.js';
 
 async function withEnvOverride<T>(
@@ -35,7 +34,6 @@ async function withEnvOverride<T>(
 interface RuntimeHarnessOptions {
   coordinator: any;
   automationJobs?: any;
-  weixinAutomation?: WeixinAutomationService | null;
   agentJobs?: any;
   assistantRecords?: any;
   sendText: (payload: { externalScopeId: string; content: string }) => Promise<any> | any;
@@ -57,7 +55,6 @@ interface RuntimeHarnessOptions {
 function makeRuntime({
   coordinator,
   automationJobs = null,
-  weixinAutomation = null,
   agentJobs = null,
   assistantRecords = null,
   sendText,
@@ -119,7 +116,6 @@ function makeRuntime({
     },
     bridgeCoordinator: coordinator,
     automationJobs,
-    weixinAutomation,
     agentJobs,
     assistantRecords,
     previewSoftTargetBytes,
@@ -2675,94 +2671,6 @@ test('WeixinBridgeRuntime restart command clears a stuck scope and suppresses st
   assert.deepEqual(actions, ['clear-active', 'restart']);
 });
 
-test('WeixinBridgeRuntime handles local template and keyword automation commands', async () => {
-  const store = new WeixinAutomationStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-auto-')), 'automation.json'));
-  const weixinAutomation = new WeixinAutomationService(store);
-  const sent: string[] = [];
-  let coordinatorCalls = 0;
-  const runtime = makeRuntime({
-    weixinAutomation,
-    coordinator: {
-      async handleInboundEvent() {
-        coordinatorCalls += 1;
-        return { type: 'message', messages: [{ text: 'should not run' }] };
-      },
-    },
-    sendText: async ({ content }) => {
-      sent.push(content);
-    },
-  });
-
-  await runtime.dispatchInboundEvent({
-    platform: 'weixin',
-    externalScopeId: 'wxid_1',
-    text: '/tpl add welcome hello {{text}}',
-  });
-  await runtime.dispatchInboundEvent({
-    platform: 'weixin',
-    externalScopeId: 'wxid_1',
-    text: '/kw add hi -> welcome',
-  });
-  await runtime.dispatchInboundEvent({
-    platform: 'weixin',
-    externalScopeId: 'wxid_1',
-    text: 'hi',
-    metadata: { weixin: { messageId: 'auto-msg-1' } },
-  });
-
-  assert.equal(coordinatorCalls, 0);
-  assert.equal(store.listTemplates().length, 1);
-  assert.equal(store.listRules().length, 1);
-  assert.equal(sent.at(-1), 'hello hi');
-});
-
-test('WeixinBridgeRuntime rewrites a keyword hit through a prompt template and archives matches', async () => {
-  const store = new WeixinAutomationStore(path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-auto-')), 'automation.json'));
-  const promptTemplate = store.createTemplate({
-    name: 'analysis',
-    content: 'Analyze this message: {{text}}',
-  });
-  store.createRule({
-    name: 'analysis-trigger',
-    keywords: ['analyze'],
-    promptTemplateId: promptTemplate.id,
-    archive: true,
-    archiveTag: 'analysis',
-    stopAfterMatch: false,
-  });
-  const weixinAutomation = new WeixinAutomationService(store);
-  const sent: string[] = [];
-  const seenPrompts: string[] = [];
-  const runtime = makeRuntime({
-    weixinAutomation,
-    coordinator: {
-      async handleInboundEvent(event: any) {
-        seenPrompts.push(event.text);
-        return { type: 'message', messages: [{ text: 'done' }] };
-      },
-    },
-    sendText: async ({ content }) => {
-      sent.push(content);
-    },
-  });
-
-  const outcome = await runtime.dispatchInboundEvent({
-    platform: 'weixin',
-    externalScopeId: 'wxid_1',
-    text: 'please analyze this match',
-    metadata: { weixin: { messageId: 'auto-msg-2' } },
-  });
-  assert.equal(outcome.type, 'scheduled');
-  await outcome.completion;
-
-  assert.deepEqual(seenPrompts, ['Analyze this message: please analyze this match']);
-  assert.equal(sent.at(-1), 'done');
-  const archived = store.listArchive(10);
-  assert.equal(archived.length, 1);
-  assert.equal(archived[0].archiveTag, 'analysis');
-  assert.equal(archived[0].text, 'please analyze this match');
-});
-
 function makeMetricsRuntime(stateDir: string) {
   const metricsStore = new WeixinMetricsStore(stateDir);
   const runtime: any = new WeixinBridgeRuntime({
@@ -2810,6 +2718,43 @@ test('WeixinBridgeRuntime keys per-account metrics and persists them across rest
     locale: null,
   } as any);
   assert.equal(runtime2.getMetrics().byAccount.acctA.turnsCompleted, 1);
+});
+
+test('WeixinBridgeRuntime separates runtime errors from reply failures and resets metrics', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-rt-metrics-errors-'));
+  const { runtime, metricsStore } = makeMetricsRuntime(stateDir);
+
+  runtime.recordRuntimeError(new Error('socket hang up'), 'poll');
+  runtime.recordRuntimeError(new Error('restart failed'), 'runtime');
+  await runtime.processInboundEventWithOptions(
+    { platform: 'weixin', externalScopeId: 'acctA:scope', text: 'hi', metadata: { weixinAccountId: 'acctA' } },
+    {},
+  );
+  const metrics = runtime.getMetrics();
+  assert.equal(metrics.errors, 2);
+  assert.equal(metrics.errorsRecentHour, 2);
+  assert.equal(metrics.errorBreakdown.poll, 1);
+  assert.equal(metrics.errorBreakdown.runtime, 1);
+  assert.equal(metrics.replyFailures, 0);
+  assert.equal(metrics.currentError.stage, 'runtime');
+
+  runtime.persistMetrics();
+  const runtime2: any = new WeixinBridgeRuntime({
+    platformPlugin: {
+      async start() {}, async stop() {}, async pollOnce() { return { events: [] }; },
+      async sendText() { return { success: true }; }, async sendTyping() {},
+    },
+    bridgeCoordinator: { async handleInboundEvent() { return {}; } },
+    metricsStore,
+    locale: null,
+  } as any);
+  assert.equal(runtime2.getMetrics().errorsRecentHour, 2);
+
+  const reset = runtime2.resetMetrics();
+  assert.equal(reset.errors, 0);
+  assert.equal(reset.errorsRecentHour, 0);
+  assert.equal(reset.replyFailures, 0);
+  assert.equal(Object.keys(reset.byAccount).length, 0);
 });
 
 test('postAlert debounces identical alerts and ignores non-http urls', async () => {

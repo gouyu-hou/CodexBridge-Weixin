@@ -6,7 +6,6 @@ import path from 'node:path';
 import test from 'node:test';
 import { WeixinAccountStore } from '../../../src/platforms/weixin/account_store.js';
 import { WeixinAdminServer, resolveWeixinAdminServerOptions } from '../../../src/platforms/weixin/admin_server.js';
-import { WeixinAutomationStore } from '../../../src/platforms/weixin/automation_store.js';
 import { createFileJsonRepositories } from '../../../src/store/file_json/create_file_json_repositories.js';
 
 function makeTempStateDir() {
@@ -332,6 +331,151 @@ test('WeixinAdminServer updates concurrency settings and persists service env', 
   }
 });
 
+test('WeixinAdminServer exposes structured metrics and resets counters', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  let resetCalled = false;
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      getMetrics() {
+        return resetCalled
+          ? {
+            messagesReceived: 0,
+            turnsCompleted: 0,
+            turnsFailed: 0,
+            deliveriesSucceeded: 0,
+            deliveriesFailed: 0,
+            replyFailures: 0,
+            errors: 0,
+            errorsRecentHour: 0,
+            errorBreakdown: { poll: 0, runtime: 0, commit: 0 },
+            currentError: null,
+          }
+          : {
+            messagesReceived: 3,
+            turnsCompleted: 2,
+            turnsFailed: 1,
+            deliveriesSucceeded: 2,
+            deliveriesFailed: 1,
+            replyFailures: 2,
+            errors: 7,
+            errorsRecentHour: 4,
+            errorBreakdown: { poll: 5, runtime: 2, commit: 0 },
+            currentError: { at: Date.now(), stage: 'poll', message: 'socket hang up' },
+          };
+      },
+      resetMetrics() {
+        resetCalled = true;
+        return this.getMetrics?.() ?? {};
+      },
+      status() {
+        return { running: true };
+      },
+    },
+  });
+
+  const binding = await server.start();
+  try {
+    const metricsResponse = await fetch(`${binding.url}/api/metrics`);
+    assert.equal(metricsResponse.status, 200);
+    const metrics = await metricsResponse.json() as any;
+    assert.equal(metrics.errorsRecentHour, 4);
+    assert.equal(metrics.errorBreakdown.poll, 5);
+    assert.equal(metrics.replyFailures, 2);
+
+    const resetResponse = await fetch(`${binding.url}/api/metrics/reset`, { method: 'POST' });
+    assert.equal(resetResponse.status, 200);
+    const resetBody = await resetResponse.json() as any;
+    assert.equal(resetBody.ok, true);
+    assert.equal(resetBody.metrics.errors, 0);
+    assert.equal(resetBody.metrics.replyFailures, 0);
+    assert.equal(resetCalled, true);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer runs diagnostics for service, account, provider, ports, and Codex health', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-primary',
+    token: 'token-primary',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-primary',
+  });
+  const modelServer = http.createServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'gpt-test' }] }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'not found' } }));
+  });
+  await new Promise<void>((resolve) => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  const modelPort = typeof address === 'object' && address ? address.port : 0;
+  const env: Record<string, string> = {
+    WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
+    CODEX_COMPAT_API_KEY: 'test-key',
+    CODEX_COMPAT_BASE_URL: `http://127.0.0.1:${modelPort}`,
+    CODEX_COMPAT_DEFAULT_MODEL: 'gpt-test',
+    CODEX_COMPAT_PROVIDER_NAME: 'Z Token',
+    CODEX_NATIVE_API_ENABLE: '0',
+  };
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status() {
+        return {
+          running: true,
+          activeTurns: 0,
+          queuedTurns: 0,
+          lastPollAt: Date.now(),
+          lastError: null,
+          lastErrorStage: null,
+        };
+      },
+    },
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/diagnostics/run`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    assert.equal(body.summary.failed, 0);
+    assert.equal(body.summary.warned, 2);
+    const byId = new Map<string, any>(body.checks.map((check: any) => [check.id, check]));
+    assert.equal(byId.get('service')?.status, 'ok');
+    assert.equal(byId.get('weixin-account')?.status, 'ok');
+    assert.equal(byId.get('api-key')?.status, 'ok');
+    assert.equal(byId.get('model')?.status, 'ok');
+    assert.equal(byId.get('ports')?.status, 'warn');
+    assert.equal(byId.get('codex-native')?.status, 'warn');
+  } finally {
+    await server.stop();
+    await new Promise<void>((resolve) => modelServer.close(() => resolve()));
+  }
+});
+
 test('WeixinAdminServer updates model provider settings and preserves blank API keys', async () => {
   const stateDir = makeTempStateDir();
   const envFile = path.join(stateDir, 'service.env');
@@ -407,6 +551,113 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     const secondEnvText = fs.readFileSync(envFile, 'utf8');
     assert.match(secondEnvText, /^CODEX_COMPAT_DEFAULT_MODEL=qwen-max$/mu);
     assert.match(secondEnvText, /^CODEX_COMPAT_API_KEY=new-key$/mu);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer exposes and completes first-run setup state', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env: {},
+    port: 0,
+  });
+
+  const binding = await server.start();
+  try {
+    const stateResponse = await fetch(`${binding.url}/api/state`);
+    assert.equal(stateResponse.status, 200);
+    const stateBody = await stateResponse.json() as any;
+    assert.equal(stateBody.setup.needsSetup, true);
+    assert.equal(stateBody.setup.checks.modelProvider.ok, false);
+    assert.equal(stateBody.setup.checks.weixinAccount.ok, false);
+    assert.match(stateBody.setup.checks.node.label, /^Node v/u);
+    assert.equal(stateBody.setup.checks.dataDir.path, stateDir);
+
+    const completeResponse = await fetch(`${binding.url}/api/setup/complete`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ skipped: true }),
+    });
+    assert.equal(completeResponse.status, 200);
+    const completeBody = await completeResponse.json() as any;
+    assert.equal(completeBody.setup.needsSetup, false);
+    assert.equal(typeof completeBody.setup.skippedAt, 'string');
+    assert.equal(completeBody.state.setup.needsSetup, false);
+
+    const preference = JSON.parse(fs.readFileSync(path.join(stateDir, 'runtime', 'weixin-admin-preferences.json'), 'utf8'));
+    assert.equal(typeof preference.firstRunSkippedAt, 'string');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config', async () => {
+  const stateDir = makeTempStateDir();
+  const envFile = path.join(stateDir, 'service.env');
+  const codexHome = path.join(stateDir, 'codex-home');
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), [
+    'model = "gpt-5.5"',
+    'model_provider = "ztoken"',
+    '',
+    '[model_providers.ztoken]',
+    'name = "ZToken"',
+    'base_url = "https://ztoken.app/v1"',
+    'env_key = "OPENAI_API_KEY"',
+    '',
+  ].join('\n'), 'utf8');
+  fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({
+    OPENAI_API_KEY: 'ccswitch-key',
+  }, null, 2), 'utf8');
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const env: Record<string, string> = {
+    CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: envFile,
+    CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'openai-default',
+  };
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env,
+    repositories,
+    codexHome,
+    port: 0,
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/model-provider/sync-ccswitch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ codexHome, persistSource: true }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    assert.equal(body.ok, true);
+    assert.equal(body.model, 'gpt-5.5');
+    assert.equal(body.baseUrl, 'https://ztoken.app/v1');
+    assert.equal(body.settings.modelProvider.source, 'ccswitch');
+    assert.equal(body.settings.modelProvider.apiKeyConfigured, true);
+    assert.equal(body.settings.modelProvider.providerName, 'Z Token');
+    assert.equal(env.CODEX_COMPAT_API_KEY, 'ccswitch-key');
+    assert.equal(env.CODEX_COMPAT_PROVIDER_NAME, 'Z Token');
+    assert.equal(env.CODEX_COMPAT_BASE_URL, 'https://ztoken.app/v1');
+    assert.equal(env.CODEX_COMPAT_DEFAULT_MODEL, 'gpt-5.5');
+    assert.match(fs.readFileSync(envFile, 'utf8'), /^CODEX_COMPAT_API_KEY=ccswitch-key$/mu);
+    const profile = repositories.providerProfiles.getById('openai-default');
+    assert.equal(profile?.providerKind, 'openai-compatible');
+    assert.equal((profile?.config as any)?.defaultModel, 'gpt-5.5');
+    const preference = JSON.parse(fs.readFileSync(path.join(stateDir, 'runtime', 'weixin-admin-preferences.json'), 'utf8'));
+    assert.equal(preference.modelProviderSource, 'ccswitch');
+    assert.equal(preference.ccswitchCodexHome, codexHome);
   } finally {
     await server.stop();
   }
@@ -688,6 +939,33 @@ test('WeixinAdminServer admin page enables shutdown-on-close by default', async 
     assert.match(html, /shutdownOnClose:\s*queryParams\.get\('shutdownOnClose'\)\s*!==\s*'0'/u);
     assert.match(html, /function pageLifecycleUrl/u);
     assert.match(html, /function sendShutdownRequest/u);
+    assert.match(html, /id="setup-modal"/u);
+    assert.match(html, /id="setup-open"/u);
+    assert.match(html, /function renderSetup/u);
+    assert.match(html, /\/api\/setup\/complete/u);
+    assert.match(html, /id="provider-source"/u);
+    assert.match(html, /id="provider-ccswitch-sync"/u);
+    assert.match(html, /\/api\/model-provider\/sync-ccswitch/u);
+    assert.match(html, /data-page="diagnostics"/u);
+    assert.match(html, /id="diagnostics-run"/u);
+    assert.match(html, /\/api\/diagnostics\/run/u);
+    assert.match(html, /function renderDiagnostics/u);
+    assert.match(html, /data-page="updates"/u);
+    assert.match(html, /id="update-check"/u);
+    assert.match(html, /id="update-download"/u);
+    assert.match(html, /id="update-install"/u);
+    assert.match(html, /window\.codexbridgeUpdater/u);
+    assert.match(html, /data-page="phone-guide"/u);
+    assert.match(html, /手机使用 Codex/u);
+    assert.match(html, /Claude Code（Z Token）/u);
+    assert.match(html, /CC-Switch-v3\.14\.1-Windows\.msi/u);
+    assert.match(html, /CC-Switch-v3\.14\.1-macOS\.dmg/u);
+    assert.match(html, /\/project D:\\IT_learn\\codex_weixin\\CodexBridge/u);
+    assert.match(html, /id="metrics-reset"/u);
+    assert.match(html, /id="metric-errors-hour"/u);
+    assert.match(html, /id="metric-errors-total"/u);
+    assert.match(html, /id="metric-reply-failures"/u);
+    assert.match(html, /\/api\/metrics\/reset/u);
     assert.match(html, /\/api\/service\/shutdown/u);
     assert.match(html, /new Image\(\)/u);
     assert.match(html, /window\.addEventListener\('unload', closePage\)/u);
@@ -1085,53 +1363,6 @@ test('WeixinAdminServer exposes recent logs and JSON export for the panel', asyn
   }
 });
 
-test('WeixinAdminServer exposes automation templates and keyword rules', async () => {
-  const stateDir = makeTempStateDir();
-  const accountStore = new WeixinAccountStore({
-    rootDir: path.join(stateDir, 'weixin', 'accounts'),
-  });
-  const weixinAutomationStore = new WeixinAutomationStore(path.join(stateDir, 'weixin', 'automation.json'));
-  const server = new WeixinAdminServer({
-    accountStore,
-    stateDir,
-    port: 0,
-    weixinAutomationStore,
-  });
-
-  const binding = await server.start();
-  try {
-    const templateResponse = await fetch(`${binding.url}/api/automation/templates`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'welcome', content: 'hello {{text}}' }),
-    });
-    assert.equal(templateResponse.status, 200);
-    const templateBody = await templateResponse.json() as any;
-    assert.equal(templateBody.template.name, 'welcome');
-
-    const ruleResponse = await fetch(`${binding.url}/api/automation/rules`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        name: 'hi',
-        keywords: ['hi'],
-        replyTemplateId: templateBody.template.id,
-        stopAfterMatch: true,
-      }),
-    });
-    assert.equal(ruleResponse.status, 200);
-
-    const automationResponse = await fetch(`${binding.url}/api/automation`);
-    const automationBody = await automationResponse.json() as any;
-    assert.equal(automationBody.enabled, true);
-    assert.equal(automationBody.templates.length, 1);
-    assert.equal(automationBody.rules.length, 1);
-    assert.equal(automationBody.rules[0].name, 'hi');
-  } finally {
-    await server.stop();
-  }
-});
-
 test('resolveWeixinAdminServerOptions reads env overrides', () => {
   assert.deepEqual(resolveWeixinAdminServerOptions({
     env: {
@@ -1144,39 +1375,6 @@ test('resolveWeixinAdminServerOptions reads env overrides', () => {
     host: '127.0.0.2',
     port: 5001,
   });
-});
-
-test('WeixinAdminServer edits automation rules and renames templates', async () => {
-  const stateDir = makeTempStateDir();
-  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
-  accountStore.saveAccount({ accountId: 'bot-1', token: 't', baseUrl: 'https://x', userId: 'u1' });
-  const automation = new WeixinAutomationStore(path.join(stateDir, 'weixin', 'automation.json'));
-  const server = new WeixinAdminServer({
-    accountStore,
-    stateDir,
-    env: { WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-1' },
-    port: 0,
-    weixinAutomationStore: automation,
-  });
-  const binding = await server.start();
-  const call = (url: string, init: any = {}) =>
-    fetch(`${binding.url}${url}`, { headers: { 'content-type': 'application/json' }, ...init }).then((r) => r.json() as any);
-  try {
-    const tpl = await call('/api/automation/templates', { method: 'POST', body: JSON.stringify({ name: 't1', content: 'hi {{keyword}}' }) });
-    const rule = await call('/api/automation/rules', { method: 'POST', body: JSON.stringify({ name: 'r1', keywords: ['a'], matchMode: 'contains', replyTemplateId: tpl.template.id }) });
-
-    const updated = await call(`/api/automation/rules/${rule.rule.id}`, { method: 'PATCH', body: JSON.stringify({ keywords: ['a', 'b'], matchMode: 'regex', replyText: 'x', stopAfterMatch: true }) });
-    assert.deepEqual(updated.rule.keywords, ['a', 'b']);
-    assert.equal(updated.rule.matchMode, 'regex');
-    assert.equal(updated.rule.replyText, 'x');
-    assert.equal(updated.rule.stopAfterMatch, true);
-
-    const renamed = await call(`/api/automation/templates/${tpl.template.id}`, { method: 'PATCH', body: JSON.stringify({ name: 't1-renamed', content: 'bye' }) });
-    assert.equal(renamed.template.name, 't1-renamed');
-    assert.equal(renamed.template.content, 'bye');
-  } finally {
-    await server.stop();
-  }
 });
 
 test('WeixinAdminServer tests the alert webhook and reports configuration', async () => {

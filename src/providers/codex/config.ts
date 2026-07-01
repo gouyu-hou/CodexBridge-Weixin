@@ -36,6 +36,16 @@ type CodexProviderProfile = ProviderProfile & {
   config: Record<string, unknown> & Partial<CodexProviderConfig>;
 };
 
+export interface OpenAICompatibleProfileInput {
+  id: string;
+  displayName: string;
+  apiKeyEnv: string;
+  baseUrl: string;
+  defaultModel: string;
+  capabilities?: string | null;
+  providerLabel?: string | null;
+}
+
 interface CodexProfilesConfig {
   profiles: CodexProviderProfile[];
   defaultProviderProfileId: string;
@@ -187,6 +197,38 @@ export function resolveCommand(
     }
   }
   return null;
+}
+
+export function buildOpenAICompatibleProfileFromInput(
+  input: OpenAICompatibleProfileInput,
+  env: NodeJS.ProcessEnv = process.env,
+): ProviderProfile {
+  const now = Date.now();
+  const codexRealBin = resolveConfiguredCommand(normalizeString(env.CODEX_REAL_BIN), {
+    platform: process.platform,
+    env,
+    cwd: process.cwd(),
+  }) ?? resolveCommand('codex', {
+    env,
+  }) ?? 'codex';
+  const preset = getOpenAICompatibleProviderPreset(input.capabilities ?? undefined);
+  return buildOpenAICompatibleProfile({
+    id: input.id,
+    displayName: input.displayName,
+    cliBin: codexRealBin,
+    launchCommand: normalizeString(env.CODEX_APP_LAUNCH_CMD),
+    autolaunch: parseBoolean(env.CODEX_APP_AUTOLAUNCH, false),
+    apiKeyEnv: input.apiKeyEnv,
+    baseUrl: input.baseUrl,
+    defaultModel: input.defaultModel,
+    providerLabel: normalizeString(input.providerLabel) || input.id,
+    upstreamChatCompletionsPath: preset.upstreamChatCompletionsPath,
+    ownedBy: preset.ownedBy,
+    modelIds: [input.defaultModel],
+    modelCatalogPath: null,
+    capabilities: preset.capabilities,
+    now,
+  });
 }
 
 function loadModelCatalog(modelCatalogPath: string | null): unknown {

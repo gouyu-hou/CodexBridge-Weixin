@@ -2,7 +2,6 @@ import { parseSlashCommand } from '../core/command_parser.js';
 import { isAgentCommandEnabled } from '../core/command_availability.js';
 import { writeSequencedDebugLog } from '../core/sequenced_stderr.js';
 import { WeixinPoller } from '../platforms/weixin/poller.js';
-import type { WeixinAutomationService } from '../platforms/weixin/automation_store.js';
 import { createI18n, type Translator } from '../i18n/index.js';
 import type { MissionHostNotification } from '../../packages/mission-control/src/index.js';
 import type {
@@ -10,6 +9,14 @@ import type {
   PlatformMediaDeliveryResult,
 } from '../types/platform.js';
 import type { OutputArtifact, ProviderApprovalRequest, ProviderTurnProgress } from '../types/provider.js';
+
+type RuntimeErrorStage = 'poll' | 'commit' | 'runtime';
+
+interface MetricErrorEvent {
+  at: number;
+  stage: RuntimeErrorStage | string;
+  message: string;
+}
 
 interface DeliveryResult {
   success: boolean;
@@ -20,6 +27,10 @@ interface DeliveryResult {
   error: string;
   errorCode?: number | null;
 }
+
+const METRICS_RECENT_ERROR_WINDOW_MS = 60 * 60 * 1000;
+const METRICS_RECENT_ERROR_RETENTION_MS = 24 * 60 * 60 * 1000;
+const METRICS_RECENT_ERROR_LIMIT = 1000;
 
 interface RuntimeResponseMessage {
   text?: string | null;
@@ -154,7 +165,6 @@ interface WeixinBridgeRuntimeOptions {
   platformPlugin: PlatformPluginLike;
   bridgeCoordinator: BridgeCoordinatorLike;
   automationJobs?: any;
-  weixinAutomation?: WeixinAutomationService | null;
   agentJobs?: any;
   assistantRecords?: any;
   onError?: (error: unknown) => Promise<void> | void;
@@ -193,7 +203,6 @@ export class WeixinBridgeRuntime {
   bridgeCoordinator: BridgeCoordinatorLike;
 
   automationJobs: any;
-  weixinAutomation: WeixinAutomationService | null;
   agentJobs: any;
   assistantRecords: any;
 
@@ -277,7 +286,7 @@ export class WeixinBridgeRuntime {
 
   lastError: string | null;
 
-  lastErrorStage: 'poll' | 'commit' | 'runtime' | null;
+  lastErrorStage: RuntimeErrorStage | null;
 
   lastPollEventCount: number;
 
@@ -288,8 +297,16 @@ export class WeixinBridgeRuntime {
   runtimeGeneration: number;
 
   metricsStore: {
-    read?: () => { totals?: Record<string, number>; byAccount?: Record<string, Record<string, number>> } | null;
-    write: (totals: Record<string, number>, byAccount?: Record<string, Record<string, number>>) => void;
+    read?: () => {
+      totals?: Record<string, number>;
+      byAccount?: Record<string, Record<string, number>>;
+      recentErrors?: MetricErrorEvent[];
+    } | null;
+    write: (
+      totals: Record<string, number>,
+      byAccount?: Record<string, Record<string, number>>,
+      recentErrors?: MetricErrorEvent[],
+    ) => void;
   } | null;
 
   onAlert: (payload: { type: string; stage: string; message: string; at: number; restartCount?: number; pendingDeliveryRetries?: number }) => Promise<void> | void;
@@ -305,9 +322,14 @@ export class WeixinBridgeRuntime {
     deliveriesSucceeded: number;
     deliveriesFailed: number;
     errors: number;
+    pollErrors: number;
+    runtimeErrors: number;
+    commitErrors: number;
     totalTurnDurationMs: number;
     lastTurnDurationMs: number;
   };
+
+  metricsRecentErrors: MetricErrorEvent[];
 
   metricsByAccount: Map<string, { messagesReceived: number; turnsCompleted: number; turnsFailed: number; totalTurnDurationMs: number }>;
 
@@ -319,7 +341,6 @@ export class WeixinBridgeRuntime {
     platformPlugin,
     bridgeCoordinator,
     automationJobs = null,
-    weixinAutomation = null,
     agentJobs = null,
     assistantRecords = null,
     onError = async () => {},
@@ -345,7 +366,6 @@ export class WeixinBridgeRuntime {
     this.platformPlugin = platformPlugin;
     this.bridgeCoordinator = bridgeCoordinator;
     this.automationJobs = automationJobs;
-    this.weixinAutomation = weixinAutomation;
     this.agentJobs = agentJobs;
     this.assistantRecords = assistantRecords;
     this.onError = onError;
@@ -409,9 +429,13 @@ export class WeixinBridgeRuntime {
       deliveriesSucceeded: toCounter(seededTotals.deliveriesSucceeded),
       deliveriesFailed: toCounter(seededTotals.deliveriesFailed),
       errors: toCounter(seededTotals.errors),
+      pollErrors: toCounter(seededTotals.pollErrors),
+      runtimeErrors: toCounter(seededTotals.runtimeErrors),
+      commitErrors: toCounter(seededTotals.commitErrors),
       totalTurnDurationMs: toCounter(seededTotals.totalTurnDurationMs),
       lastTurnDurationMs: 0,
     };
+    this.metricsRecentErrors = normalizeMetricErrorEvents(seeded.recentErrors);
     this.metricsByAccount = new Map();
     const seededByAccount = seeded.byAccount ?? {};
     for (const [accountId, totals] of Object.entries(seededByAccount)) {
@@ -452,6 +476,9 @@ export class WeixinBridgeRuntime {
       onEvent: async (event) => this.dispatchInboundEvent(event),
       onSuccess: async ({ syncCursor, eventCount }) => {
         this.lastPollAt = Date.now();
+        this.lastErrorAt = null;
+        this.lastError = null;
+        this.lastErrorStage = null;
         this.lastPollSyncCursor = typeof syncCursor === 'string' ? syncCursor : null;
         this.lastPollEventCount = Number.isFinite(eventCount) ? eventCount : 0;
         void this.flushDeliveryRetryQueue().catch(async (error) => {
@@ -577,7 +604,13 @@ export class WeixinBridgeRuntime {
   }
 
   getMetrics() {
+    this.pruneMetricErrorEvents();
     const completed = this.metrics.turnsCompleted;
+    const now = Date.now();
+    const recentErrors = this.metricsRecentErrors
+      .filter((event) => now - event.at <= METRICS_RECENT_ERROR_WINDOW_MS)
+      .sort((a, b) => b.at - a.at);
+    const replyFailures = this.metrics.turnsFailed + this.metrics.deliveriesFailed;
     const byAccount: Record<string, {
       messagesReceived: number;
       turnsCompleted: number;
@@ -600,7 +633,23 @@ export class WeixinBridgeRuntime {
       turnsFailed: this.metrics.turnsFailed,
       deliveriesSucceeded: this.metrics.deliveriesSucceeded,
       deliveriesFailed: this.metrics.deliveriesFailed,
+      replyFailures,
       errors: this.metrics.errors,
+      errorsRecentHour: recentErrors.length,
+      errorBreakdown: {
+        poll: this.metrics.pollErrors,
+        runtime: this.metrics.runtimeErrors,
+        commit: this.metrics.commitErrors,
+      },
+      currentError: this.lastErrorAt
+        ? {
+          at: this.lastErrorAt,
+          ageMs: Math.max(0, now - this.lastErrorAt),
+          stage: this.lastErrorStage,
+          message: this.lastError ?? '',
+        }
+        : null,
+      recentErrors: recentErrors.slice(0, 20),
       lastTurnDurationMs: this.metrics.lastTurnDurationMs,
       avgTurnDurationMs: completed > 0 ? Math.round(this.metrics.totalTurnDurationMs / completed) : 0,
       uptimeMs: Math.max(0, Date.now() - this.metricsStartedAt),
@@ -609,6 +658,31 @@ export class WeixinBridgeRuntime {
       queuedTurns: this.turnLimiter.queuedCount,
       byAccount,
     };
+  }
+
+  resetMetrics() {
+    this.metrics = {
+      messagesReceived: 0,
+      turnsCompleted: 0,
+      turnsFailed: 0,
+      deliveriesSucceeded: 0,
+      deliveriesFailed: 0,
+      errors: 0,
+      pollErrors: 0,
+      runtimeErrors: 0,
+      commitErrors: 0,
+      totalTurnDurationMs: 0,
+      lastTurnDurationMs: 0,
+    };
+    this.metricsByAccount.clear();
+    this.metricsRecentErrors = [];
+    this.lastErrorAt = null;
+    this.lastError = null;
+    this.lastErrorStage = null;
+    this.metricsStartedAt = Date.now();
+    this.metricsDirty = true;
+    this.persistMetrics();
+    return this.getMetrics();
   }
 
   accountKeyOf(event: InboundTextEvent | null | undefined): string {
@@ -665,7 +739,8 @@ export class WeixinBridgeRuntime {
       for (const [accountId, totals] of this.metricsByAccount.entries()) {
         byAccount[accountId] = { ...totals };
       }
-      this.metricsStore.write({ ...this.metrics }, byAccount);
+      this.pruneMetricErrorEvents();
+      this.metricsStore.write({ ...this.metrics }, byAccount, this.metricsRecentErrors);
       this.metricsDirty = false;
     } catch {
       // Metrics persistence is best-effort; never let it break the runtime.
@@ -759,24 +834,6 @@ export class WeixinBridgeRuntime {
     this.metricsDirty = true;
     const command = parseSlashCommand(String(event?.text ?? ''));
     if (command) {
-      if (this.weixinAutomation?.isAutomationCommand(command.name)) {
-        const response = this.weixinAutomation.handleCommand(event, command);
-        if (response.handled) {
-          const delivery = await this.sendTextWithRetry({
-            externalScopeId: event.externalScopeId,
-            content: response.content,
-          });
-          if (!delivery.success) {
-            this.enqueueTextDeliveryRetry({
-              externalScopeId: event.externalScopeId,
-              content: delivery.failedText || response.content,
-              delivery,
-              source: 'weixin_automation_command',
-            });
-          }
-          return undefined;
-        }
-      }
       await this.flushPendingInboundMerge(event.externalScopeId, { textOnly: true });
       if (isRecoverySlashCommand(command) && !hasHelpArg(command)) {
         await this.flushDeliveryRetryQueue({
@@ -809,11 +866,7 @@ export class WeixinBridgeRuntime {
       const afterCommit = this.buildAfterCommitAction(response, event);
       return afterCommit ? { afterCommit } : undefined;
     }
-    const automated = await this.applyWeixinAutomation(event);
-    if (automated.handled) {
-      return undefined;
-    }
-    const task = this.scheduleInboundEvent(automated.event)
+    const task = this.scheduleInboundEvent(event)
       .catch(async (error) => {
         await this.onError(error);
         throw error;
@@ -822,45 +875,6 @@ export class WeixinBridgeRuntime {
     return {
       type: 'scheduled',
       completion: task,
-    };
-  }
-
-  async applyWeixinAutomation(event: InboundTextEvent): Promise<{
-    event: InboundTextEvent;
-    handled: boolean;
-  }> {
-    if (!this.weixinAutomation) {
-      return { event, handled: false };
-    }
-    const result = this.weixinAutomation.apply(event);
-    if (!result.matched) {
-      return { event, handled: false };
-    }
-    for (const reply of result.replies) {
-      const delivery = await this.sendTextWithRetry({
-        externalScopeId: event.externalScopeId,
-        content: reply,
-      });
-      if (!delivery.success) {
-        this.enqueueTextDeliveryRetry({
-          externalScopeId: event.externalScopeId,
-          content: delivery.failedText || reply,
-          delivery,
-          source: 'weixin_automation_reply',
-        });
-      }
-    }
-    debugRuntime('weixin_automation_applied', {
-      scopeId: event.externalScopeId,
-      handled: result.handled,
-      replyCount: result.replies.length,
-      archivedCount: result.archivedCount,
-      matchedRuleIds: result.matchedRuleIds,
-      textPreview: truncateDebugText(result.event.text),
-    });
-    return {
-      event: result.event,
-      handled: result.handled,
     };
   }
 
@@ -1930,23 +1944,44 @@ export class WeixinBridgeRuntime {
     });
   }
 
-  recordRuntimeError(error: unknown, stage: 'poll' | 'commit' | 'runtime') {
-    this.lastErrorAt = Date.now();
+  recordRuntimeError(error: unknown, stage: RuntimeErrorStage) {
+    const now = Date.now();
+    this.lastErrorAt = now;
     this.lastErrorStage = stage;
     this.lastError = error instanceof Error
       ? error.message || error.stack || String(error)
       : String(error ?? 'unknown error');
     this.metrics.errors += 1;
+    if (stage === 'poll') {
+      this.metrics.pollErrors += 1;
+    } else if (stage === 'commit') {
+      this.metrics.commitErrors += 1;
+    } else {
+      this.metrics.runtimeErrors += 1;
+    }
+    this.metricsRecentErrors.push({
+      at: now,
+      stage,
+      message: this.lastError.slice(0, 500),
+    });
+    this.pruneMetricErrorEvents();
     this.metricsDirty = true;
     const message = this.lastError;
     void Promise.resolve(this.onAlert({
       type: 'weixin_error',
       stage,
       message,
-      at: this.lastErrorAt,
+      at: now,
       restartCount: this.restartCount,
       pendingDeliveryRetries: this.deliveryRetryQueue.length,
     })).catch(() => {});
+  }
+
+  pruneMetricErrorEvents(): void {
+    const threshold = Date.now() - METRICS_RECENT_ERROR_RETENTION_MS;
+    this.metricsRecentErrors = this.metricsRecentErrors
+      .filter((event) => Number.isFinite(event.at) && event.at >= threshold)
+      .slice(-METRICS_RECENT_ERROR_LIMIT);
   }
 
   async sendTextWithRetry({
@@ -3348,6 +3383,32 @@ function normalizeConcurrency(value: unknown, fallback: number): number {
 function toCounter(value: unknown): number {
   const num = Number(value);
   return Number.isFinite(num) && num > 0 ? Math.floor(num) : 0;
+}
+
+function normalizeMetricErrorEvents(value: unknown): MetricErrorEvent[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      if (!isRecord(item)) {
+        return null;
+      }
+      const at = Number(item.at);
+      if (!Number.isFinite(at) || at <= 0) {
+        return null;
+      }
+      const stage = typeof item.stage === 'string' && item.stage.trim()
+        ? item.stage.trim()
+        : 'runtime';
+      const message = typeof item.message === 'string' ? item.message : '';
+      return {
+        at,
+        stage,
+        message: message.slice(0, 500),
+      };
+    })
+    .filter(Boolean) as MetricErrorEvent[];
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {

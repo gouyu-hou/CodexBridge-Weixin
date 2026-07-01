@@ -166,13 +166,15 @@ export class CodexNativeRuntime {
     }
     try {
       const models = await providerPlugin.listModels({ providerProfile });
+      const requiresAccountIdentity = requiresCodexAccountIdentity(providerProfile);
+      const ready = requiresAccountIdentity ? Boolean(accountIdentity) : true;
       return {
-        ready: Boolean(accountIdentity),
+        ready,
         runtimeReachable: true,
         accountIdentity,
         modelCount: Array.isArray(models) ? models.length : 0,
         checkedAt,
-        errorMessage: accountIdentity ? null : 'Codex auth state is unavailable.',
+        errorMessage: ready ? null : 'Codex auth state is unavailable.',
       };
     } catch (error) {
       return {
@@ -446,6 +448,10 @@ export class CodexNativeRuntime {
       throw new Error('Codex native runtime requires provider plugins with startThread/startTurn support.');
     }
   }
+}
+
+function requiresCodexAccountIdentity(providerProfile: ProviderProfile): boolean {
+  return providerProfile.providerKind !== 'openai-compatible';
 }
 
 function formatNativeRuntimeError(error: unknown): string {

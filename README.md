@@ -1,5 +1,7 @@
 # CodexBridge Weixin Admin
 
+手机端使用说明：如果你想用手机微信控制电脑上的 Codex，请先阅读 [手机使用 Codex 详细文档](./docs/usage/phone-codex-guide.md)。这份文档包含绑定微信、手机控制项目、权限审批、图片/文件上传、会话管理、模型切换和常见问题处理。
+
 CodexBridge Weixin Admin 是一个面向 Windows 的微信 Bot 桥接工具。它把微信里的消息转发给本地 Codex/CodexBridge 服务处理，再把最终结果发回微信，同时提供一个本地桌面管理面板，方便管理账号、会话、日志、配置和二维码。
 
 这个版本主要围绕“微信 + Codex + 本地管理面板”使用场景整理和打包，适合个人把自己的模型能力接入微信，也可以生成入口让朋友扫码使用。

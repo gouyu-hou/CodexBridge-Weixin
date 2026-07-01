@@ -271,6 +271,44 @@ test('CodexNativeRuntime checkReadiness reports account identity and model probe
   assert.equal(readiness.checkedAt, 222);
 });
 
+test('CodexNativeRuntime checkReadiness allows OpenAI-compatible API key providers without Codex auth identity', async () => {
+  const runtime = new CodexNativeRuntime({
+    now: () => 223,
+    readAccountIdentity: () => null,
+  });
+  const providerPlugin = {
+    async startThread() {
+      return null;
+    },
+    async startTurn() {
+      return null;
+    },
+    async listModels() {
+      return [{
+        id: 'gpt-5.5',
+        model: 'gpt-5.5',
+        displayName: 'GPT-5.5',
+        description: '',
+        isDefault: true,
+        supportedReasoningEfforts: ['medium'],
+        defaultReasoningEffort: 'medium',
+      }];
+    },
+  } as any;
+
+  const readiness = await runtime.checkReadiness({
+    providerProfile: makeProfile({ providerKind: 'openai-compatible' }),
+    providerPlugin,
+  });
+
+  assert.equal(readiness.ready, true);
+  assert.equal(readiness.runtimeReachable, true);
+  assert.equal(readiness.modelCount, 1);
+  assert.equal(readiness.accountIdentity, null);
+  assert.equal(readiness.errorMessage, null);
+  assert.equal(readiness.checkedAt, 223);
+});
+
 test('CodexNativeRuntime checkReadiness surfaces readiness probe failures', async () => {
   const runtime = new CodexNativeRuntime({
     now: () => 333,

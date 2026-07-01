@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 import { WeixinAccountStore } from './platforms/weixin/account_store.js';
 import { WeixinAdminServer, resolveWeixinAdminServerOptions } from './platforms/weixin/admin_server.js';
-import { createWeixinAutomationStore, WeixinAutomationService } from './platforms/weixin/automation_store.js';
 import { WEIXIN_DEFAULT_BASE_URL, defaultCodexBridgeStateDir } from './platforms/weixin/config.js';
 import { MultiAccountWeixinPlatformPlugin } from './platforms/weixin/multi_account_plugin.js';
 import { DEFAULT_ILINK_BOT_TYPE, officialQrLogin } from './platforms/weixin/official/login.js';
@@ -232,9 +232,7 @@ async function runWeixinServe(args: string[]) {
   const accountStore = new WeixinAccountStore({ rootDir: accountsDir });
   const serveLock = await acquireServeLock(path.join(stateDir, 'runtime', 'weixin-serve.lock'));
   const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
-  const weixinAutomationStore = createWeixinAutomationStore(stateDir);
   const weixinMetricsStore = new WeixinMetricsStore(stateDir);
-  const weixinAutomation = new WeixinAutomationService(weixinAutomationStore);
   const codexProfiles = loadCodexProfilesFromEnv();
   const codexAuthManager = createWeixinServeCodexAuthManager(stateDir);
   let bridgeControlRef: { restart(): Promise<void> } | null = null;
@@ -285,7 +283,6 @@ async function runWeixinServe(args: string[]) {
     platformPlugin,
     bridgeCoordinator: runtime.services.bridgeCoordinator,
     automationJobs: runtime.services.automationJobs,
-    weixinAutomation,
     agentJobs: runtime.services.agentJobs,
     assistantRecords: runtime.services.assistantRecords,
     onError: (async (error: unknown) => {
@@ -310,7 +307,7 @@ async function runWeixinServe(args: string[]) {
     ),
     locale: i18n.locale,
   } as any);
-  const embeddedNativeApiOptions = resolveEmbeddedCodexNativeApiOptions({
+  const embeddedNativeApiOptions = await resolveEmbeddedCodexNativeApiOptions({
     env: process.env,
     defaultProviderProfileId: runtime.config.defaultProviderProfileId,
   });
@@ -397,6 +394,9 @@ async function runWeixinServe(args: string[]) {
     getMetrics() {
       return bridgeRuntime.getMetrics();
     },
+    resetMetrics() {
+      return bridgeRuntime.resetMetrics();
+    },
   };
   bridgeControlRef = bridgeControl;
   const adminOptions = resolveWeixinAdminServerOptions({ env: process.env });
@@ -418,7 +418,6 @@ async function runWeixinServe(args: string[]) {
       },
       repositories,
       codexHome: process.env.CODEX_HOME,
-      weixinAutomationStore,
     })
     : null;
 
@@ -1244,16 +1243,19 @@ function normalizeCliString(value: unknown): string | null {
   return normalized || null;
 }
 
-function resolveEmbeddedCodexNativeApiOptions({
+async function resolveEmbeddedCodexNativeApiOptions({
   env,
   defaultProviderProfileId,
 }: {
   env: NodeJS.ProcessEnv;
   defaultProviderProfileId: string | null;
-}): EmbeddedCodexNativeApiOptions {
+}): Promise<EmbeddedCodexNativeApiOptions> {
   const enabled = parseBooleanEnv(env.CODEX_NATIVE_API_ENABLE, true);
   const host = normalizeCliString(env.CODEX_NATIVE_API_HOST) ?? DEFAULT_CODEX_NATIVE_API_HOST;
-  const port = parseOptionalNonNegativeInt(env.CODEX_NATIVE_API_PORT) ?? DEFAULT_CODEX_NATIVE_API_PORT;
+  const preferredPort = parseOptionalNonNegativeInt(env.CODEX_NATIVE_API_PORT) ?? DEFAULT_CODEX_NATIVE_API_PORT;
+  const port = enabled
+    ? await resolveAvailableTcpPort(host, preferredPort)
+    : preferredPort;
   const preferredCodexProviderProfileId = defaultProviderProfileId === 'openai-default'
     ? defaultProviderProfileId
     : null;
@@ -1268,6 +1270,33 @@ function resolveEmbeddedCodexNativeApiOptions({
     defaultModel: normalizeCliString(env.CODEX_NATIVE_API_DEFAULT_MODEL),
     requestTitlePrefix: normalizeCliString(env.CODEX_NATIVE_API_TITLE_PREFIX),
   };
+}
+
+async function resolveAvailableTcpPort(host: string, preferredPort: number): Promise<number> {
+  if (preferredPort === 0) {
+    return 0;
+  }
+  for (let offset = 0; offset < 50; offset += 1) {
+    const port = preferredPort + offset;
+    if (port > 65535) {
+      break;
+    }
+    if (await isTcpPortAvailable(host, port)) {
+      return port;
+    }
+  }
+  throw new Error(`No available local port found from ${preferredPort} on ${host}`);
+}
+
+function isTcpPortAvailable(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', () => resolve(false));
+    server.once('listening', () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, host);
+  });
 }
 
 function parseOptionalNonNegativeInt(value: unknown): number | null {

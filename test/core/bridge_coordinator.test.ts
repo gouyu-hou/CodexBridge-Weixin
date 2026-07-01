@@ -6660,6 +6660,91 @@ test('/new pending request can switch provider and locale before the first norma
   assert.equal(settings?.locale, 'en');
 });
 
+test('/project reports project-control status without creating a thread', async () => {
+  const defaultCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-project-status-'));
+  const { runtime, openai } = makeRuntime({ defaultCwd, locale: 'en' });
+
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-project-status-1',
+    text: '/project',
+  });
+  const text = result.messages.map((message) => message.text ?? '').join('\n');
+
+  assert.match(text, /Project control/);
+  assert.ok(text.includes(defaultCwd));
+  assert.match(text, /\/project on/);
+  assert.equal(openai.startThreadCalls.length, 0);
+});
+
+test('/project path waits for the next normal message and applies safe permissions', async () => {
+  const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge project-control-'));
+  const { runtime, openai } = makeRuntime({ defaultCwd: path.dirname(projectDir), locale: 'en' });
+  const scope = {
+    platform: 'weixin' as const,
+    externalScopeId: 'wx-user-project-control-1',
+  };
+
+  const prepared = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    ...scope,
+    text: `/project ${projectDir}`,
+  });
+  const preparedText = prepared.messages.map((message) => message.text ?? '').join('\n');
+
+  assert.match(preparedText, /Project control is ready/);
+  assert.ok(preparedText.includes(path.resolve(projectDir)));
+  assert.equal(openai.startThreadCalls.length, 0);
+
+  const status = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    ...scope,
+    text: '/project',
+  });
+  assert.match(
+    status.messages.map((message) => message.text ?? '').join('\n'),
+    /Pending project directory/,
+  );
+
+  await runtime.services.bridgeCoordinator.handleInboundEvent({
+    ...scope,
+    text: 'read the project and fix the startup bug',
+  });
+
+  assert.equal(openai.startThreadCalls.length, 1);
+  assert.equal(openai.startThreadCalls[0]?.cwd, path.resolve(projectDir));
+  assert.equal(openai.startTurnCalls.length, 1);
+  assert.equal(openai.startTurnCalls[0]?.bridgeSession?.cwd, path.resolve(projectDir));
+  assert.equal(openai.startTurnCalls[0]?.sessionSettings?.permissionsMode, 'default-permissions');
+  assert.equal(openai.startTurnCalls[0]?.sessionSettings?.approvalPolicy, 'on-request');
+  assert.equal(openai.startTurnCalls[0]?.sessionSettings?.sandboxMode, 'workspace-write');
+
+  const session = runtime.services.bridgeSessions.resolveScopeSession(scope);
+  assert.ok(session);
+  const settings = runtime.services.bridgeSessions.getSessionSettings(session.id);
+  assert.equal(settings?.permissionsMode, 'default-permissions');
+  assert.equal(settings?.approvalPolicy, 'on-request');
+  assert.equal(settings?.sandboxMode, 'workspace-write');
+  const projectControl = settings?.metadata?.projectControl as any;
+  assert.equal(projectControl?.enabled, true);
+  assert.equal(projectControl?.cwd, path.resolve(projectDir));
+});
+
+test('/project rejects paths that are not available directories', async () => {
+  const defaultCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-project-invalid-base-'));
+  const missingDir = path.join(defaultCwd, 'missing');
+  const { runtime, openai } = makeRuntime({ defaultCwd, locale: 'en' });
+
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-project-invalid-1',
+    text: `/project ${missingDir}`,
+  });
+  const text = result.messages.map((message) => message.text ?? '').join('\n');
+
+  assert.match(text, /Project directory is not available/);
+  assert.match(text, /Directory does not exist or cannot be accessed/);
+  assert.equal(openai.startThreadCalls.length, 0);
+});
+
 test('/provider switches the scope to a new provider-backed session', async () => {
   const { runtime, minimax } = makeRuntime();
   await runtime.services.bridgeCoordinator.handleInboundEvent({

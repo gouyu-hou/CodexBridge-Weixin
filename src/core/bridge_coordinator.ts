@@ -1420,6 +1420,8 @@ export class BridgeCoordinator {
         return this.handleLoginCommand(event, command.args);
       case 'new':
         return this.handleNewCommand(event, command.args);
+      case 'project':
+        return this.handleProjectCommand(event, command.args);
       case 'uploads':
         return this.handleUploadsCommand(event, command.args);
       case 'assistant':
@@ -2221,6 +2223,148 @@ export class BridgeCoordinator {
       this.t('coordinator.status.providerProfile', { id: providerProfileId }),
       this.t('coordinator.new.pendingHint'),
     ], existing ? buildSessionMeta(existing) : this.buildScopedSessionMeta(event));
+  }
+
+  async handleProjectCommand(event, args) {
+    const scopeRef = toScopeRef(event);
+    const session = this.bridgeSessions.resolveScopeSession(scopeRef);
+    const pendingNewSession = this.getPendingNewSession(scopeRef);
+    const normalizedAction = String(args[0] ?? '').trim().toLowerCase();
+
+    if (args.length === 0 || PROJECT_STATUS_ARGS.has(normalizedAction)) {
+      const settings = pendingNewSession?.settings ?? (session ? this.bridgeSessions.getSessionSettings(session.id) : null);
+      return messageResponse(
+        this.renderProjectStatusLines(event, session, pendingNewSession, settings),
+        session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event),
+      );
+    }
+
+    if (PROJECT_CANCEL_ARGS.has(normalizedAction) && args.length === 1) {
+      if (!pendingNewSession) {
+        return messageResponse([
+          this.t('coordinator.project.nothingToCancel'),
+          this.t('coordinator.project.usage'),
+        ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
+      }
+      this.clearPendingNewSession(scopeRef);
+      return messageResponse([
+        this.t('coordinator.project.cancelled'),
+      ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
+    }
+
+    const activeResponse = await this.rejectIfActiveTurnForCommand(event, 'project');
+    if (activeResponse) {
+      return activeResponse;
+    }
+
+    const rawTarget = PROJECT_ON_ARGS.has(normalizedAction) && args.length === 1
+      ? ''
+      : args.join(' ').trim();
+    const baseCwd = pendingNewSession?.cwd ?? session?.cwd ?? this.resolveEventCwd(event);
+    const targetCwd = resolveProjectCommandCwd(rawTarget, baseCwd);
+    if (!targetCwd) {
+      return messageResponse([
+        this.t('coordinator.project.noCwd'),
+        this.t('coordinator.project.usage'),
+      ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
+    }
+
+    const validation = validateProjectCommandCwd(targetCwd, this.currentI18n);
+    if (validation.ok === false) {
+      return messageResponse([
+        this.t('coordinator.project.invalidCwd', { cwd: targetCwd }),
+        this.t('coordinator.project.invalidCwdReason', { reason: validation.reason }),
+        this.t('coordinator.project.usage'),
+      ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
+    }
+
+    const providerProfileId = pendingNewSession?.providerProfileId
+      ?? session?.providerProfileId
+      ?? this.resolveDefaultProviderProfileId();
+    const existingSettings = pendingNewSession?.settings ?? (session ? this.bridgeSessions.getSessionSettings(session.id) : null);
+    const permissionsUpdate = buildPermissionsSettingsUpdate('default-permissions');
+    const nextSettings = this.buildCleanReboundSessionSettings(existingSettings, {
+      ...permissionsUpdate,
+      locale: this.resolveScopeLocale(scopeRef, event),
+      metadata: {
+        ...(existingSettings?.metadata ?? {}),
+        projectControl: {
+          enabled: true,
+          cwd: validation.cwd,
+          configuredAt: this.now(),
+        },
+      },
+    });
+    const resolved = resolvePermissionsState(nextSettings);
+    const shouldEnableCurrentSession = PROJECT_ON_ARGS.has(normalizedAction)
+      && args.length === 1
+      && session
+      && !pendingNewSession;
+    if (shouldEnableCurrentSession) {
+      this.bridgeSessions.upsertSessionSettings(session.id, nextSettings);
+      return messageResponse([
+        this.t('coordinator.project.enabled'),
+        this.t('coordinator.project.currentCwd', { cwd: validation.cwd }),
+        this.t('coordinator.status.providerProfile', { id: providerProfileId }),
+        this.t('coordinator.permissions.current', { value: formatPermissionsMode(resolved.permissionsMode, this.currentI18n) }),
+        this.t('coordinator.status.approvalPolicy', { value: formatApprovalPolicyValue(resolved, this.currentI18n) }),
+        this.t('coordinator.status.sandboxMode', { value: formatSandboxModeValue(resolved, this.currentI18n) }),
+        this.t('coordinator.project.currentHint'),
+        this.t('coordinator.project.example'),
+      ], buildSessionMeta(session));
+    }
+
+    this.pendingNewSessionsByScope.set(formatPlatformScopeKey(scopeRef.platform, scopeRef.externalScopeId), {
+      providerProfileId,
+      cwd: validation.cwd,
+      settings: nextSettings,
+      previousBridgeSessionId: pendingNewSession?.previousBridgeSessionId ?? session?.id ?? null,
+      previousThreadId: pendingNewSession?.previousThreadId ?? session?.codexThreadId ?? null,
+      createdAt: this.now(),
+    });
+    return messageResponse([
+      this.t('coordinator.project.ready'),
+      this.t('coordinator.project.pendingCwd', { cwd: validation.cwd }),
+      this.t('coordinator.status.providerProfile', { id: providerProfileId }),
+      this.t('coordinator.permissions.current', { value: formatPermissionsMode(resolved.permissionsMode, this.currentI18n) }),
+      this.t('coordinator.status.approvalPolicy', { value: formatApprovalPolicyValue(resolved, this.currentI18n) }),
+      this.t('coordinator.status.sandboxMode', { value: formatSandboxModeValue(resolved, this.currentI18n) }),
+      this.t('coordinator.project.pendingHint'),
+      this.t('coordinator.project.example'),
+    ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
+  }
+
+  renderProjectStatusLines(event, session, pendingNewSession, settings) {
+    const lines = [this.t('coordinator.project.title')];
+    if (pendingNewSession) {
+      lines.push(this.t('coordinator.project.pendingCwd', {
+        cwd: pendingNewSession.cwd ?? this.t('common.notSet'),
+      }));
+    } else if (session) {
+      lines.push(this.t('coordinator.project.currentCwd', {
+        cwd: session.cwd ?? this.t('common.notSet'),
+      }));
+    } else {
+      lines.push(this.t('coordinator.project.notEnabled'));
+    }
+
+    const defaultCwd = this.resolveEventCwd(event);
+    if (defaultCwd) {
+      lines.push(this.t('coordinator.project.defaultCwd', { cwd: defaultCwd }));
+    }
+
+    lines.push(this.t('coordinator.status.providerProfile', {
+      id: pendingNewSession?.providerProfileId ?? session?.providerProfileId ?? this.resolveDefaultProviderProfileId(),
+    }));
+    if (settings) {
+      const resolved = resolvePermissionsState(settings);
+      lines.push(this.t('coordinator.permissions.current', { value: formatPermissionsMode(resolved.permissionsMode, this.currentI18n) }));
+      lines.push(this.t('coordinator.status.approvalPolicy', { value: formatApprovalPolicyValue(resolved, this.currentI18n) }));
+      lines.push(this.t('coordinator.status.sandboxMode', { value: formatSandboxModeValue(resolved, this.currentI18n) }));
+    }
+    lines.push(this.t('coordinator.project.usage'));
+    lines.push(this.t('coordinator.project.example'));
+    return lines;
   }
 
   async handleUploadsCommand(event, args) {
@@ -12517,6 +12661,7 @@ function renderCommandBlockedMessage(commandName, interruptRequested, i18n: Tran
     automation: i18n.t('coordinator.action.automation'),
     weibo: i18n.t('coordinator.action.weibo'),
     new: i18n.t('coordinator.action.new'),
+    project: i18n.t('coordinator.action.project'),
     uploads: i18n.t('coordinator.action.uploads'),
     review: i18n.t('coordinator.action.review'),
     open: i18n.t('coordinator.action.open'),
@@ -12570,6 +12715,40 @@ function selectUsageWindows(report) {
 function normalizeCwd(value) {
   const normalized = typeof value === 'string' ? value.trim() : '';
   return normalized || null;
+}
+
+const PROJECT_STATUS_ARGS = new Set(['status', 'current', 'info', 'show']);
+const PROJECT_ON_ARGS = new Set(['on', 'start', 'enable']);
+const PROJECT_CANCEL_ARGS = new Set(['cancel', 'off', 'clear']);
+
+function resolveProjectCommandCwd(rawTarget, baseCwd) {
+  const target = normalizeCwd(rawTarget);
+  const base = normalizeCwd(baseCwd);
+  if (!target) {
+    return base;
+  }
+  if (target === '~') {
+    return os.homedir();
+  }
+  if (target.startsWith('~/') || target.startsWith('~\\')) {
+    return path.resolve(os.homedir(), target.slice(2));
+  }
+  if (path.isAbsolute(target)) {
+    return target;
+  }
+  return base ? path.resolve(base, target) : path.resolve(target);
+}
+
+function validateProjectCommandCwd(cwd, i18n: Translator): { ok: true; cwd: string } | { ok: false; reason: string } {
+  try {
+    const stats = fs.statSync(cwd);
+    if (!stats.isDirectory()) {
+      return { ok: false, reason: i18n.t('coordinator.project.notDirectory') };
+    }
+    return { ok: true, cwd: path.resolve(cwd) };
+  } catch {
+    return { ok: false, reason: i18n.t('coordinator.project.missingDirectory') };
+  }
 }
 
 function renderPlatformStatusLines(platformId, status, i18n: Translator, { details = false } = {}) {
@@ -17349,6 +17528,7 @@ function buildThreadsFooter({ i18n }: {
     ? [
       'Common commands:',
       '/new        new session',
+      '/project    mobile project control',
       '/stop       stop the current reply',
       '/retry      retry the previous request',
       '/reconnect  refresh the connection',
@@ -17369,6 +17549,7 @@ function buildThreadsFooter({ i18n }: {
     : [
       '常用命令：',
       '/new        新会话',
+      '/project    手机项目控制/查看项目目录',
       '/stop       停止当前回复',
       '/retry      重试上一条',
       '/reconnect  刷新连接',
@@ -18359,6 +18540,26 @@ function getCommandHelpSpecs(i18n: Translator) {
       i18n.t('coordinator.help.note.new'),
     ],
   }),
+  project: freezeCommandHelp({
+    name: 'project',
+    aliases: ['proj', 'workspace', 'workdir'],
+    summary: i18n.t('coordinator.help.summary.project'),
+    usage: [
+      '/project',
+      '/project on',
+      '/project D:\\IT_learn\\codex_weixin\\CodexBridge',
+      '/project -h',
+    ],
+    examples: [
+      '/project',
+      '/project on',
+      '/project D:\\IT_learn\\codex_weixin\\CodexBridge',
+      '然后直接发送：读取这个项目并修复启动报错，跑测试后告诉我结果',
+    ],
+    notes: [
+      i18n.t('coordinator.help.note.project'),
+    ],
+  }),
   uploads: freezeCommandHelp({
     name: 'uploads',
     aliases: ['up', 'ul'],
@@ -18966,6 +19167,7 @@ const COMMAND_HELP_ORDER = Object.freeze([
   'automation',
   'weibo',
   'new',
+  'project',
   'uploads',
   'assistant',
   'log',
@@ -19017,6 +19219,7 @@ const COMMAND_ALIAS_DEFINITIONS = Object.freeze({
   automation: ['auto'],
   weibo: ['wb'],
   new: ['n'],
+  project: ['proj', 'workspace', 'workdir'],
   uploads: ['up', 'ul'],
   assistant: ['as'],
   log: [],

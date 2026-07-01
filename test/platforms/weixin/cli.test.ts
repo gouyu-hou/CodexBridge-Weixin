@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -161,27 +162,25 @@ test('parseCodexNativeApiServeArgs reads standalone native-api flags', () => {
   });
 });
 
-test('resolveEmbeddedCodexNativeApiOptions defaults native-api startup to the Codex path', () => {
-  const options = resolveEmbeddedCodexNativeApiOptions({
+test('resolveEmbeddedCodexNativeApiOptions defaults native-api startup to the Codex path', async () => {
+  const options = await resolveEmbeddedCodexNativeApiOptions({
     env: {
       CODEX_NATIVE_API_AUTH_TOKEN: 'native-secret',
     } as NodeJS.ProcessEnv,
     defaultProviderProfileId: 'qwen',
   });
 
-  assert.deepEqual(options, {
-    enabled: true,
-    host: '127.0.0.1',
-    port: 43182,
-    providerProfileId: 'openai-default',
-    authToken: 'native-secret',
-    defaultModel: null,
-    requestTitlePrefix: null,
-  });
+  assert.equal(options.enabled, true);
+  assert.equal(options.host, '127.0.0.1');
+  assert.equal(options.port >= 43182, true);
+  assert.equal(options.providerProfileId, 'openai-default');
+  assert.equal(options.authToken, 'native-secret');
+  assert.equal(options.defaultModel, null);
+  assert.equal(options.requestTitlePrefix, null);
 });
 
-test('resolveEmbeddedCodexNativeApiOptions allows explicit native-api opt-out', () => {
-  const options = resolveEmbeddedCodexNativeApiOptions({
+test('resolveEmbeddedCodexNativeApiOptions allows explicit native-api opt-out', async () => {
+  const options = await resolveEmbeddedCodexNativeApiOptions({
     env: {
       CODEX_NATIVE_API_ENABLE: '0',
       CODEX_NATIVE_API_AUTH_TOKEN: 'native-secret',
@@ -192,8 +191,8 @@ test('resolveEmbeddedCodexNativeApiOptions allows explicit native-api opt-out', 
   assert.equal(options.enabled, false);
 });
 
-test('resolveEmbeddedCodexNativeApiOptions keeps embedded native-api on the Codex path while honoring host/port/model overrides', () => {
-  const options = resolveEmbeddedCodexNativeApiOptions({
+test('resolveEmbeddedCodexNativeApiOptions keeps embedded native-api on the Codex path while honoring host/port/model overrides', async () => {
+  const options = await resolveEmbeddedCodexNativeApiOptions({
     env: {
       CODEX_NATIVE_API_ENABLE: 'true',
       CODEX_NATIVE_API_HOST: '127.0.0.2',
@@ -214,6 +213,32 @@ test('resolveEmbeddedCodexNativeApiOptions keeps embedded native-api on the Code
     defaultModel: 'gpt-5.4',
     requestTitlePrefix: 'Bridge Native API',
   });
+});
+
+test('resolveEmbeddedCodexNativeApiOptions moves to the next port when the preferred port is busy', async () => {
+  const holder = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    holder.once('error', reject);
+    holder.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = holder.address();
+  const busyPort = typeof address === 'object' && address ? address.port : 0;
+
+  try {
+    const options = await resolveEmbeddedCodexNativeApiOptions({
+      env: {
+        CODEX_NATIVE_API_ENABLE: '1',
+        CODEX_NATIVE_API_HOST: '127.0.0.1',
+        CODEX_NATIVE_API_PORT: String(busyPort),
+      } as NodeJS.ProcessEnv,
+      defaultProviderProfileId: 'openai-default',
+    });
+
+    assert.equal(options.host, '127.0.0.1');
+    assert.equal(options.port, busyPort + 1);
+  } finally {
+    await new Promise<void>((resolve) => holder.close(() => resolve()));
+  }
 });
 
 test('resolveClearContextAccountId infers the only saved account', () => {

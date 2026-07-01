@@ -1334,15 +1334,17 @@ export class CodexNativeApiServer {
         providerProfile: context.providerProfile,
       });
       const normalizedModels = Array.isArray(models) ? models : [];
+      const requiresAccountIdentity = requiresCodexAccountIdentity(context.providerProfile);
+      const ready = requiresAccountIdentity ? Boolean(accountIdentity) : true;
       return {
         models: normalizedModels,
         readiness: {
-          ready: Boolean(accountIdentity),
+          ready,
           runtimeReachable: true,
           accountIdentity,
           modelCount: normalizedModels.length,
           checkedAt,
-          errorMessage: accountIdentity ? null : 'Codex auth state is unavailable.',
+          errorMessage: ready ? null : 'Codex auth state is unavailable.',
         },
       };
     } catch (error) {
@@ -1361,6 +1363,10 @@ export class CodexNativeApiServer {
       };
     }
   }
+}
+
+function requiresCodexAccountIdentity(providerProfile: ProviderProfile): boolean {
+  return providerProfile.providerKind !== 'openai-compatible';
 }
 
 function buildContinuationLookupError(

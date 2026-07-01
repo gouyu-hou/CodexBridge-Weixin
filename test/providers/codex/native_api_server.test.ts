@@ -488,6 +488,60 @@ test('CodexNativeApiServer reports degraded /v1/health when the native auth stat
   }
 });
 
+test('CodexNativeApiServer reports ok /v1/health for OpenAI-compatible providers without Codex auth identity', async () => {
+  const runtime = new CodexNativeRuntime({
+    now: () => 555,
+    readAccountIdentity: () => null,
+  });
+  const providerPlugin = {
+    async listModels() {
+      return [{
+        id: 'gpt-5.5',
+        model: 'gpt-5.5',
+        displayName: 'GPT-5.5',
+        description: '',
+        isDefault: true,
+        supportedReasoningEfforts: ['medium'],
+        defaultReasoningEffort: 'medium',
+      }];
+    },
+    async startThread() {
+      return {
+        threadId: 'thread-health-compatible',
+        cwd: '/tmp',
+        title: 'health',
+      };
+    },
+    async startTurn() {
+      return {
+        outputText: 'ok',
+        previewText: '',
+        threadId: 'thread-health-compatible',
+        turnId: 'turn-health-compatible',
+      };
+    },
+  } as any;
+  const server = new CodexNativeApiServer({
+    runtime,
+    resolveRuntimeContext: () => ({
+      providerProfile: makeProfile({ providerKind: 'openai-compatible' }),
+      providerPlugin,
+    }),
+  });
+  await server.start();
+  try {
+    const response = await fetch(`${server.baseUrl}/v1/health`);
+    const body = await response.json() as any;
+    assert.equal(response.status, 200);
+    assert.equal(body.status, 'ok');
+    assert.equal(body.native_runtime.runtime_reachable, true);
+    assert.equal(body.native_runtime.ready, true);
+    assert.equal(body.native_runtime.error_message, null);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('CodexNativeApiServer recovers after the native runtime becomes reachable again', async () => {
   let runtimeReachable = false;
   let startTurnCalls = 0;
