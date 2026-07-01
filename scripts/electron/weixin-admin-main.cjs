@@ -1662,6 +1662,7 @@ function createSetupPageUrl(defaults) {
           供应商预设
           <select name="preset" id="preset">
             <option value="default">OpenAI 兼容</option>
+            <option value="claude-code">Claude Code</option>
             <option value="deepseek">DeepSeek</option>
             <option value="qwen">Qwen</option>
             <option value="openrouter">OpenRouter</option>
@@ -1701,6 +1702,7 @@ function createSetupPageUrl(defaults) {
     const defaults = JSON.parse(decodeURIComponent('${payload}'));
     const presets = {
       default: { provider: 'OpenAI Compatible', baseUrl: 'https://ztoken.app/', model: defaults.model || 'gpt-5.5' },
+      'claude-code': { provider: 'Claude Code', baseUrl: 'https://ztoken.app/', model: 'claude-sonnet-4-20250514' },
       deepseek: { provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
       qwen: { provider: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
       openrouter: { provider: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
