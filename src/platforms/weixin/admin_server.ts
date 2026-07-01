@@ -931,7 +931,7 @@ export class WeixinAdminServer {
       CODEX_COMPAT_BASE_URL: sourceState.baseUrl,
       CODEX_COMPAT_DEFAULT_MODEL: sourceState.model,
       CODEX_COMPAT_MODEL_IDS: sourceState.model,
-      CODEX_COMPAT_CAPABILITIES: 'default',
+      CODEX_COMPAT_CAPABILITIES: normalizeProviderCapabilities(sourceState.capabilities) ?? 'default',
       CODEX_COMPAT_API_KEY: sourceState.apiKey,
     };
     for (const [key, value] of Object.entries(envValues)) {
@@ -944,7 +944,7 @@ export class WeixinAdminServer {
       providerName: envValues.CODEX_COMPAT_PROVIDER_NAME,
       baseUrl: sourceState.baseUrl,
       model: sourceState.model,
-      capabilities: 'default',
+      capabilities: envValues.CODEX_COMPAT_CAPABILITIES,
     });
     if (persistSource) {
       this.writeAdminPreferences({
@@ -1014,6 +1014,7 @@ export class WeixinAdminServer {
       providerName: normalizeProviderDisplayName(sourceState.providerName) ?? sourceState.providerName,
       baseUrl: sourceState.baseUrl,
       model: sourceState.model,
+      capabilities: sourceState.capabilities,
       apiKeyConfigured: Boolean(sourceState.apiKey),
       apiKeyMasked: maskSecret(sourceState.apiKey),
       codexHome: sourceState.codexHome,

@@ -11,6 +11,7 @@ export interface CodexSwitchProviderState {
   providerName: string;
   baseUrl: string;
   model: string;
+  capabilities: string;
   apiKey: string;
   apiKeyEnv: string;
   fingerprint: string;
@@ -55,6 +56,12 @@ export function resolveCodexSwitchProviderState({
   const providerName = normalizeString(provider.name)
     || normalizeString(provider.display_name)
     || selectedProviderId;
+  const endpoint = normalizeCcswitchProviderEndpoint({
+    providerId: selectedProviderId,
+    providerName,
+    baseUrl,
+    model,
+  });
 
   return {
     codexHome: home,
@@ -62,15 +69,16 @@ export function resolveCodexSwitchProviderState({
     authPath,
     source: apiKey ? (providerToken ? 'codex-config' : 'codex-auth') : 'none',
     providerId: normalizeProviderId(selectedProviderId) || 'openai-compatible',
-    providerName,
-    baseUrl: stripTrailingSlash(baseUrl),
+    providerName: endpoint.providerName || providerName,
+    baseUrl: endpoint.baseUrl,
     model,
+    capabilities: endpoint.capabilities,
     apiKey,
     apiKeyEnv: envKey,
     fingerprint: [
       selectedProviderId,
-      providerName,
-      stripTrailingSlash(baseUrl),
+      endpoint.providerName || providerName,
+      endpoint.baseUrl,
       model,
       maskFingerprintSecret(apiKey),
       envKey,
@@ -240,6 +248,85 @@ function normalizeProviderId(value: unknown) {
     return '';
   }
   return normalized.replace(/[^A-Za-z0-9_-]+/gu, '-').replace(/^-+|-+$/gu, '') || '';
+}
+
+function normalizeCcswitchProviderEndpoint({
+  providerId,
+  providerName,
+  baseUrl,
+  model,
+}: {
+  providerId: string;
+  providerName: string;
+  baseUrl: string;
+  model: string;
+}) {
+  const normalizedBaseUrl = stripTrailingSlash(baseUrl);
+  const providerHint = `${providerId} ${providerName} ${model}`.replace(/[\s_-]+/gu, '').toLowerCase();
+  const isLocalResponsesProxy = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/.*)?\/v1\/responses$/iu.test(normalizedBaseUrl)
+    || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/.*)?\/responses$/iu.test(normalizedBaseUrl);
+  const useCanonicalProviderUrl = !normalizedBaseUrl || isLocalResponsesProxy;
+  if (providerHint.includes('deepseek')) {
+    return {
+      providerName: 'DeepSeek',
+      baseUrl: useCanonicalProviderUrl ? 'https://api.deepseek.com' : normalizedBaseUrl,
+      capabilities: 'deepseek',
+    };
+  }
+  if (providerHint.includes('qwen') || providerHint.includes('dashscope')) {
+    return {
+      providerName: 'Qwen',
+      baseUrl: useCanonicalProviderUrl ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' : normalizedBaseUrl,
+      capabilities: 'qwen',
+    };
+  }
+  if (providerHint.includes('openrouter')) {
+    return {
+      providerName: 'OpenRouter',
+      baseUrl: useCanonicalProviderUrl ? 'https://openrouter.ai/api/v1' : normalizedBaseUrl,
+      capabilities: 'openrouter',
+    };
+  }
+  if (providerHint.includes('kimi') || providerHint.includes('moonshot')) {
+    return {
+      providerName: 'Kimi',
+      baseUrl: useCanonicalProviderUrl ? 'https://api.moonshot.cn/v1' : normalizedBaseUrl,
+      capabilities: 'kimi',
+    };
+  }
+  if (providerHint.includes('gemini') || providerHint.includes('google')) {
+    return {
+      providerName: 'Gemini',
+      baseUrl: useCanonicalProviderUrl ? 'https://generativelanguage.googleapis.com/v1beta/openai' : normalizedBaseUrl,
+      capabilities: 'gemini',
+    };
+  }
+  if (providerHint.includes('minimax')) {
+    return {
+      providerName: 'MiniMax',
+      baseUrl: useCanonicalProviderUrl ? 'https://api.minimax.chat/v1' : normalizedBaseUrl,
+      capabilities: 'minimax',
+    };
+  }
+  if (providerHint.includes('iflow')) {
+    return {
+      providerName: 'iFlow',
+      baseUrl: useCanonicalProviderUrl ? 'https://apis.iflow.cn/v1' : normalizedBaseUrl,
+      capabilities: 'iflow',
+    };
+  }
+  if (providerHint.includes('claude')) {
+    return {
+      providerName: 'Claude Code',
+      baseUrl: normalizedBaseUrl,
+      capabilities: 'claude-code',
+    };
+  }
+  return {
+    providerName,
+    baseUrl: normalizedBaseUrl,
+    capabilities: 'default',
+  };
 }
 
 function stripTrailingSlash(value: string) {

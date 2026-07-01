@@ -1300,15 +1300,22 @@ function resolveCcswitchSetupState() {
       || normalizeString(provider.display_name)
       || providerId,
   );
+  const endpoint = normalizeCcswitchProviderEndpoint({
+    providerId,
+    providerName,
+    baseUrl,
+    model,
+  });
   return {
     codexHome,
     configPath,
     authPath,
     source: apiKey ? (providerToken ? 'codex-config' : 'codex-auth') : 'none',
     providerId,
-    providerName,
-    baseUrl: baseUrl.replace(/\/+$/u, ''),
+    providerName: endpoint.providerName || providerName,
+    baseUrl: endpoint.baseUrl,
     model,
+    capabilities: endpoint.capabilities,
     apiKey,
     apiKeyEnv: envKey,
     errors,
@@ -1466,6 +1473,75 @@ function normalizeProviderDisplayName(value) {
     return 'OpenAI Compatible';
   }
   return normalized;
+}
+
+function normalizeCcswitchProviderEndpoint({ providerId, providerName, baseUrl, model }) {
+  const normalizedBaseUrl = normalizeString(baseUrl).replace(/\/+$/u, '');
+  const providerHint = `${providerId} ${providerName} ${model}`.replace(/[\s_-]+/gu, '').toLowerCase();
+  const isLocalResponsesProxy = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/.*)?\/v1\/responses$/iu.test(normalizedBaseUrl)
+    || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/.*)?\/responses$/iu.test(normalizedBaseUrl);
+  const useCanonicalProviderUrl = !normalizedBaseUrl || isLocalResponsesProxy;
+  if (providerHint.includes('deepseek')) {
+    return {
+      providerName: 'DeepSeek',
+      baseUrl: useCanonicalProviderUrl ? 'https://api.deepseek.com' : normalizedBaseUrl,
+      capabilities: 'deepseek',
+    };
+  }
+  if (providerHint.includes('qwen') || providerHint.includes('dashscope')) {
+    return {
+      providerName: 'Qwen',
+      baseUrl: useCanonicalProviderUrl ? 'https://dashscope.aliyuncs.com/compatible-mode/v1' : normalizedBaseUrl,
+      capabilities: 'qwen',
+    };
+  }
+  if (providerHint.includes('openrouter')) {
+    return {
+      providerName: 'OpenRouter',
+      baseUrl: useCanonicalProviderUrl ? 'https://openrouter.ai/api/v1' : normalizedBaseUrl,
+      capabilities: 'openrouter',
+    };
+  }
+  if (providerHint.includes('kimi') || providerHint.includes('moonshot')) {
+    return {
+      providerName: 'Kimi',
+      baseUrl: useCanonicalProviderUrl ? 'https://api.moonshot.cn/v1' : normalizedBaseUrl,
+      capabilities: 'kimi',
+    };
+  }
+  if (providerHint.includes('gemini') || providerHint.includes('google')) {
+    return {
+      providerName: 'Gemini',
+      baseUrl: useCanonicalProviderUrl ? 'https://generativelanguage.googleapis.com/v1beta/openai' : normalizedBaseUrl,
+      capabilities: 'gemini',
+    };
+  }
+  if (providerHint.includes('minimax')) {
+    return {
+      providerName: 'MiniMax',
+      baseUrl: useCanonicalProviderUrl ? 'https://api.minimax.chat/v1' : normalizedBaseUrl,
+      capabilities: 'minimax',
+    };
+  }
+  if (providerHint.includes('iflow')) {
+    return {
+      providerName: 'iFlow',
+      baseUrl: useCanonicalProviderUrl ? 'https://apis.iflow.cn/v1' : normalizedBaseUrl,
+      capabilities: 'iflow',
+    };
+  }
+  if (providerHint.includes('claude')) {
+    return {
+      providerName: 'Claude Code',
+      baseUrl: normalizedBaseUrl,
+      capabilities: 'claude-code',
+    };
+  }
+  return {
+    providerName,
+    baseUrl: normalizedBaseUrl,
+    capabilities: 'default',
+  };
 }
 
 function maskSecret(value) {
@@ -1743,7 +1819,7 @@ function createSetupPageUrl(defaults) {
         baseUrl.value = result.baseUrl || baseUrl.value;
         model.value = result.model || model.value;
         apiKey.value = result.apiKey || apiKey.value;
-        preset.value = 'default';
+        preset.value = result.capabilities && presets[result.capabilities] ? result.capabilities : 'default';
         status.style.color = '#047857';
         status.textContent = '已同步 CCSwitch / Codex 当前配置：' + [
           result.provider,
