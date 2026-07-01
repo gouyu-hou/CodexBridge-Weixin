@@ -95,7 +95,16 @@
       "!packages/**/test/**/*",
       "!test-output.log",
       "!reports/**/*",
-      "!reference/**/*"
+      "!reference/**/*",
+      "!node_modules/ffprobe-static/bin/darwin/**/*",
+      "!node_modules/ffprobe-static/bin/linux/**/*",
+      "!node_modules/ffprobe-static/bin/win32/ia32/**/*",
+      "!node_modules/@openai/codex-darwin-*/**/*",
+      "!node_modules/@openai/codex-linux-*/**/*",
+      "!node_modules/@openai/codex-win32-ia32/**/*",
+      "!node_modules/@esbuild/darwin-*/**/*",
+      "!node_modules/@esbuild/linux-*/**/*",
+      "!node_modules/@esbuild/win32-ia32/**/*"
     ],
     "win": {
       "signAndEditExecutable": false,
