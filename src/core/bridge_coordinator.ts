@@ -4649,14 +4649,16 @@ export class BridgeCoordinator {
         }));
       }
       lines.push(
-        this.t('coordinator.model.currentEffort', { value: effectiveModelState.effortValue }),
+        this.t('coordinator.model.currentEffort', {
+          value: this.formatReasoningEffortLabel(effectiveModelState.effortValue),
+        }),
         this.t('coordinator.model.currentEffortSource', {
           value: this.formatModelEffortSourceLabel(effectiveModelState.effortSource),
         }),
       );
       if (effectiveModelState.defaultReasoningEffort) {
         lines.push(this.t('coordinator.model.defaultEffort', {
-          value: effectiveModelState.defaultReasoningEffort,
+          value: this.formatReasoningEffortLabel(effectiveModelState.defaultReasoningEffort),
         }));
       }
       lines.push(
@@ -4717,7 +4719,9 @@ export class BridgeCoordinator {
           ], sessionMeta);
         }
         updates.reasoningEffort = resolvedEffort;
-        messages.push(this.t('coordinator.model.effortUpdated', { value: resolvedEffort }));
+        messages.push(this.t('coordinator.model.effortUpdated', {
+          value: this.formatReasoningEffortLabel(resolvedEffort),
+        }));
       }
       if (pendingNewSession) {
         this.updatePendingNewSessionSettings(scopeRef, {
@@ -4761,7 +4765,9 @@ export class BridgeCoordinator {
         });
       }
       return messageResponse([
-        this.t('coordinator.model.effortUpdated', { value: resolvedEffort }),
+        this.t('coordinator.model.effortUpdated', {
+          value: this.formatReasoningEffortLabel(resolvedEffort),
+        }),
         this.t('coordinator.permissions.nextTurn'),
       ], sessionMeta);
     }
@@ -4797,7 +4803,9 @@ export class BridgeCoordinator {
     }
     if (requestedEffort) {
       updates.reasoningEffort = resolvedEffort;
-      messages.push(this.t('coordinator.model.effortUpdated', { value: resolvedEffort }));
+      messages.push(this.t('coordinator.model.effortUpdated', {
+        value: this.formatReasoningEffortLabel(resolvedEffort),
+      }));
     }
     if (messages.length === 0) {
       messages.push(this.t('coordinator.model.noArgHint', { providerProfileId: providerProfile.id }));
@@ -5855,7 +5863,29 @@ export class BridgeCoordinator {
 
   formatSupportedEfforts(model) {
     const supportedEfforts = Array.isArray(model?.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
-    return supportedEfforts.length > 0 ? supportedEfforts.join(', ') : this.t('coordinator.model.unsupportedEffortFallback');
+    return supportedEfforts.length > 0
+      ? supportedEfforts.map((effort) => this.formatReasoningEffortLabel(effort)).join(', ')
+      : this.t('coordinator.model.unsupportedEffortFallback');
+  }
+
+  formatReasoningEffortLabel(effort) {
+    const raw = String(effort ?? '').trim();
+    if (!raw) {
+      return raw;
+    }
+    const normalized = raw.toLowerCase();
+    const labels = {
+      none: '关闭',
+      minimal: '极低',
+      low: '低',
+      medium: '中',
+      high: '高',
+      xhigh: '超高',
+      max: '超高',
+      auto: '自动',
+    };
+    const label = labels[normalized];
+    return label ? `${label}（${raw}）` : raw;
   }
 
   findModelByToken(models, request) {
@@ -12071,7 +12101,7 @@ export class BridgeCoordinator {
         const failureMessage = formatUserError(error);
         if (
           !attemptedModelReset
-          && this.maybeResetUnsupportedCodexModel(session, sessionSettings, failureMessage)
+          && this.maybeResetUnsupportedCodexModel(providerProfile, session, sessionSettings, failureMessage)
         ) {
           attemptedModelReset = true;
           sessionSettings = this.bridgeSessions.getSessionSettings(session.id);
@@ -12091,7 +12121,7 @@ export class BridgeCoordinator {
       if (result?.outputState === 'provider_error' && providerErrorMessage) {
         if (
           !attemptedModelReset
-          && this.maybeResetUnsupportedCodexModel(session, sessionSettings, providerErrorMessage)
+          && this.maybeResetUnsupportedCodexModel(providerProfile, session, sessionSettings, providerErrorMessage)
         ) {
           attemptedModelReset = true;
           sessionSettings = this.bridgeSessions.getSessionSettings(session.id);
@@ -12164,8 +12194,12 @@ export class BridgeCoordinator {
     return { result: finalizedResult, session: nextSession };
   }
 
-  maybeResetUnsupportedCodexModel(session, sessionSettings, failureMessage: string): boolean {
-    if (!isUnsupportedChatgptAccountModelError(failureMessage) || !sessionSettings?.model) {
+  maybeResetUnsupportedCodexModel(providerProfile, session, sessionSettings, failureMessage: string): boolean {
+    if (
+      providerProfile.providerKind !== 'openai-native'
+      || !isUnsupportedChatgptAccountModelError(failureMessage)
+      || !sessionSettings?.model
+    ) {
       return false;
     }
     debugCoordinator('turn_recovery_reset_unsupported_model', {

@@ -564,11 +564,15 @@ function normalizeLiveModelCatalog({
         || id,
       description: normalizeString(entry?.description)
         || normalizeString(staticEntry?.description),
-      isDefault: normalizeBoolean(entry?.is_default)
-        ?? normalizeBoolean(entry?.isDefault)
-        ?? id === defaultModel,
-      supportedReasoningEfforts: normalizeStringList(staticEntry?.supportedReasoningEfforts),
-      defaultReasoningEffort: normalizeString(staticEntry?.defaultReasoningEffort) || null,
+        isDefault: normalizeBoolean(entry?.is_default)
+          ?? normalizeBoolean(entry?.isDefault)
+          ?? id === defaultModel,
+      supportedReasoningEfforts: normalizeStringList(entry?.supportedReasoningEfforts).length > 0
+        ? normalizeStringList(entry?.supportedReasoningEfforts)
+        : normalizeStringList(staticEntry?.supportedReasoningEfforts),
+      defaultReasoningEffort: normalizeString(entry?.defaultReasoningEffort)
+        || normalizeString(staticEntry?.defaultReasoningEffort)
+        || null,
     });
   }
 

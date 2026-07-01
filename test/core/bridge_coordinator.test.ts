@@ -4789,10 +4789,10 @@ test('/model shows current model and updates model setting for the next turn', a
   assert.match(emptyText, /当前生效模型：gpt-5.4/);
   assert.match(emptyText, /模型来源：provider 默认/);
   assert.match(emptyText, /模型说明：最新 frontier/);
-  assert.match(emptyText, /当前生效思考深度：medium/);
+  assert.match(emptyText, /当前生效思考深度：中（medium）/);
   assert.match(emptyText, /思考深度来源：模型默认/);
-  assert.match(emptyText, /模型默认思考深度：medium/);
-  assert.match(emptyText, /支持思考深度：low, medium, high, xhigh/);
+  assert.match(emptyText, /模型默认思考深度：中（medium）/);
+  assert.match(emptyText, /支持思考深度：低（low）, 中（medium）, 高（high）, 超高（xhigh）/);
 
   await runtime.services.bridgeCoordinator.handleInboundEvent({
     platform: 'weixin',
@@ -4823,7 +4823,7 @@ test('/model shows current model and updates model setting for the next turn', a
   const currentText = current.messages.map((message) => message.text ?? '').join('\n');
   assert.match(currentText, /当前生效模型：gpt-5.2-codex/);
   assert.match(currentText, /模型来源：当前会话显式设置/);
-  assert.match(currentText, /当前生效思考深度：medium/);
+  assert.match(currentText, /当前生效思考深度：中（medium）/);
   assert.match(currentText, /思考深度来源：模型默认/);
 });
 
@@ -4857,7 +4857,7 @@ test('/model can switch models by list index', async () => {
     text: '/model 1 xhigh',
   });
   assert.equal(updatedWithEffort.messages[0]?.text ?? '', '模型已更新为：gpt-5.4');
-  assert.equal(updatedWithEffort.messages[1]?.text ?? '', '思考深度已更新为：xhigh');
+  assert.equal(updatedWithEffort.messages[1]?.text ?? '', '思考深度已更新为：超高（xhigh）');
 });
 
 test('/model sets reasoning effort for the current/default model', async () => {
@@ -4874,7 +4874,7 @@ test('/model sets reasoning effort for the current/default model', async () => {
     externalScopeId: 'wx-user-effort-1',
     text: '/model high',
   });
-  assert.equal(effortOnly.messages[0]?.text ?? '', '思考深度已更新为：high');
+  assert.equal(effortOnly.messages[0]?.text ?? '', '思考深度已更新为：高（high）');
 
   await runtime.services.bridgeCoordinator.handleInboundEvent({
     platform: 'weixin',
@@ -4899,7 +4899,7 @@ test('/model supports model and reasoning effort together, with validation', asy
     text: '/model gpt-5.4 xhigh',
   });
   assert.equal(updated.messages[0]?.text ?? '', '模型已更新为：gpt-5.4');
-  assert.equal(updated.messages[1]?.text ?? '', '思考深度已更新为：xhigh');
+  assert.equal(updated.messages[1]?.text ?? '', '思考深度已更新为：超高（xhigh）');
 
   await runtime.services.bridgeCoordinator.handleInboundEvent({
     platform: 'weixin',
@@ -13542,6 +13542,78 @@ test('bridge coordinator clears an unsupported ChatGPT-account model override an
   assert.equal(openai.startTurnCalls.length, 3);
   assert.equal(openai.startTurnCalls[1]?.sessionSettings?.model ?? null, 'gpt-5.4');
   assert.equal(openai.startTurnCalls[2]?.sessionSettings?.model ?? null, null);
+});
+
+test('bridge coordinator keeps compatible-provider model overrides on provider model errors', async () => {
+  const providerProfiles = [
+    makeProviderProfile('openai-default', 'openai-native', 'OpenAI Default'),
+    makeProviderProfile('compat-default', 'openai-compatible', 'Compatible Default'),
+  ];
+  const { runtime, compatible } = makeRuntime({
+    providerProfiles,
+    defaultProviderProfileId: 'compat-default',
+  });
+  compatible.models = [{
+    id: 'gpt-5.4',
+    model: 'gpt-5.4',
+    displayName: 'GPT 5.4',
+    description: '',
+    isDefault: false,
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'medium',
+  }, {
+    id: 'gpt-5.5',
+    model: 'gpt-5.5',
+    displayName: 'GPT 5.5',
+    description: '',
+    isDefault: true,
+    supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+    defaultReasoningEffort: 'medium',
+  }];
+  const original = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-compatible-model-kept',
+    text: 'hello',
+  });
+  runtime.services.bridgeSessions.upsertSessionSettings(original.session.bridgeSessionId, {
+    model: 'gpt-5.4',
+    reasoningEffort: 'high',
+  });
+
+  compatible.startTurn = async (args) => {
+    compatible.startTurnCalls.push({
+      providerProfile: args.providerProfile,
+      bridgeSession: args.bridgeSession,
+      sessionSettings: args.sessionSettings,
+      event: args.event,
+      inputText: args.inputText,
+    });
+    return {
+      outputText: '',
+      outputArtifacts: [],
+      outputMedia: [],
+      outputState: 'provider_error',
+      previewText: '',
+      finalSource: 'notification_error',
+      status: null,
+      errorMessage: 'The \'gpt-5.4\' model is not supported when using Codex with a ChatGPT account.',
+      turnId: `${args.bridgeSession.codexThreadId}-turn-compatible-model-error`,
+      threadId: args.bridgeSession.codexThreadId,
+      title: args.bridgeSession.title,
+    };
+  };
+
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-compatible-model-kept',
+    text: 'hello again',
+  });
+
+  assert.equal(result.meta?.codexTurn?.outputState, 'provider_error');
+  const settings = runtime.services.bridgeSessions.getSessionSettings(original.session.bridgeSessionId);
+  assert.equal(settings?.model, 'gpt-5.4');
+  assert.equal(settings?.reasoningEffort, 'high');
+  assert.equal(compatible.startTurnCalls.at(-1)?.sessionSettings?.model, 'gpt-5.4');
 });
 
 test('bridge coordinator reconnects the Codex runtime once when the selected workspace is invalid', async () => {

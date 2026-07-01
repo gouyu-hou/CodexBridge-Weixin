@@ -59,6 +59,9 @@ const CODEX_MODELS: CliproxyModelCatalogEntry[] = [
   model('codex-free', 'gpt-5.3-codex', 'openai', 'GPT 5.3 Codex', ['low', 'medium', 'high', 'xhigh']),
   model('codex-free', 'gpt-5.4', 'openai', 'GPT 5.4', ['low', 'medium', 'high', 'xhigh']),
   model('codex-free', 'gpt-5.4-mini', 'openai', 'GPT 5.4 Mini', ['low', 'medium', 'high', 'xhigh']),
+  model('codex-free', 'gpt-5.5', 'openai', 'GPT 5.5', ['low', 'medium', 'high', 'xhigh'], {
+    description: 'Frontier model for complex coding, research, and real-world work.',
+  }),
   model('codex-plus', 'gpt-5.3-codex-spark', 'openai', 'GPT 5.3 Codex Spark', ['low', 'medium', 'high', 'xhigh']),
 ];
 
@@ -244,7 +247,7 @@ function buildModelCapabilities(entry: CliproxyModelCatalogEntry): OpenAICompati
   const reasoning = levels.length > 0
     ? {
       supportedReasoningEfforts: levels,
-      defaultReasoningEffort: null,
+      defaultReasoningEffort: defaultReasoningEffortForEntry(entry, levels),
     }
     : false;
   return {
@@ -324,7 +327,7 @@ function buildThinkingPolicy(
     return {
       supportsReasoningEffortSelection: true,
       supportedReasoningEfforts: levels,
-      defaultReasoningEffort: null,
+      defaultReasoningEffort: defaultReasoningEffortForEntry(entry, levels),
       stripFields: ['thinking'],
       mode: 'reasoning_effort',
     };
@@ -363,6 +366,13 @@ function normalizeThinkingLevels(levels: unknown): string[] {
     ? levels.map((level) => String(level ?? '').trim().toLowerCase()).filter(Boolean)
     : [];
   return unique(normalized);
+}
+
+function defaultReasoningEffortForEntry(
+  entry: CliproxyModelCatalogEntry,
+  levels: string[],
+): string | null {
+  return entry.category.startsWith('codex-') && levels.includes('medium') ? 'medium' : null;
 }
 
 function isMiniMaxModel(id: string): boolean {

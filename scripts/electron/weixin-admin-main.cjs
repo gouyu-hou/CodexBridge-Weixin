@@ -1778,14 +1778,14 @@ function createSetupPageUrl(defaults) {
     const defaults = JSON.parse(decodeURIComponent('${payload}'));
     const presets = {
       default: { provider: 'OpenAI Compatible', baseUrl: 'https://ztoken.app/', model: defaults.model || 'gpt-5.5' },
-      'claude-code': { provider: 'Claude Code', baseUrl: 'https://ztoken.app/', model: 'claude-sonnet-4-20250514' },
+      'claude-code': { provider: 'Claude Code', baseUrl: 'https://ztoken.app/', model: 'claude-opus-4-8' },
       deepseek: { provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
       qwen: { provider: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
       openrouter: { provider: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
       kimi: { provider: 'Kimi', baseUrl: 'https://api.kimi.com/coding', model: 'kimi-k2' },
-      gemini: { provider: 'Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-pro' },
-      minimax: { provider: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2.7' },
-      iflow: { provider: 'iFlow', baseUrl: 'https://apis.iflow.cn/v1', model: 'qwen3-coder-plus' }
+      gemini: { provider: 'Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
+      minimax: { provider: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2.0' },
+      iflow: { provider: 'iFlow', baseUrl: 'https://apis.iflow.cn/v1', model: 'qwen3-coder-flash' }
     };
     const form = document.getElementById('setup-form');
     const status = document.getElementById('status');

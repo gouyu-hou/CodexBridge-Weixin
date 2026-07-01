@@ -66,3 +66,28 @@ test('resolveCodexSwitchProviderState supports custom env_key secrets', () => {
   assert.equal(state.apiKey, 'custom-auth-key');
   assert.equal(state.apiKeyEnv, 'CUSTOM_PROVIDER_API_KEY');
 });
+
+test('resolveCodexSwitchProviderState normalizes DeepSeek local proxy configs to canonical DeepSeek endpoint and model', () => {
+  const codexHome = makeTempCodexHome();
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), [
+    'model_provider = "deepseek"',
+    'model = "gpt-5.5"',
+    '',
+    '[model_providers.deepseek]',
+    'name = "DeepSeek"',
+    'base_url = "http://127.0.0.1:15721/v1/responses"',
+    'env_key = "DEEPSEEK_API_KEY"',
+    '',
+  ].join('\n'), 'utf8');
+  fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({
+    DEEPSEEK_API_KEY: 'deepseek-key',
+  }), 'utf8');
+
+  const state = resolveCodexSwitchProviderState({ codexHome, env: {} });
+
+  assert.equal(state.providerName, 'DeepSeek');
+  assert.equal(state.baseUrl, 'https://api.deepseek.com');
+  assert.equal(state.model, 'deepseek-v4-flash');
+  assert.equal(state.capabilities, 'deepseek');
+  assert.equal(state.apiKey, 'deepseek-key');
+});

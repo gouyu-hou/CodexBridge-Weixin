@@ -987,8 +987,41 @@ export class WeixinAdminServer {
       defaultModel: model,
       capabilities,
       providerLabel: providerId || profileId,
+      relayProfileMode: 'pure-api',
     }, this.env as NodeJS.ProcessEnv);
     this.repositories.providerProfiles.save(profile);
+  }
+
+  private clearSessionModelOverrides() {
+    const sessionSettings = this.repositories?.sessionSettings;
+    if (!sessionSettings || typeof sessionSettings.save !== 'function') {
+      return 0;
+    }
+    const allSettings = typeof sessionSettings.listAll === 'function'
+      ? sessionSettings.listAll()
+      : this.repositories?.bridgeSessions?.list?.()
+        .map((session) => sessionSettings.getByBridgeSessionId?.(session.id) ?? sessionSettings.get?.(session.id) ?? null)
+        .filter((settings): settings is SessionSettings => Boolean(settings)) ?? [];
+    let cleared = 0;
+    for (const settings of allSettings) {
+      if (!settings.model && !settings.reasoningEffort) {
+        continue;
+      }
+      const now = Date.now();
+      sessionSettings.save({
+        ...settings,
+        model: null,
+        reasoningEffort: null,
+        metadata: {
+          ...settings.metadata,
+          modelOverrideClearedAt: now,
+          modelOverrideClearedReason: 'model-provider-updated',
+        },
+        updatedAt: now,
+      });
+      cleared += 1;
+    }
+    return cleared;
   }
 
   private recordCcswitchSync({
@@ -1318,6 +1351,7 @@ export class WeixinAdminServer {
         model: provider.model,
         capabilities: provider.capabilities,
       });
+      this.clearSessionModelOverrides();
     }
     persistEnvValues(resolveServiceEnvFile(this.env), envValues);
     setEnvValue(this.env, 'WEIXIN_ALERT_WEBHOOK_URL', next.alertWebhookUrl);
@@ -1332,6 +1366,7 @@ export class WeixinAdminServer {
     });
     this.restartLogCleanupScheduler();
     this.restartCcswitchSyncScheduler();
+    await this.bridgeControl?.restart?.();
     const cleanup = await this.cleanupLogs('settings-updated');
     this.writeJson(res, 200, {
       ok: true,
@@ -1686,20 +1721,56 @@ export class WeixinAdminServer {
       timeoutMs: 25000,
       headers: native.authToken ? { authorization: `Bearer ${native.authToken}` } : {},
     });
+    const body = isRecord(result.body) ? result.body : {};
+    const runtime = isRecord(body.native_runtime) ? body.native_runtime : {};
+    const statusText = normalizeEnvString(body.status) ?? '';
+    const runtimeReachable = Boolean(runtime.runtime_reachable);
+    const runtimeProviderProfileId = normalizeEnvString(runtime.provider_profile_id) ?? '';
+    const provider = this.resolveModelProviderSettings();
+    const activeProviderId = normalizeEnvString(provider.profileId) ?? 'openai-default';
+    const activeCapabilities = normalizeEnvString(provider.capabilities) ?? 'default';
+    const activeProviderIsCompatible = activeProviderId !== 'openai-default' || activeCapabilities !== 'default';
     if (result.ok) {
-      const body = isRecord(result.body) ? result.body : {};
-      const runtime = isRecord(body.native_runtime) ? body.native_runtime : {};
-      const statusText = normalizeEnvString(body.status) ?? 'ok';
       return makeDiagnosticCheck({
         id: 'codex-native',
         title: 'Codex 是否能正常响应',
         status: statusText === 'ok' ? 'ok' : 'warn',
         detail: `Native API 响应：${statusText}`,
-        reason: normalizeEnvString(runtime.provider_profile_id)
-          ? `Provider：${runtime.provider_profile_id}`
+        reason: runtimeProviderProfileId
+          ? `Provider：${runtimeProviderProfileId}`
           : `接口：${native.baseUrl}/v1/health`,
         actions: [
           { label: '查看运行状态', action: 'open-page', target: 'runtime' },
+        ],
+      });
+    }
+    if (result.statusCode === 503 && (statusText === 'degraded' || runtimeReachable)) {
+      if (activeProviderIsCompatible) {
+        return makeDiagnosticCheck({
+          id: 'codex-native',
+          title: 'Codex 是否能正常响应',
+          status: 'ok',
+          detail: `当前使用 ${provider.providerName} / ${provider.model}`,
+          reason: runtimeProviderProfileId && runtimeProviderProfileId !== activeProviderId
+            ? `Native API 健康检查返回 ${runtimeProviderProfileId} 降级，但当前微信回复走 ${activeProviderId} 兼容模型通道，不影响正常对话。`
+            : 'Native API 健康检查处于降级状态，但当前微信回复走兼容模型通道，不影响正常对话。',
+          actions: [
+            { label: '查看运行状态', action: 'open-page', target: 'runtime' },
+            { label: '查看日志', action: 'open-page', target: 'logs' },
+          ],
+        });
+      }
+      return makeDiagnosticCheck({
+        id: 'codex-native',
+        title: 'Codex 是否能正常响应',
+        status: 'warn',
+        detail: `Native API 返回 HTTP 503（${statusText || 'degraded'}）`,
+        reason: runtimeProviderProfileId
+          ? `当前桥接仍可用，但健康检查显示 Provider：${runtimeProviderProfileId} 处于降级状态`
+          : '当前桥接仍可用，但健康检查显示为降级状态',
+        actions: [
+          { label: '查看运行状态', action: 'open-page', target: 'runtime' },
+          { label: '查看日志', action: 'open-page', target: 'logs' },
         ],
       });
     }
@@ -2928,7 +2999,12 @@ function normalizeModelProviderPatch(
     };
   },
 ) {
-  const model = normalizeEnvString(raw.model) ?? current.model;
+  const capabilities = normalizeProviderCapabilities(raw.capabilities) ?? current.capabilities;
+  const model = normalizeModelForCapabilities(
+    capabilities,
+    normalizeEnvString(raw.model) ?? current.model,
+    current.model,
+  );
   const baseUrl = normalizeEnvString(raw.baseUrl) ?? current.baseUrl;
   if (!model) {
     throw new Error('model is required');
@@ -2940,7 +3016,6 @@ function normalizeModelProviderPatch(
   const providerName = normalizeProviderDisplayName(raw.providerName) ?? normalizeProviderDisplayName(current.providerName) ?? 'Z Token';
   const providerId = normalizeProviderId(raw.providerId) ?? current.providerId;
   const profileId = normalizeProviderId(raw.profileId) ?? current.profileId;
-  const capabilities = normalizeProviderCapabilities(raw.capabilities) ?? current.capabilities;
   const serviceEnvFile = normalizeServiceEnvFile(raw.serviceEnvFile, current.serviceEnvFile);
   return {
     source: normalizeModelProviderSource(raw.source ?? current.source),
@@ -2960,6 +3035,55 @@ function normalizeModelProviderPatch(
       60_000,
     ),
   };
+}
+
+function normalizeModelForCapabilities(capabilities: string | null | undefined, model: unknown, fallbackModel: unknown) {
+  const value = normalizeEnvString(model) ?? '';
+  const fallback = normalizeEnvString(fallbackModel) ?? '';
+  const lower = value.toLowerCase();
+  const fallbackLower = fallback.toLowerCase();
+  const kind = String(capabilities ?? '').toLowerCase();
+  if (kind === 'deepseek') {
+    if (lower.startsWith('deepseek-')) return value;
+    if (fallbackLower.startsWith('deepseek-')) return fallback;
+    return 'deepseek-v4-flash';
+  }
+  if (kind === 'claude-code' || kind === 'claude') {
+    if (lower.startsWith('claude-')) return value;
+    if (fallbackLower.startsWith('claude-')) return fallback;
+    return 'claude-sonnet-4-6';
+  }
+  if (kind === 'qwen') {
+    if (lower.startsWith('qwen')) return value;
+    if (fallbackLower.startsWith('qwen')) return fallback;
+    return 'qwen3-coder-flash';
+  }
+  if (kind === 'gemini') {
+    if (lower.startsWith('gemini-')) return value;
+    if (fallbackLower.startsWith('gemini-')) return fallback;
+    return 'gemini-2.5-flash';
+  }
+  if (kind === 'kimi') {
+    if (lower.startsWith('kimi-') || lower.startsWith('moonshot-')) return value;
+    if (fallbackLower.startsWith('kimi-') || fallbackLower.startsWith('moonshot-')) return fallback;
+    return 'kimi-k2-0905-preview';
+  }
+  if (kind === 'minimax') {
+    if (lower.startsWith('minimax-') || lower.startsWith('abab')) return value;
+    if (fallbackLower.startsWith('minimax-') || fallbackLower.startsWith('abab')) return fallback;
+    return 'MiniMax-M2.0';
+  }
+  if (kind === 'iflow') {
+    if (value) return value;
+    if (fallback) return fallback;
+    return 'qwen3-coder-plus';
+  }
+  if (kind === 'openrouter') {
+    if (value) return value;
+    if (fallback) return fallback;
+    return 'openai/gpt-4o-mini';
+  }
+  return value || fallback || '';
 }
 
 function normalizeModelProviderSource(value: unknown): 'manual' | 'ccswitch' {
@@ -3005,7 +3129,7 @@ function normalizeProviderDisplayName(value: unknown) {
 
 function normalizeProviderCapabilities(value: unknown) {
   const normalized = normalizeEnvString(value)?.toLowerCase();
-  const allowed = new Set(['default', 'claude-code', 'deepseek', 'minimax', 'qwen', 'openrouter', 'kimi', 'gemini', 'iflow']);
+  const allowed = new Set(['default', 'claude-code', 'claude', 'deepseek', 'minimax', 'qwen', 'openrouter', 'kimi', 'gemini', 'iflow']);
   return normalized && allowed.has(normalized) ? normalized : null;
 }
 
@@ -3611,6 +3735,10 @@ function renderAdminHtml() {
       padding: 0 13px;
       cursor: pointer;
       white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
     }
     button:hover {
       background: #f1f3f9;
@@ -3656,6 +3784,23 @@ function renderAdminHtml() {
       opacity: 0.5;
       cursor: default;
       transform: none;
+    }
+    button.refreshing {
+      border-color: rgba(37, 99, 235, 0.38);
+      background: rgba(37, 99, 235, 0.08);
+      color: #1d4ed8;
+    }
+    .refresh-spin {
+      width: 14px;
+      height: 14px;
+      border: 2px solid currentColor;
+      border-right-color: transparent;
+      border-radius: 999px;
+      display: inline-block;
+      animation: refreshSpin 0.75s linear infinite;
+    }
+    @keyframes refreshSpin {
+      to { transform: rotate(360deg); }
     }
     table {
       width: 100%;
@@ -5203,8 +5348,10 @@ function renderAdminHtml() {
           <div class="field">
             <label for="provider-preset">供应商预设</label>
             <select id="provider-preset">
-              <option value="default">OpenAI</option>
-              <option value="claude-code">Claude Code</option>
+              <option value="default">Z Token - Codex</option>
+              <option value="ztoken-claude">Z Token - Claude</option>
+              <option value="official-codex">官网 Codex</option>
+              <option value="official-claude-code">官网 Claude Code</option>
               <option value="deepseek">DeepSeek</option>
               <option value="qwen">Qwen</option>
               <option value="openrouter">OpenRouter</option>
@@ -5755,8 +5902,10 @@ function renderAdminHtml() {
             <div class="field">
               <label for="setup-provider-preset">供应商预设</label>
               <select id="setup-provider-preset">
-                <option value="default">OpenAI</option>
-                <option value="claude-code">Claude Code</option>
+                <option value="default">Z Token - Codex</option>
+                <option value="ztoken-claude">Z Token - Claude</option>
+                <option value="official-codex">官网 Codex</option>
+                <option value="official-claude-code">官网 Claude Code</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="qwen">Qwen</option>
                 <option value="openrouter">OpenRouter</option>
@@ -5899,28 +6048,48 @@ function renderAdminHtml() {
       default: {
         profileId: 'openai-default',
         providerId: 'openai-compatible',
-        providerName: 'OpenAI',
+        providerName: 'Z Token - Codex',
         baseUrl: 'https://ztoken.app/',
         model: 'gpt-5.5',
-        models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.2', 'gpt-5.2-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o3-mini', 'o4-mini'],
-        capabilities: 'default'
+        models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
+        capabilities: 'default',
+        restrictModels: true
       },
-      'claude-code': {
+      'ztoken-claude': {
         profileId: 'claude-code',
         providerId: 'claude-code',
-        providerName: 'Claude Code',
+        providerName: 'Z Token - Claude',
         baseUrl: 'https://ztoken.app/',
-        model: 'claude-sonnet-4-20250514',
-        models: ['claude-sonnet-4-20250514', 'claude-opus-4-20250514', 'claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229', 'claude-3-sonnet-20240229', 'claude-3-haiku-20240307'],
-        capabilities: 'claude-code'
+        model: 'claude-opus-4-8',
+        models: ['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-6'],
+        capabilities: 'claude-code',
+        restrictModels: true
+      },
+      'official-codex': {
+        profileId: 'openai-official',
+        providerId: 'openai-compatible',
+        providerName: '官网 Codex',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5.5',
+        models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2', 'gpt-5.2-codex', 'gpt-5.1-codex', 'gpt-5.1-codex-mini', 'gpt-5', 'gpt-5-codex', 'gpt-4.1', 'gpt-4o', 'gpt-4o-mini', 'o3', 'o3-mini', 'o4-mini'],
+        capabilities: 'default'
+      },
+      'official-claude-code': {
+        profileId: 'claude-official',
+        providerId: 'claude',
+        providerName: '官网 Claude Code',
+        baseUrl: 'https://api.anthropic.com/v1',
+        model: 'claude-sonnet-4-6',
+        models: ['claude-sonnet-4-6', 'claude-sonnet-4-5-20250929', 'claude-opus-4-6', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001', 'claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022'],
+        capabilities: 'claude'
       },
       deepseek: {
         profileId: 'deepseek',
         providerId: 'deepseek',
         providerName: 'DeepSeek',
-        baseUrl: 'https://api.deepseek.com',
-        model: 'deepseek-chat',
-        models: ['deepseek-chat', 'deepseek-reasoner', 'deepseek-coder', 'deepseek-v3', 'deepseek-r1'],
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-v4-flash',
+        models: ['deepseek-v4-flash', 'deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner', 'deepseek-coder', 'deepseek-v3', 'deepseek-r1'],
         capabilities: 'deepseek'
       },
       qwen: {
@@ -5928,8 +6097,8 @@ function renderAdminHtml() {
         providerId: 'qwen',
         providerName: 'Qwen',
         baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        model: 'qwen3-coder-plus',
-        models: ['qwen3-coder-plus', 'qwen3-coder-flash', 'qwen3-max', 'qwen3-plus', 'qwen3-turbo', 'qwen-plus', 'qwen-turbo', 'qwen-long'],
+        model: 'qwen3-coder-flash',
+        models: ['qwen3-coder-flash', 'qwen3-coder-plus', 'qwen3-max', 'qwen3-plus', 'qwen3-turbo', 'qwen-plus', 'qwen-turbo', 'qwen-long'],
         capabilities: 'qwen'
       },
       openrouter: {
@@ -5937,8 +6106,8 @@ function renderAdminHtml() {
         providerId: 'openrouter',
         providerName: 'OpenRouter',
         baseUrl: 'https://openrouter.ai/api/v1',
-        model: 'openai/gpt-5',
-        models: ['openai/gpt-5', 'openai/gpt-4.1', 'anthropic/claude-sonnet-4', 'anthropic/claude-opus-4', 'deepseek/deepseek-chat-v3-0324', 'deepseek/deepseek-r1', 'google/gemini-2.5-pro', 'qwen/qwen3-coder'],
+        model: 'openai/gpt-5.1',
+        models: ['openai/gpt-5.1', 'openai/gpt-5', 'openai/gpt-4.1', 'anthropic/claude-opus-4', 'anthropic/claude-sonnet-4', 'deepseek/deepseek-chat-v3-0324', 'deepseek/deepseek-r1', 'google/gemini-2.5-pro', 'qwen/qwen3-coder'],
         capabilities: 'openrouter'
       },
       kimi: {
@@ -5946,8 +6115,8 @@ function renderAdminHtml() {
         providerId: 'kimi',
         providerName: 'Kimi',
         baseUrl: 'https://api.moonshot.cn/v1',
-        model: 'kimi-k2-0711-preview',
-        models: ['kimi-k2-0711-preview', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+        model: 'kimi-k2-0905-preview',
+        models: ['kimi-k2-0905-preview', 'kimi-k2-0711-preview', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
         capabilities: 'kimi'
       },
       gemini: {
@@ -5955,8 +6124,8 @@ function renderAdminHtml() {
         providerId: 'gemini',
         providerName: 'Gemini',
         baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-        model: 'gemini-2.5-pro',
-        models: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+        model: 'gemini-2.5-flash',
+        models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-1.5-pro', 'gemini-1.5-flash'],
         capabilities: 'gemini'
       },
       minimax: {
@@ -5964,8 +6133,8 @@ function renderAdminHtml() {
         providerId: 'minimax',
         providerName: 'MiniMax',
         baseUrl: 'https://api.minimax.chat/v1',
-        model: 'MiniMax-M1',
-        models: ['MiniMax-M1', 'MiniMax-Text-01', 'abab6.5s-chat', 'abab6.5g-chat'],
+        model: 'MiniMax-M2.0',
+        models: ['MiniMax-M2.0', 'MiniMax-M1', 'MiniMax-Text-01', 'abab6.5s-chat', 'abab6.5g-chat'],
         capabilities: 'minimax'
       },
       iflow: {
@@ -6291,6 +6460,30 @@ function renderAdminHtml() {
       renderSetup(data);
       renderLogSummary(data.logs || {});
       await loadMetrics().catch(() => {});
+    }
+
+    async function runRefreshList() {
+      const button = $('refresh-btn');
+      if (button.disabled) return;
+      const original = button.textContent || '刷新列表';
+      button.disabled = true;
+      button.classList.add('refreshing');
+      button.innerHTML = '<span class="refresh-spin" aria-hidden="true"></span><span>刷新中...</span>';
+      try {
+        await loadState();
+        button.innerHTML = '<span>已刷新</span>';
+        setMessage('列表已刷新', false);
+        window.setTimeout(() => {
+          button.textContent = original;
+          button.classList.remove('refreshing');
+          button.disabled = false;
+        }, 700);
+      } catch (error) {
+        button.textContent = original;
+        button.classList.remove('refreshing');
+        button.disabled = false;
+        throw error;
+      }
     }
 
     function fmtDuration(ms) {
@@ -7164,7 +7357,7 @@ function renderAdminHtml() {
         ? preset.models.slice()
         : [preset.model].filter(Boolean);
       const wanted = String(selectedModel || '').trim();
-      if (wanted && !models.includes(wanted)) {
+      if (wanted && !models.includes(wanted) && !preset.restrictModels) {
         models.push(wanted);
       }
       select.innerHTML = '';
@@ -7215,18 +7408,36 @@ function renderAdminHtml() {
 
     function presetKeyForProvider(provider) {
       const capabilities = String(provider.capabilities || '').toLowerCase();
+      const providerId = String(provider.providerId || '').toLowerCase();
+      const providerName = String(provider.providerName || '').replace(/\s+/g, '').toLowerCase();
+      const baseUrl = String(provider.baseUrl || '').toLowerCase();
+      const model = String(provider.model || '').toLowerCase();
+      const isZToken = providerName.includes('ztoken') || baseUrl.includes('ztoken.app');
+      if (isZToken && model.startsWith('claude-')) {
+        return 'ztoken-claude';
+      }
+      if (isZToken) {
+        return 'default';
+      }
+      if ((providerName.includes('官网') || providerName.includes('official')) && providerName.includes('claude')) {
+        return 'official-claude-code';
+      }
+      if ((providerName.includes('官网') || providerName.includes('official') || baseUrl.includes('api.openai.com')) && (providerName.includes('codex') || model.startsWith('gpt-') || model.startsWith('o'))) {
+        return 'official-codex';
+      }
+      if (capabilities === 'claude') {
+        return 'official-claude-code';
+      }
       if (providerPresets[capabilities]) {
         return capabilities;
       }
-      const providerId = String(provider.providerId || '').toLowerCase();
+      if (providerName.includes('claude')) {
+        return 'ztoken-claude';
+      }
       for (const [key, preset] of Object.entries(providerPresets)) {
         if (providerId === String(preset.providerId).toLowerCase()) {
           return key;
         }
-      }
-      const providerName = String(provider.providerName || '').replace(/\s+/g, '').toLowerCase();
-      if (providerName.includes('claude')) {
-        return 'claude-code';
       }
       if (providerName.includes('deepseek')) {
         return 'deepseek';
@@ -7307,11 +7518,12 @@ function renderAdminHtml() {
       const preset = providerPresets[$(prefix + '-preset').value] || providerPresets.default;
       const current = state.currentModelProvider || {};
       const providerName = $(prefix + '-name').value.trim() || preset.providerName || current.providerName || 'Z Token';
-      const model = getSelectedModelFrom(prefix + '-model', prefix + '-model-custom');
-      const baseUrl = $(prefix + '-base-url').value.trim();
+      const rawModel = getSelectedModelFrom(prefix + '-model', prefix + '-model-custom');
+      const model = normalizeModelForPreset(preset, rawModel, current.model || '');
+      let baseUrl = normalizeUrlValue($(prefix + '-base-url').value.trim());
       const apiKey = $(prefix + '-api-key').value.trim();
       const serviceEnvFile = $(prefix + '-env-file').value.trim();
-      const source = $(prefix + '-source').value || 'manual';
+      let source = $(prefix + '-source').value || 'manual';
       const ccswitchCodexHome = $(prefix + '-ccswitch-home').value.trim();
       const ccswitchSyncIntervalMs = Math.max(2, Number.parseInt($(prefix + '-ccswitch-interval').value || '10', 10) || 10) * 1000;
       if (!model) {
@@ -7323,6 +7535,9 @@ function renderAdminHtml() {
       const lowerBaseUrl = baseUrl.toLowerCase();
       if (!lowerBaseUrl.startsWith('http://') && !lowerBaseUrl.startsWith('https://')) {
         throw new Error('接口地址必须以 http:// 或 https:// 开头');
+      }
+      if (capabilitiesForPreset(preset) === 'deepseek' && source === 'manual') {
+        baseUrl = normalizeDeepSeekBaseUrl(baseUrl || preset.baseUrl || current.baseUrl);
       }
       const payload = {
         profileId: preset.profileId || current.profileId || 'openai-default',
@@ -7341,6 +7556,75 @@ function renderAdminHtml() {
         payload.apiKey = apiKey;
       }
       return payload;
+    }
+
+    function capabilitiesForPreset(preset) {
+      return String((preset && preset.capabilities) || 'default').toLowerCase();
+    }
+
+    function normalizeUrlValue(value) {
+      return String(value || '').trim().replace(/\\/+$/u, '');
+    }
+
+    function normalizeDeepSeekBaseUrl(value) {
+      const raw = String(value || '').trim().replace(/\\/+$/u, '');
+      if (!raw) {
+        return 'https://api.deepseek.com/v1';
+      }
+      if (/^https?:\\/\\/(?:127\\.0\\.0\\.1|localhost)(?::\\d+)?\\/v1(?:\\/responses)?$/iu.test(raw)) {
+        return 'https://api.deepseek.com/v1';
+      }
+      if (/^https?:\\/\\/api\.deepseek\.com\\/?$/iu.test(raw)) {
+        return 'https://api.deepseek.com/v1';
+      }
+      if (/^https?:\\/\\/api\.deepseek\.com\\/v1(?:\\/)?$/iu.test(raw)) {
+        return 'https://api.deepseek.com/v1';
+      }
+      return raw;
+    }
+
+    function normalizeModelForPreset(preset, model, fallbackModel) {
+      const value = String(model || '').trim();
+      const fallback = String(fallbackModel || '').trim();
+      const lower = value.toLowerCase();
+      const capabilities = String((preset && preset.capabilities) || 'default').toLowerCase();
+      const allowedModels = Array.isArray(preset && preset.models) ? preset.models : [];
+      if (preset && preset.restrictModels && allowedModels.length) {
+        if (allowedModels.includes(value)) return value;
+        if (allowedModels.includes(fallback)) return fallback;
+        return preset.model || allowedModels[0] || '';
+      }
+      if (capabilities === 'deepseek') {
+        if (lower.startsWith('deepseek-')) return value;
+        if (fallback.toLowerCase().startsWith('deepseek-')) return fallback;
+        return preset.model || 'deepseek-v4-flash';
+      }
+      if (capabilities === 'claude-code') {
+        if (lower.startsWith('claude-')) return value;
+        if (fallback.toLowerCase().startsWith('claude-')) return fallback;
+        return preset.model || 'claude-opus-4-8';
+      }
+      if (capabilities === 'qwen') {
+        if (lower.startsWith('qwen')) return value;
+        if (fallback.toLowerCase().startsWith('qwen')) return fallback;
+        return preset.model || 'qwen3-coder-flash';
+      }
+      if (capabilities === 'gemini') {
+        if (lower.startsWith('gemini-')) return value;
+        if (fallback.toLowerCase().startsWith('gemini-')) return fallback;
+        return preset.model || 'gemini-2.5-flash';
+      }
+      if (capabilities === 'kimi') {
+        if (lower.startsWith('kimi-') || lower.startsWith('moonshot-')) return value;
+        if (fallback.toLowerCase().startsWith('kimi-') || fallback.toLowerCase().startsWith('moonshot-')) return fallback;
+        return preset.model || 'kimi-k2-0905-preview';
+      }
+      if (capabilities === 'minimax') {
+        if (lower.startsWith('minimax-') || lower.startsWith('abab')) return value;
+        if (fallback.toLowerCase().startsWith('minimax-') || fallback.toLowerCase().startsWith('abab')) return fallback;
+        return preset.model || 'MiniMax-M2.0';
+      }
+      return value || fallback || (preset && preset.model) || '';
     }
 
     function renderCcswitchStatus(id, ccswitch) {
@@ -7657,7 +7941,7 @@ function renderAdminHtml() {
     window.addEventListener('hashchange', () => showPage(window.location.hash.slice(1) || 'overview'));
     showPage(window.location.hash.slice(1) || 'overview');
 
-    $('refresh-btn').onclick = () => loadState().catch((error) => setMessage(error.message, true));
+    $('refresh-btn').onclick = () => runRefreshList().catch((error) => setMessage(error.message, true));
     $('bridge-start').onclick = async () => {
       setMessage('正在启动微信桥接...', false);
       const data = await requestJson('/api/bridge/start', { method: 'POST' });
@@ -7721,6 +8005,12 @@ function renderAdminHtml() {
       $('setup-provider-message').textContent = $('setup-provider-source').value === 'ccswitch'
         ? '保存后将自动跟随 CCSwitch / Codex 当前配置'
         : '已切换为手动填写模式';
+      if ($('setup-provider-source').value === 'manual' && $('setup-provider-preset').value === 'deepseek') {
+        const normalized = normalizeDeepSeekBaseUrl($('setup-provider-base-url').value || 'https://api.deepseek.com/v1');
+        $('setup-provider-base-url').value = /^(?:https?:\\/\\/)?api\.deepseek\.com(?:\\/v1)?$/iu.test(normalized)
+          ? 'https://api.deepseek.com/v1'
+          : normalized;
+      }
     };
     $('setup-start-pairing').onclick = () => startSetupPairing().catch((error) => {
       $('setup-message').textContent = error.message;
@@ -7810,6 +8100,12 @@ function renderAdminHtml() {
       $('provider-message').textContent = $('provider-source').value === 'ccswitch'
         ? '保存后将自动跟随 CCSwitch / Codex 当前配置'
         : '已切换为手动填写模式';
+      if ($('provider-source').value === 'manual' && $('provider-preset').value === 'deepseek') {
+        const normalized = normalizeDeepSeekBaseUrl($('provider-base-url').value || 'https://api.deepseek.com/v1');
+        $('provider-base-url').value = /^(?:https?:\\/\\/)?api\.deepseek\.com(?:\\/v1)?$/iu.test(normalized)
+          ? 'https://api.deepseek.com/v1'
+          : normalized;
+      }
     };
     $('provider-save').onclick = () => saveProviderSettings().catch((error) => {
       $('provider-message').textContent = error.message;

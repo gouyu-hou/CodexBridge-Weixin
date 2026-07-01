@@ -62,6 +62,7 @@ export function resolveCodexSwitchProviderState({
     baseUrl,
     model,
   });
+  const resolvedModel = normalizeProviderModel(endpoint.capabilities, model);
 
   return {
     codexHome: home,
@@ -71,7 +72,7 @@ export function resolveCodexSwitchProviderState({
     providerId: normalizeProviderId(selectedProviderId) || 'openai-compatible',
     providerName: endpoint.providerName || providerName,
     baseUrl: endpoint.baseUrl,
-    model,
+    model: resolvedModel,
     capabilities: endpoint.capabilities,
     apiKey,
     apiKeyEnv: envKey,
@@ -79,7 +80,7 @@ export function resolveCodexSwitchProviderState({
       selectedProviderId,
       endpoint.providerName || providerName,
       endpoint.baseUrl,
-      model,
+      resolvedModel,
       maskFingerprintSecret(apiKey),
       envKey,
     ].join('|'),
@@ -248,6 +249,36 @@ function normalizeProviderId(value: unknown) {
     return '';
   }
   return normalized.replace(/[^A-Za-z0-9_-]+/gu, '-').replace(/^-+|-+$/gu, '') || '';
+}
+
+function normalizeProviderModel(capabilities: string, model: string) {
+  const normalized = normalizeString(model);
+  const lower = normalized.toLowerCase();
+  if (capabilities === 'deepseek') {
+    return lower.startsWith('deepseek-') ? normalized : 'deepseek-v4-flash';
+  }
+  if (capabilities === 'claude-code') {
+    return lower.startsWith('claude-') ? normalized : 'claude-opus-4-8';
+  }
+  if (capabilities === 'qwen') {
+    return lower.startsWith('qwen') ? normalized : 'qwen3-coder-flash';
+  }
+  if (capabilities === 'gemini') {
+    return lower.startsWith('gemini-') ? normalized : 'gemini-2.5-flash';
+  }
+  if (capabilities === 'kimi') {
+    return lower.startsWith('kimi-') || lower.startsWith('moonshot-') ? normalized : 'kimi-k2-0905-preview';
+  }
+  if (capabilities === 'minimax') {
+    return lower.startsWith('minimax-') || lower.startsWith('abab') ? normalized : 'MiniMax-M2.0';
+  }
+  if (capabilities === 'iflow') {
+    return normalized || 'qwen3-coder-flash';
+  }
+  if (capabilities === 'openrouter') {
+    return normalized || 'openai/gpt-4o-mini';
+  }
+  return normalized;
 }
 
 function normalizeCcswitchProviderEndpoint({

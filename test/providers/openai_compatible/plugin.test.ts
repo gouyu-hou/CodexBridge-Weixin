@@ -203,6 +203,57 @@ test('OpenAICompatibleProviderPlugin lists live upstream models instead of stale
   assert.equal(models[0]?.isDefault, true);
 });
 
+test('OpenAICompatibleProviderPlugin enriches sparse live GPT models with static metadata', async () => {
+  const plugin = new OpenAICompatibleProviderPlugin({
+    env: {
+      OPENAI_COMPAT_API_KEY: 'compat-key',
+    },
+    fetchImpl: (async () => new Response(JSON.stringify({
+      object: 'list',
+      data: [
+        {
+          id: 'gpt-5.5',
+        },
+      ],
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch,
+    defaults: {
+      kind: 'openai-compatible',
+      displayName: 'Z Token',
+      apiKeyEnv: 'OPENAI_COMPAT_API_KEY',
+      baseUrl: 'https://example.com/v1',
+      defaultModel: 'gpt-5.5',
+      providerLabel: 'ztoken',
+      modelIds: ['gpt-5.5'],
+      ownedBy: 'openai-compatible',
+    },
+  });
+
+  const models = await plugin.listModels({
+    providerProfile: makeProfile({
+      apiKeyEnv: 'OPENAI_COMPAT_API_KEY',
+      baseUrl: 'https://example.com/v1',
+      defaultModel: 'gpt-5.5',
+      modelCatalog: [{
+        id: 'gpt-5.5',
+        model: 'gpt-5.5',
+        displayName: 'GPT 5.5',
+        description: 'Frontier model for complex coding, research, and real-world work.',
+        isDefault: true,
+        supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+        defaultReasoningEffort: 'medium',
+      }],
+    }),
+  });
+
+  assert.equal(models[0]?.id, 'gpt-5.5');
+  assert.equal(models[0]?.description, 'Frontier model for complex coding, research, and real-world work.');
+  assert.deepEqual(models[0]?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh']);
+  assert.equal(models[0]?.defaultReasoningEffort, 'medium');
+});
+
 test('OpenAICompatibleProviderPlugin falls back to a valid live model when session settings contain a stale model id', async () => {
   const seenModels: string[] = [];
   const plugin = new OpenAICompatibleProviderPlugin({

@@ -44,6 +44,7 @@ export interface OpenAICompatibleProfileInput {
   defaultModel: string;
   capabilities?: string | null;
   providerLabel?: string | null;
+  relayProfileMode?: 'official' | 'mixed' | 'pure-api' | null;
 }
 
 interface CodexProfilesConfig {
@@ -227,6 +228,7 @@ export function buildOpenAICompatibleProfileFromInput(
     modelIds: [input.defaultModel],
     modelCatalogPath: null,
     capabilities: preset.capabilities,
+    relayProfileMode: input.relayProfileMode ?? 'pure-api',
     now,
   });
 }
@@ -524,6 +526,7 @@ function buildOpenAICompatibleProfile({
   modelCatalogRaw,
   modelCatalogPath,
   capabilities,
+  relayProfileMode = null,
   now,
 }: {
   id: string;
@@ -541,6 +544,7 @@ function buildOpenAICompatibleProfile({
   modelCatalogRaw?: unknown;
   modelCatalogPath: string | null;
   capabilities: OpenAICompatibleProviderCapabilities | null;
+  relayProfileMode?: 'official' | 'mixed' | 'pure-api' | null;
   now: number;
 }): CodexProviderProfile {
   const fileCatalog = buildOpenAICompatibleExternalModelCatalog({
@@ -578,6 +582,7 @@ function buildOpenAICompatibleProfile({
       modelCatalogMode: 'overlay-only',
       upstreamChatCompletionsPath,
       ownedBy,
+      relayProfileMode,
       capabilities: mergeOpenAICompatibleProviderCapabilities(effectiveCapabilities),
     },
     createdAt: now,

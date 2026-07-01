@@ -476,6 +476,188 @@ test('WeixinAdminServer runs diagnostics for service, account, provider, ports, 
   }
 });
 
+test('WeixinAdminServer treats Codex Native API degraded health as a warning instead of a failure', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-primary',
+    token: 'token-primary',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-primary',
+  });
+  const modelServer = http.createServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'gpt-test' }] }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'not found' } }));
+  });
+  await new Promise<void>((resolve) => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  const modelPort = typeof address === 'object' && address ? address.port : 0;
+  const nativeServer = http.createServer((req, res) => {
+    if (req.url === '/v1/health') {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'degraded',
+        native_runtime: {
+          runtime_reachable: true,
+          ready: false,
+          provider_profile_id: 'deepseek',
+        },
+      }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'not found' } }));
+  });
+  await new Promise<void>((resolve) => nativeServer.listen(0, '127.0.0.1', resolve));
+  const nativeAddress = nativeServer.address();
+  const nativePort = typeof nativeAddress === 'object' && nativeAddress ? nativeAddress.port : 0;
+  const env: Record<string, string> = {
+    WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
+    CODEX_COMPAT_API_KEY: 'test-key',
+    CODEX_COMPAT_BASE_URL: `http://127.0.0.1:${modelPort}`,
+    CODEX_COMPAT_DEFAULT_MODEL: 'gpt-test',
+    CODEX_COMPAT_PROVIDER_NAME: 'Z Token',
+    CODEX_NATIVE_API_ENABLE: '1',
+    CODEX_NATIVE_API_HOST: '127.0.0.1',
+    CODEX_NATIVE_API_PORT: String(nativePort),
+  };
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status() {
+        return {
+          running: true,
+          activeTurns: 0,
+          queuedTurns: 0,
+          lastPollAt: Date.now(),
+          lastError: null,
+          lastErrorStage: null,
+        };
+      },
+    },
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/diagnostics/run`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    const byId = new Map<string, any>(body.checks.map((check: any) => [check.id, check]));
+    assert.equal(byId.get('codex-native')?.status, 'warn');
+    assert.match(byId.get('codex-native')?.detail ?? '', /HTTP 503/u);
+    assert.equal(body.summary.failed, 0);
+  } finally {
+    await server.stop();
+    await new Promise<void>((resolve) => modelServer.close(() => resolve()));
+    await new Promise<void>((resolve) => nativeServer.close(() => resolve()));
+  }
+});
+
+test('WeixinAdminServer ignores degraded native openai-default health when a compatible provider is active', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-primary',
+    token: 'token-primary',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-primary',
+  });
+  const modelServer = http.createServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'deepseek-v4-flash' }] }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'not found' } }));
+  });
+  await new Promise<void>((resolve) => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  const modelPort = typeof address === 'object' && address ? address.port : 0;
+  const nativeServer = http.createServer((req, res) => {
+    if (req.url === '/v1/health') {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'degraded',
+        native_runtime: {
+          runtime_reachable: true,
+          ready: false,
+          provider_profile_id: 'openai-default',
+        },
+      }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'not found' } }));
+  });
+  await new Promise<void>((resolve) => nativeServer.listen(0, '127.0.0.1', resolve));
+  const nativeAddress = nativeServer.address();
+  const nativePort = typeof nativeAddress === 'object' && nativeAddress ? nativeAddress.port : 0;
+  const env: Record<string, string> = {
+    WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
+    CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'deepseek',
+    CODEX_COMPAT_PROVIDER_NAME: 'DeepSeek',
+    CODEX_COMPAT_CAPABILITIES: 'deepseek',
+    CODEX_COMPAT_API_KEY: 'test-key',
+    CODEX_COMPAT_BASE_URL: `http://127.0.0.1:${modelPort}`,
+    CODEX_COMPAT_DEFAULT_MODEL: 'deepseek-v4-flash',
+    CODEX_NATIVE_API_ENABLE: '1',
+    CODEX_NATIVE_API_HOST: '127.0.0.1',
+    CODEX_NATIVE_API_PORT: String(nativePort),
+  };
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status() {
+        return {
+          running: true,
+          activeTurns: 0,
+          queuedTurns: 0,
+          lastPollAt: Date.now(),
+          lastError: null,
+          lastErrorStage: null,
+        };
+      },
+    },
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/diagnostics/run`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    const byId = new Map<string, any>(body.checks.map((check: any) => [check.id, check]));
+    assert.equal(byId.get('codex-native')?.status, 'ok');
+    assert.match(byId.get('codex-native')?.detail ?? '', /DeepSeek/u);
+    assert.equal(body.summary.failed, 0);
+  } finally {
+    await server.stop();
+    await new Promise<void>((resolve) => modelServer.close(() => resolve()));
+    await new Promise<void>((resolve) => nativeServer.close(() => resolve()));
+  }
+});
+
 test('WeixinAdminServer updates model provider settings and preserves blank API keys', async () => {
   const stateDir = makeTempStateDir();
   const envFile = path.join(stateDir, 'service.env');
@@ -487,11 +669,47 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: envFile,
     CODEX_COMPAT_API_KEY: 'old-key',
   };
+  let restartCount = 0;
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  repositories.bridgeSessions.save({
+    id: 'session-1',
+    providerProfileId: 'openai-default',
+    codexThreadId: 'thread-1',
+    cwd: null,
+    title: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  repositories.sessionSettings.save({
+    bridgeSessionId: 'session-1',
+    model: 'gpt-5.5',
+    reasoningEffort: 'xhigh',
+    serviceTier: null,
+    locale: 'zh-CN',
+    metadata: {},
+    updatedAt: Date.now(),
+  });
   const server = new WeixinAdminServer({
     accountStore,
     stateDir,
     env,
+    repositories,
     port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {
+        restartCount += 1;
+      },
+      status() {
+        return {
+          running: true,
+          lastPollAt: Date.now(),
+          lastError: null,
+          lastErrorStage: null,
+        };
+      },
+    },
   });
 
   const binding = await server.start();
@@ -529,6 +747,13 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     assert.match(firstEnvText, /^CODEX_COMPAT_BASE_URL=https:\/\/dashscope\.aliyuncs\.com\/compatible-mode\/v1$/mu);
     assert.match(firstEnvText, /^CODEX_COMPAT_DEFAULT_MODEL=qwen-plus$/mu);
     assert.match(firstEnvText, /^CODEX_COMPAT_API_KEY=new-key$/mu);
+    assert.equal(restartCount, 1);
+    const clearedSettings = repositories.sessionSettings.getByBridgeSessionId('session-1');
+    assert.equal(clearedSettings?.model, null);
+    assert.equal(clearedSettings?.reasoningEffort, null);
+    assert.equal(clearedSettings?.metadata.modelOverrideClearedReason, 'model-provider-updated');
+    const qwenProfile = repositories.providerProfiles.getById('qwen');
+    assert.equal((qwenProfile?.config as any)?.relayProfileMode, 'pure-api');
 
     const secondResponse = await fetch(`${binding.url}/api/settings`, {
       method: 'POST',
@@ -551,6 +776,99 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     const secondEnvText = fs.readFileSync(envFile, 'utf8');
     assert.match(secondEnvText, /^CODEX_COMPAT_DEFAULT_MODEL=qwen-max$/mu);
     assert.match(secondEnvText, /^CODEX_COMPAT_API_KEY=new-key$/mu);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer renders separated Z Token and official provider presets', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env: {},
+    port: 0,
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(binding.url);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, /<option value="default">Z Token - Codex<\/option>/u);
+    assert.match(html, /<option value="ztoken-claude">Z Token - Claude<\/option>/u);
+    assert.match(html, /<option value="official-codex">官网 Codex<\/option>/u);
+    assert.match(html, /<option value="official-claude-code">官网 Claude Code<\/option>/u);
+    assert.match(html, /models: \['gpt-5\.5', 'gpt-5\.4', 'gpt-5\.4-mini', 'gpt-5\.3-codex', 'gpt-5\.2'\]/u);
+    assert.match(html, /models: \['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-6'\]/u);
+    assert.match(html, /capabilities: 'claude'/u);
+    assert.match(html, /id="refresh-btn">刷新列表<\/button>/u);
+    assert.match(html, /\.refresh-spin/u);
+    assert.match(html, /function runRefreshList\(\)/u);
+    assert.match(html, /刷新中\.\.\./u);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer preserves official Claude provider capabilities when saving settings', async () => {
+  const stateDir = makeTempStateDir();
+  const envFile = path.join(stateDir, 'service.env');
+  fs.writeFileSync(envFile, 'CODEX_COMPAT_API_KEY=claude-key\n', 'utf8');
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const env: Record<string, string> = {
+    CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: envFile,
+    CODEX_COMPAT_API_KEY: 'claude-key',
+  };
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env,
+    repositories,
+    port: 0,
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/settings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        modelProvider: {
+          profileId: 'claude-official',
+          providerId: 'claude',
+          providerName: '官网 Claude Code',
+          baseUrl: 'https://api.anthropic.com/v1',
+          model: 'claude-sonnet-4-6',
+          modelIds: 'claude-sonnet-4-6',
+          capabilities: 'claude',
+          apiKey: '',
+          serviceEnvFile: envFile,
+        },
+      }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    assert.equal(body.settings.modelProvider.profileId, 'claude-official');
+    assert.equal(body.settings.modelProvider.providerId, 'claude');
+    assert.equal(body.settings.modelProvider.capabilities, 'claude');
+    assert.equal(body.settings.modelProvider.model, 'claude-sonnet-4-6');
+    const envText = fs.readFileSync(envFile, 'utf8');
+    assert.match(envText, /^CODEX_DEFAULT_PROVIDER_PROFILE_ID=claude-official$/mu);
+    assert.match(envText, /^CODEX_COMPAT_PROVIDER_ID=claude$/mu);
+    assert.match(envText, /^CODEX_COMPAT_PROVIDER_NAME=官网 Claude Code$/mu);
+    assert.match(envText, /^CODEX_COMPAT_CAPABILITIES=claude$/mu);
+    assert.match(envText, /^CODEX_COMPAT_DEFAULT_MODEL=claude-sonnet-4-6$/mu);
+    const profile = repositories.providerProfiles.getById('claude-official');
+    assert.equal(profile?.id, 'claude-official');
+    assert.equal((profile?.config as any)?.providerLabel, 'claude');
+    assert.equal((profile?.config as any)?.defaultModel, 'claude-sonnet-4-6');
   } finally {
     await server.stop();
   }
@@ -658,6 +976,89 @@ test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config
     const preference = JSON.parse(fs.readFileSync(path.join(stateDir, 'runtime', 'weixin-admin-preferences.json'), 'utf8'));
     assert.equal(preference.modelProviderSource, 'ccswitch');
     assert.equal(preference.ccswitchCodexHome, codexHome);
+
+    const saveResponse = await fetch(`${binding.url}/api/settings`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        modelProvider: {
+          profileId: 'openai-default',
+          providerId: 'openai-compatible',
+          providerName: 'Z Token',
+          baseUrl: 'https://ztoken.app/v1',
+          model: 'gpt-5.5',
+          modelIds: 'gpt-5.5',
+          capabilities: 'default',
+          apiKey: '',
+          serviceEnvFile: envFile,
+          source: 'ccswitch',
+          ccswitchCodexHome: codexHome,
+          ccswitchSyncIntervalMs: 10000,
+        },
+      }),
+    });
+    assert.equal(saveResponse.status, 200);
+    const saveBody = await saveResponse.json() as any;
+    assert.equal(saveBody.settings.modelProvider.source, 'ccswitch');
+    const savedPreference = JSON.parse(fs.readFileSync(path.join(stateDir, 'runtime', 'weixin-admin-preferences.json'), 'utf8'));
+    assert.equal(savedPreference.modelProviderSource, 'ccswitch');
+    assert.equal(savedPreference.ccswitchCodexHome, codexHome);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer normalizes DeepSeek CCSwitch configs to canonical DeepSeek endpoint and model', async () => {
+  const stateDir = makeTempStateDir();
+  const envFile = path.join(stateDir, 'service.env');
+  const codexHome = path.join(stateDir, 'codex-home');
+  fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), [
+    'model = "gpt-5.5"',
+    'model_provider = "deepseek"',
+    '',
+    '[model_providers.deepseek]',
+    'name = "DeepSeek"',
+    'base_url = "http://127.0.0.1:15721/v1/responses"',
+    'env_key = "DEEPSEEK_API_KEY"',
+    '',
+  ].join('\n'), 'utf8');
+  fs.writeFileSync(path.join(codexHome, 'auth.json'), JSON.stringify({
+    DEEPSEEK_API_KEY: 'deepseek-key',
+  }, null, 2), 'utf8');
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const env: Record<string, string> = {
+    CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: envFile,
+    CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'openai-default',
+  };
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env,
+    repositories,
+    codexHome,
+    port: 0,
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/model-provider/sync-ccswitch`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ codexHome, persistSource: true }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    assert.equal(body.ok, true);
+    assert.equal(body.baseUrl, 'https://api.deepseek.com');
+    assert.equal(body.model, 'deepseek-v4-flash');
+    assert.equal(body.settings.modelProvider.capabilities, 'deepseek');
+    assert.equal(env.CODEX_COMPAT_BASE_URL, 'https://api.deepseek.com');
+    assert.equal(env.CODEX_COMPAT_DEFAULT_MODEL, 'deepseek-v4-flash');
+    assert.equal(env.CODEX_COMPAT_CAPABILITIES, 'deepseek');
   } finally {
     await server.stop();
   }
