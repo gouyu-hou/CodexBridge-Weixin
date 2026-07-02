@@ -1,6 +1,6 @@
 {
   "name": "codexbridge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "productName": "CodexBridge Weixin Admin",
   "private": true,
   "type": "module",
@@ -41,6 +41,7 @@
     "weixin:electron": "electron scripts/electron/weixin-admin-main.cjs",
     "weixin:electron:install-shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service/install-windows-electron-launcher.ps1",
     "weixin:electron:prepare-runtime": "node scripts/electron/prepare-windows-runtime.cjs",
+    "weixin:electron:lightweight": "node scripts/electron/build-lightweight-update.cjs",
     "weixin:electron:pack": "npm run weixin:electron:prepare-runtime && electron-builder --win dir --x64",
     "weixin:electron:dist": "npm run weixin:electron:prepare-runtime && electron-builder --win nsis --x64",
     "weixin:electron:publish": "npm run weixin:electron:prepare-runtime && electron-builder --win nsis --x64 --publish always",

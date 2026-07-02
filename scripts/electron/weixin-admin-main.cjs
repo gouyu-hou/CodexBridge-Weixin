@@ -3,6 +3,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const http = require('node:http');
+const https = require('node:https');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
@@ -20,6 +21,12 @@ const args = parseArgs(process.argv.slice(2));
 const stateDir = path.resolve(args.stateDir || process.env.CODEXBRIDGE_STATE_DIR || defaultStateDir());
 const envFile = path.resolve(args.envFile || preferredServiceEnvFile(stateDir));
 const defaultCwd = path.resolve(args.cwd || PROJECT_PARENT);
+const lightweightUpdatesDir = path.join(stateDir, 'updates');
+const lightweightCurrentDir = path.join(lightweightUpdatesDir, 'current');
+const lightweightBackupDir = path.join(lightweightUpdatesDir, 'backup');
+const lightweightFailedDir = path.join(lightweightUpdatesDir, 'failed');
+const lightweightDownloadsDir = path.join(lightweightUpdatesDir, 'downloads');
+const LIGHTWEIGHT_MANIFEST_NAME = 'codexbridge-lightweight.json';
 const serviceLogsDir = path.join(stateDir, 'logs');
 const serviceStdoutLog = path.join(serviceLogsDir, 'weixin-bridge.out.log');
 const serviceStderrLog = path.join(serviceLogsDir, 'weixin-bridge.err.log');
@@ -28,6 +35,172 @@ const forceSetup = Boolean(args.forceSetup);
 const stopOnClose = args.stopOnClose !== '0' && args.noStopOnClose !== true;
 const DEFAULT_ADMIN_PORT = 43183;
 const DEFAULT_NATIVE_API_PORT = 43182;
+const FIRST_RUN_PROVIDER_PRESETS = {
+  default: {
+    label: 'Z Token - Codex',
+    profileId: 'openai-default',
+    providerId: 'openai-compatible',
+    provider: 'Z Token - Codex',
+    baseUrl: 'https://ztoken.app/',
+    model: 'gpt-5.5',
+    models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
+    capabilities: 'default',
+    restrictModels: true,
+  },
+  'ztoken-claude': {
+    label: 'Z Token - Claude',
+    profileId: 'claude-code',
+    providerId: 'claude-code',
+    provider: 'Z Token - Claude',
+    baseUrl: 'https://ztoken.app/',
+    model: 'claude-opus-4-8',
+    models: [
+      'claude-fable-5',
+      'claude-haiku-4-5-20251001',
+      'claude-opus-4-5-20251101',
+      'claude-opus-4-6',
+      'claude-opus-4-7',
+      'claude-opus-4-8',
+      'claude-sonnet-4-5-20250929',
+      'claude-sonnet-4-6',
+    ],
+    capabilities: 'claude-code',
+    restrictModels: true,
+  },
+  'official-codex': {
+    label: '官网 Codex',
+    profileId: 'openai-official',
+    providerId: 'openai-compatible',
+    provider: '官网 Codex',
+    baseUrl: 'https://api.openai.com/v1',
+    model: 'gpt-5.5',
+    models: [
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5.4-mini',
+      'gpt-5.3-codex',
+      'gpt-5.2',
+      'gpt-5.2-codex',
+      'gpt-5.1-codex',
+      'gpt-5.1-codex-mini',
+      'gpt-5',
+      'gpt-5-codex',
+      'gpt-4.1',
+      'gpt-4o',
+      'gpt-4o-mini',
+      'o3',
+      'o3-mini',
+      'o4-mini',
+    ],
+    capabilities: 'default',
+  },
+  'official-claude-code': {
+    label: '官网 Claude Code',
+    profileId: 'claude-official',
+    providerId: 'claude',
+    provider: '官网 Claude Code',
+    baseUrl: 'https://api.anthropic.com/v1',
+    model: 'claude-sonnet-4-6',
+    models: [
+      'claude-sonnet-4-6',
+      'claude-sonnet-4-5-20250929',
+      'claude-opus-4-6',
+      'claude-opus-4-5-20251101',
+      'claude-haiku-4-5-20251001',
+      'claude-3-7-sonnet-20250219',
+      'claude-3-5-sonnet-20241022',
+    ],
+    capabilities: 'claude',
+  },
+  deepseek: {
+    label: 'DeepSeek',
+    profileId: 'deepseek',
+    providerId: 'deepseek',
+    provider: 'DeepSeek',
+    baseUrl: 'https://api.deepseek.com/v1',
+    model: 'deepseek-v4-flash',
+    models: [
+      'deepseek-v4-flash',
+      'deepseek-v4-pro',
+      'deepseek-chat',
+      'deepseek-reasoner',
+      'deepseek-coder',
+      'deepseek-v3',
+      'deepseek-r1',
+    ],
+    capabilities: 'deepseek',
+  },
+  qwen: {
+    label: 'Qwen',
+    profileId: 'qwen',
+    providerId: 'qwen',
+    provider: 'Qwen',
+    baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    model: 'qwen3-coder-flash',
+    models: ['qwen3-coder-flash', 'qwen3-coder-plus', 'qwen3-max', 'qwen3-plus', 'qwen3-turbo', 'qwen-plus', 'qwen-turbo', 'qwen-long'],
+    capabilities: 'qwen',
+  },
+  openrouter: {
+    label: 'OpenRouter',
+    profileId: 'openrouter',
+    providerId: 'openrouter',
+    provider: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'openai/gpt-5.1',
+    models: [
+      'openai/gpt-5.1',
+      'openai/gpt-5',
+      'openai/gpt-4.1',
+      'anthropic/claude-opus-4',
+      'anthropic/claude-sonnet-4',
+      'deepseek/deepseek-chat-v3-0324',
+      'deepseek/deepseek-r1',
+      'google/gemini-2.5-pro',
+      'qwen/qwen3-coder',
+    ],
+    capabilities: 'openrouter',
+  },
+  kimi: {
+    label: 'Kimi',
+    profileId: 'kimi',
+    providerId: 'kimi',
+    provider: 'Kimi',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    model: 'kimi-k2-0905-preview',
+    models: ['kimi-k2-0905-preview', 'kimi-k2-0711-preview', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+    capabilities: 'kimi',
+  },
+  gemini: {
+    label: 'Gemini',
+    profileId: 'gemini',
+    providerId: 'gemini',
+    provider: 'Gemini',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    model: 'gemini-2.5-flash',
+    models: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-1.5-pro', 'gemini-1.5-flash'],
+    capabilities: 'gemini',
+  },
+  minimax: {
+    label: 'MiniMax',
+    profileId: 'minimax',
+    providerId: 'minimax',
+    provider: 'MiniMax',
+    baseUrl: 'https://api.minimax.chat/v1',
+    model: 'MiniMax-M2.0',
+    models: ['MiniMax-M2.0', 'MiniMax-M1', 'MiniMax-Text-01', 'abab6.5s-chat', 'abab6.5g-chat'],
+    capabilities: 'minimax',
+  },
+  iflow: {
+    label: 'iFlow',
+    profileId: 'iflow',
+    providerId: 'iflow',
+    provider: 'iFlow',
+    baseUrl: 'https://apis.iflow.cn/v1',
+    model: 'iflow-default',
+    models: ['iflow-default', 'Qwen3-Coder', 'DeepSeek-V3', 'DeepSeek-R1', 'GLM-4.5'],
+    capabilities: 'iflow',
+  },
+};
 
 let mainWindow = null;
 let serviceProcess = null;
@@ -40,6 +213,7 @@ let updateIpcInstalled = false;
 let updateHandlersInstalled = false;
 let autoUpdateCheckStarted = false;
 let updatePromptedVersion = '';
+let lightweightUpdateBusy = false;
 let serviceRecoveryTimer = null;
 let serviceFlowRunning = false;
 let serviceFlowQueued = false;
@@ -62,6 +236,25 @@ const updateState = {
   error: null,
   lastCheckedAt: null,
   lastEventAt: null,
+};
+
+const lightweightUpdateState = {
+  supported: true,
+  busy: false,
+  checking: false,
+  downloading: false,
+  available: false,
+  currentVersion: null,
+  latestVersion: null,
+  downloadUrl: null,
+  downloadPath: null,
+  progress: null,
+  currentRoot: null,
+  builtInVersion: app.getVersion(),
+  usingLightweight: false,
+  canRollback: false,
+  error: null,
+  lastActionAt: null,
 };
 
 app.setName('CodexBridge Weixin Admin');
@@ -288,6 +481,8 @@ function installSetupIpcHandlers() {
       provider: state.providerName || 'OpenAI Compatible',
       baseUrl: state.baseUrl || 'https://api.openai.com/v1',
       model: state.model,
+      capabilities: state.capabilities || 'default',
+      providerId: state.providerId || 'openai-compatible',
       apiKey: state.apiKey,
       source: state.source,
       codexHome: state.codexHome,
@@ -316,6 +511,25 @@ function installUpdateIpcHandlers() {
   ipcMain.handle('codexbridge:update:install', async () => {
     await requestUpdateInstall();
     return { ok: true };
+  });
+  ipcMain.handle('codexbridge:lightweight-update:get-status', () => getLightweightUpdateStatus());
+  ipcMain.handle('codexbridge:lightweight-update:check', async () => {
+    await checkLightweightUpdate();
+    return getLightweightUpdateStatus();
+  });
+  ipcMain.handle('codexbridge:lightweight-update:download-install', async () => {
+    await downloadAndInstallLightweightUpdate();
+    return getLightweightUpdateStatus();
+  });
+  ipcMain.handle('codexbridge:lightweight-update:install-local', async (_event, payload) => {
+    const sourcePath = normalizeString(payload?.path);
+    await installLightweightUpdateFromPath(sourcePath);
+    return getLightweightUpdateStatus();
+  });
+  ipcMain.handle('codexbridge:lightweight-update:rollback', async () => {
+    await rollbackLightweightCurrent(`manual-rollback-${Date.now()}`);
+    patchLightweightUpdateState({ error: null });
+    return getLightweightUpdateStatus();
   });
 }
 
@@ -543,6 +757,390 @@ function getUpdateStatus() {
   };
 }
 
+function getLightweightUpdateStatus() {
+  const activeRootDir = resolveActiveRootDir();
+  const manifest = isValidLightweightRoot(activeRootDir)
+    ? readLightweightManifest(activeRootDir)
+    : null;
+  const status = {
+    ...lightweightUpdateState,
+    busy: lightweightUpdateBusy,
+    currentVersion: manifest?.version || null,
+    currentRoot: activeRootDir,
+    builtInVersion: app.getVersion(),
+    usingLightweight: activeRootDir !== ROOT_DIR,
+    canRollback: fs.existsSync(lightweightCurrentDir),
+    canCheck: !lightweightUpdateBusy && !lightweightUpdateState.checking && !lightweightUpdateState.downloading,
+    canDownloadInstall: !lightweightUpdateBusy && lightweightUpdateState.available && Boolean(lightweightUpdateState.downloadUrl),
+  };
+  Object.assign(lightweightUpdateState, status);
+  return status;
+}
+
+function patchLightweightUpdateState(patch) {
+  Object.assign(lightweightUpdateState, patch, {
+    lastActionAt: new Date().toISOString(),
+  });
+}
+
+async function installLightweightUpdateFromPath(sourcePath) {
+  if (!sourcePath) {
+    throw new Error('请选择轻量更新包目录或 zip 文件。');
+  }
+  if (lightweightUpdateBusy) {
+    throw new Error('轻量更新正在处理中，请稍后再试。');
+  }
+  lightweightUpdateBusy = true;
+  patchLightweightUpdateState({ busy: true, error: null });
+  const stagingDir = path.join(lightweightDownloadsDir, `staging-${Date.now()}`);
+  try {
+    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.mkdir(stagingDir, { recursive: true });
+    const stat = await fsp.stat(sourcePath);
+    if (stat.isDirectory()) {
+      await copyDirectory(sourcePath, stagingDir);
+    } else if (stat.isFile() && /\.zip$/iu.test(sourcePath)) {
+      await extractZipArchive(sourcePath, stagingDir);
+    } else {
+      throw new Error('轻量更新包只支持目录或 .zip 文件。');
+    }
+    const packageRoot = findLightweightPackageRoot(stagingDir);
+    const manifest = validateLightweightPackageRoot(packageRoot);
+    await activateLightweightPackage(packageRoot, manifest);
+    patchLightweightUpdateState({
+      currentVersion: manifest.version || null,
+      currentRoot: lightweightCurrentDir,
+      usingLightweight: true,
+      canRollback: true,
+      error: null,
+    });
+  } catch (error) {
+    patchLightweightUpdateState({ error: error?.message || String(error) });
+    throw error;
+  } finally {
+    lightweightUpdateBusy = false;
+    patchLightweightUpdateState({ busy: false });
+    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function checkLightweightUpdate() {
+  if (lightweightUpdateBusy || lightweightUpdateState.checking) {
+    return;
+  }
+  lightweightUpdateBusy = true;
+  patchLightweightUpdateState({
+    busy: true,
+    checking: true,
+    error: null,
+    progress: null,
+  });
+  try {
+    const release = await fetchJson('https://api.github.com/repos/gouyu-hou/CodexBridge-Weixin/releases/latest');
+    const assets = Array.isArray(release.assets) ? release.assets : [];
+    const asset = assets.find((item) => {
+      const name = normalizeString(item?.name);
+      return /^CodexBridge-Lightweight-.+\.zip$/iu.test(name);
+    });
+    if (!asset) {
+      patchLightweightUpdateState({
+        checking: false,
+        available: false,
+        latestVersion: normalizeString(release.tag_name || release.name),
+        downloadUrl: null,
+        error: '最新 Release 里没有轻量更新包，请使用完整安装包更新。',
+      });
+      return;
+    }
+    const latestVersion = extractLightweightVersion(asset.name) || normalizeString(release.tag_name || release.name);
+    const currentVersion = getLightweightUpdateStatus().currentVersion || app.getVersion();
+    const available = isVersionNewer(latestVersion, currentVersion);
+    patchLightweightUpdateState({
+      checking: false,
+      available,
+      latestVersion,
+      downloadUrl: normalizeString(asset.browser_download_url),
+      downloadPath: null,
+      error: available ? null : '当前轻量代码已经是最新。',
+    });
+  } catch (error) {
+    patchLightweightUpdateState({
+      checking: false,
+      available: false,
+      error: error?.message || String(error),
+    });
+  } finally {
+    lightweightUpdateBusy = false;
+    patchLightweightUpdateState({ busy: false, checking: false });
+  }
+}
+
+async function downloadAndInstallLightweightUpdate() {
+  if (lightweightUpdateBusy || lightweightUpdateState.downloading) {
+    return;
+  }
+  const downloadUrl = normalizeString(lightweightUpdateState.downloadUrl);
+  if (!downloadUrl) {
+    throw new Error('还没有可下载的轻量更新包，请先检查更新。');
+  }
+  lightweightUpdateBusy = true;
+  patchLightweightUpdateState({
+    busy: true,
+    downloading: true,
+    error: null,
+    progress: null,
+  });
+  try {
+    await fsp.mkdir(lightweightDownloadsDir, { recursive: true });
+    const fileName = sanitizeFileName(path.basename(new URL(downloadUrl).pathname) || `CodexBridge-Lightweight-${Date.now()}.zip`);
+    const targetPath = path.join(lightweightDownloadsDir, fileName);
+    await downloadFile(downloadUrl, targetPath);
+    patchLightweightUpdateState({ downloadPath: targetPath });
+    lightweightUpdateBusy = false;
+    patchLightweightUpdateState({ busy: false, downloading: false });
+    await installLightweightUpdateFromPath(targetPath);
+    patchLightweightUpdateState({
+      available: false,
+      downloadPath: targetPath,
+      error: null,
+    });
+  } catch (error) {
+    patchLightweightUpdateState({
+      downloading: false,
+      error: error?.message || String(error),
+    });
+    throw error;
+  } finally {
+    lightweightUpdateBusy = false;
+    patchLightweightUpdateState({ busy: false, downloading: false });
+  }
+}
+
+function extractLightweightVersion(name) {
+  const match = String(name || '').match(/^CodexBridge-Lightweight-(.+)\.zip$/iu);
+  return normalizeString(match?.[1]);
+}
+
+function isVersionNewer(candidate, current) {
+  const left = parseVersionParts(candidate);
+  const right = parseVersionParts(current);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const l = left[index] || 0;
+    const r = right[index] || 0;
+    if (l > r) return true;
+    if (l < r) return false;
+  }
+  return false;
+}
+
+function parseVersionParts(value) {
+  return String(value || '')
+    .replace(/^v/iu, '')
+    .split(/[.-]/u)
+    .map((part) => Number.parseInt(part, 10))
+    .filter((part) => Number.isFinite(part));
+}
+
+async function fetchJson(url) {
+  const text = await requestText(url, {
+    headers: {
+      accept: 'application/vnd.github+json',
+      'user-agent': 'CodexBridge-Weixin-Admin',
+    },
+  });
+  return JSON.parse(text);
+}
+
+async function downloadFile(url, targetPath) {
+  const response = await requestBuffer(url, {
+    headers: {
+      accept: 'application/octet-stream',
+      'user-agent': 'CodexBridge-Weixin-Admin',
+    },
+    onProgress(progress) {
+      patchLightweightUpdateState({ progress });
+    },
+  });
+  await fsp.writeFile(targetPath, response);
+}
+
+function requestText(url, options = {}) {
+  return requestBuffer(url, options).then((buffer) => buffer.toString('utf8'));
+}
+
+function requestBuffer(url, options = {}, redirectCount = 0) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const client = parsed.protocol === 'https:' ? https : http;
+    const request = client.request({
+      protocol: parsed.protocol,
+      hostname: parsed.hostname,
+      port: parsed.port || undefined,
+      path: `${parsed.pathname}${parsed.search}`,
+      method: 'GET',
+      headers: options.headers || {},
+      timeout: 30_000,
+    }, (response) => {
+      const status = response.statusCode || 0;
+      const location = response.headers.location;
+      if (status >= 300 && status < 400 && location) {
+        response.resume();
+        if (redirectCount >= 5) {
+          reject(new Error('下载重定向次数过多。'));
+          return;
+        }
+        const nextUrl = new URL(location, url).toString();
+        requestBuffer(nextUrl, options, redirectCount + 1).then(resolve, reject);
+        return;
+      }
+      if (status < 200 || status >= 300) {
+        response.resume();
+        reject(new Error(`HTTP ${status}`));
+        return;
+      }
+      const chunks = [];
+      let transferred = 0;
+      const total = Number(response.headers['content-length']) || null;
+      response.on('data', (chunk) => {
+        chunks.push(chunk);
+        transferred += chunk.length;
+        if (options.onProgress) {
+          options.onProgress({
+            transferred,
+            total,
+            percent: total ? (transferred / total) * 100 : null,
+          });
+        }
+      });
+      response.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    request.on('timeout', () => {
+      request.destroy(new Error('request timed out'));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function findLightweightPackageRoot(rootDir) {
+  if (isValidLightweightRoot(rootDir)) {
+    return rootDir;
+  }
+  const entries = fs.readdirSync(rootDir, { withFileTypes: true });
+  const directories = entries.filter((entry) => entry.isDirectory());
+  if (directories.length === 1) {
+    const nested = path.join(rootDir, directories[0].name);
+    if (isValidLightweightRoot(nested)) {
+      return nested;
+    }
+  }
+  return rootDir;
+}
+
+function validateLightweightPackageRoot(rootDir) {
+  const manifest = readLightweightManifest(rootDir);
+  if (!manifest || manifest.kind !== 'codexbridge-lightweight-update') {
+    throw new Error(`轻量更新包缺少 ${LIGHTWEIGHT_MANIFEST_NAME}。`);
+  }
+  if (!fs.existsSync(path.join(rootDir, 'src', 'cli.ts'))) {
+    throw new Error('轻量更新包缺少 src/cli.ts。');
+  }
+  if (!fs.existsSync(path.join(rootDir, 'scripts', 'service', 'run-weixin-service.mjs'))) {
+    throw new Error('轻量更新包缺少服务启动脚本。');
+  }
+  if (!fs.existsSync(path.join(rootDir, 'package.json'))) {
+    throw new Error('轻量更新包缺少 package.json。');
+  }
+  return manifest;
+}
+
+async function activateLightweightPackage(packageRoot, manifest) {
+  await fsp.mkdir(lightweightUpdatesDir, { recursive: true });
+  const nextDir = path.join(lightweightUpdatesDir, `next-${Date.now()}`);
+  await fsp.rm(nextDir, { recursive: true, force: true }).catch(() => {});
+  await copyDirectory(packageRoot, nextDir);
+  validateLightweightPackageRoot(nextDir);
+
+  const previousBackup = path.join(lightweightBackupDir, 'previous');
+  await fsp.mkdir(lightweightBackupDir, { recursive: true });
+  await fsp.rm(previousBackup, { recursive: true, force: true }).catch(() => {});
+  if (fs.existsSync(lightweightCurrentDir)) {
+    await fsp.rename(lightweightCurrentDir, previousBackup);
+  }
+  try {
+    await fsp.rename(nextDir, lightweightCurrentDir);
+    await fsp.writeFile(
+      path.join(lightweightCurrentDir, '.installed.json'),
+      `${JSON.stringify({
+        installedAt: new Date().toISOString(),
+        version: manifest.version || null,
+        baseVersion: app.getVersion(),
+      }, null, 2)}\n`,
+      'utf8',
+    );
+    await linkLightweightDependencies(lightweightCurrentDir);
+  } catch (error) {
+    await fsp.rm(lightweightCurrentDir, { recursive: true, force: true }).catch(() => {});
+    if (fs.existsSync(previousBackup)) {
+      await fsp.rename(previousBackup, lightweightCurrentDir).catch(() => {});
+    }
+    throw error;
+  }
+}
+
+async function linkLightweightDependencies(targetRootDir) {
+  const sourceNodeModules = path.join(ROOT_DIR, 'node_modules');
+  const targetNodeModules = path.join(targetRootDir, 'node_modules');
+  if (!fs.existsSync(sourceNodeModules) || fs.existsSync(targetNodeModules)) {
+    return;
+  }
+  try {
+    await fsp.symlink(sourceNodeModules, targetNodeModules, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch {
+    // If linking is blocked, keep the package installed. Startup will fall back
+    // to the built-in code if dependencies cannot be resolved.
+  }
+}
+
+async function copyDirectory(sourceDir, targetDir) {
+  await fsp.cp(sourceDir, targetDir, {
+    recursive: true,
+    force: true,
+    dereference: false,
+    filter: (source) => {
+      const normalized = source.replace(/\\/gu, '/');
+      return !/\/(?:node_modules|release|CodexBridgeData|\.git)(?:\/|$)/u.test(normalized);
+    },
+  });
+}
+
+async function extractZipArchive(zipPath, targetDir) {
+  if (process.platform === 'win32') {
+    const command = [
+      '$ErrorActionPreference = "Stop"',
+      `Expand-Archive -LiteralPath ${quotePowerShell(zipPath)} -DestinationPath ${quotePowerShell(targetDir)} -Force`,
+    ].join('; ');
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (result.status !== 0) {
+      throw new Error(result.stderr || result.stdout || '解压轻量更新包失败。');
+    }
+    return;
+  }
+  const result = spawnSync('unzip', ['-q', zipPath, '-d', targetDir], {
+    encoding: 'utf8',
+  });
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || '解压轻量更新包失败。');
+  }
+}
+
+function quotePowerShell(value) {
+  return `'${String(value).replace(/'/gu, "''")}'`;
+}
+
 function serializeUpdateInfo(info) {
   const record = info && typeof info === 'object' ? info : {};
   return {
@@ -695,7 +1293,18 @@ async function startOrAttachService(serviceEnv) {
   await loadStatusPage('Starting CodexBridge', 'Launching the local service...');
   serviceExited = false;
   serviceProcess = startService(serviceEnv);
-  return waitForAdminState(adminUrl, 90_000);
+  try {
+    return await waitForAdminState(adminUrl, 90_000);
+  } catch (error) {
+    if (resolveActiveRootDir() !== ROOT_DIR) {
+      await rollbackLightweightCurrent(`startup-failed-${Date.now()}`);
+      await loadStatusPage('Recovering CodexBridge', 'The lightweight code update failed to start. Rolling back to the built-in version...');
+      serviceExited = false;
+      serviceProcess = startService(serviceEnv);
+      return waitForAdminState(adminUrl, 90_000);
+    }
+    throw error;
+  }
 }
 
 function createMainWindow() {
@@ -771,14 +1380,22 @@ function createMainWindow() {
 
 function startService(env) {
   const runtime = resolveNodeRuntime(env);
-  const runner = path.join(ROOT_DIR, 'scripts', 'service', 'run-weixin-service.mjs');
+  const activeRootDir = resolveActiveRootDir();
+  const runner = path.join(activeRootDir, 'scripts', 'service', 'run-weixin-service.mjs');
   if (!fs.existsSync(runner)) {
     throw new Error(`Service runner not found: ${runner}`);
   }
+  const runtimeEnv = {
+    ...runtime.env,
+    CODEXBRIDGE_APP_ROOT: activeRootDir,
+    CODEXBRIDGE_BASE_ROOT: ROOT_DIR,
+    NODE_PATH: buildNodePath(activeRootDir, ROOT_DIR, runtime.env.NODE_PATH),
+  };
   const child = spawn(runtime.command, [
     runner,
     '--once',
-    '--root-dir', ROOT_DIR,
+    '--root-dir', activeRootDir,
+    '--base-root-dir', ROOT_DIR,
     '--home-dir', os.homedir(),
     '--state-dir', stateDir,
     '--service-env-file', envFile,
@@ -786,8 +1403,8 @@ function startService(env) {
     '--stderr-log', serviceStderrLog,
     '--cwd', defaultCwd,
   ], {
-    cwd: ROOT_DIR,
-    env: runtime.env,
+    cwd: activeRootDir,
+    env: runtimeEnv,
     stdio: ['ignore', 'ignore', 'ignore'],
     windowsHide: true,
   });
@@ -804,6 +1421,56 @@ function startService(env) {
     }
   });
   return child;
+}
+
+function resolveActiveRootDir() {
+  if (isValidLightweightRoot(lightweightCurrentDir)) {
+    return lightweightCurrentDir;
+  }
+  return ROOT_DIR;
+}
+
+function isValidLightweightRoot(rootDir) {
+  if (!rootDir || !fs.existsSync(rootDir)) {
+    return false;
+  }
+  const manifest = readLightweightManifest(rootDir);
+  if (!manifest || manifest.kind !== 'codexbridge-lightweight-update') {
+    return false;
+  }
+  return fs.existsSync(path.join(rootDir, 'src', 'cli.ts'))
+    && fs.existsSync(path.join(rootDir, 'scripts', 'service', 'run-weixin-service.mjs'))
+    && fs.existsSync(path.join(rootDir, 'package.json'));
+}
+
+function readLightweightManifest(rootDir) {
+  return safeJsonRead(path.join(rootDir, LIGHTWEIGHT_MANIFEST_NAME));
+}
+
+function buildNodePath(activeRootDir, baseRootDir, inheritedNodePath) {
+  const entries = [
+    path.join(activeRootDir, 'node_modules'),
+    path.join(baseRootDir, 'node_modules'),
+    inheritedNodePath,
+  ].filter(Boolean);
+  return entries.join(path.delimiter);
+}
+
+async function rollbackLightweightCurrent(reason) {
+  if (!fs.existsSync(lightweightCurrentDir)) {
+    return false;
+  }
+  await fsp.mkdir(lightweightFailedDir, { recursive: true });
+  const failedTarget = path.join(lightweightFailedDir, sanitizeFileName(reason || `failed-${Date.now()}`));
+  await fsp.rm(failedTarget, { recursive: true, force: true }).catch(() => {});
+  await fsp.rename(lightweightCurrentDir, failedTarget).catch(async () => {
+    await fsp.rm(lightweightCurrentDir, { recursive: true, force: true }).catch(() => {});
+  });
+  return true;
+}
+
+function sanitizeFileName(value) {
+  return String(value || 'item').replace(/[<>:"/\\|?*\x00-\x1F]/gu, '-').slice(0, 120) || 'item';
 }
 
 function scheduleServiceRecovery(reason) {
@@ -989,11 +1656,22 @@ async function loadSetupPage(serviceEnv) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return;
   }
+  const preset = normalizeFirstRunProviderPreset(
+    serviceEnv.CODEX_COMPAT_PRESET
+      || presetKeyForFirstRunProvider({
+        capabilities: serviceEnv.CODEX_COMPAT_CAPABILITIES,
+        providerId: serviceEnv.CODEX_COMPAT_PROVIDER_ID,
+        provider: serviceEnv.CODEX_COMPAT_PROVIDER_NAME,
+        baseUrl: serviceEnv.CODEX_COMPAT_BASE_URL,
+        model: serviceEnv.CODEX_COMPAT_DEFAULT_MODEL || serviceEnv.CODEX_COMPAT_MODEL,
+      }),
+  );
+  const presetConfig = FIRST_RUN_PROVIDER_PRESETS[preset] || FIRST_RUN_PROVIDER_PRESETS.default;
   await mainWindow.loadURL(createSetupPageUrl({
-    provider: serviceEnv.CODEX_COMPAT_PROVIDER_NAME || 'OpenAI Compatible',
-    baseUrl: serviceEnv.CODEX_COMPAT_BASE_URL || 'https://ztoken.app/',
-    model: serviceEnv.CODEX_COMPAT_DEFAULT_MODEL || serviceEnv.CODEX_COMPAT_MODEL || 'gpt-5.5',
-    preset: serviceEnv.CODEX_COMPAT_CAPABILITIES || 'default',
+    provider: serviceEnv.CODEX_COMPAT_PROVIDER_NAME || presetConfig.provider,
+    baseUrl: serviceEnv.CODEX_COMPAT_BASE_URL || presetConfig.baseUrl,
+    model: serviceEnv.CODEX_COMPAT_DEFAULT_MODEL || serviceEnv.CODEX_COMPAT_MODEL || presetConfig.model,
+    preset,
   }));
 }
 
@@ -1201,11 +1879,12 @@ async function readEnvFile(filePath) {
 
 function normalizeSetupPayload(payload) {
   const record = payload && typeof payload === 'object' ? payload : {};
-  const provider = normalizeString(record.provider) || 'OpenAI Compatible';
+  const presetKey = normalizeFirstRunProviderPreset(record.preset);
+  const preset = FIRST_RUN_PROVIDER_PRESETS[presetKey] || FIRST_RUN_PROVIDER_PRESETS.default;
+  const provider = normalizeString(record.provider) || preset.provider || 'Z Token - Codex';
   const apiKey = normalizeString(record.apiKey);
-  const baseUrl = normalizeString(record.baseUrl);
-  const model = normalizeString(record.model);
-  const preset = normalizeProviderPreset(record.preset);
+  let baseUrl = normalizeString(record.baseUrl) || preset.baseUrl;
+  const model = normalizeFirstRunModelForPreset(preset, normalizeString(record.model), '');
   if (!apiKey) {
     throw new Error('请填写 API key。');
   }
@@ -1215,24 +1894,148 @@ function normalizeSetupPayload(payload) {
   if (!model) {
     throw new Error('请填写模型名称。');
   }
+  if ((preset.capabilities || '').toLowerCase() === 'deepseek') {
+    baseUrl = normalizeFirstRunDeepSeekBaseUrl(baseUrl);
+  }
   return {
     provider,
     apiKey,
-    baseUrl: baseUrl.replace(/\/+$/u, ''),
+    baseUrl: normalizeFirstRunUrlValue(baseUrl),
     model,
-    preset,
+    preset: presetKey,
   };
 }
 
 function normalizeProviderPreset(value) {
   const normalized = normalizeString(value).toLowerCase();
-  const allowed = new Set(['default', 'deepseek', 'minimax', 'qwen', 'openrouter', 'kimi', 'gemini', 'iflow']);
+  const allowed = new Set(['default', 'ztoken-claude', 'official-codex', 'official-claude-code', 'deepseek', 'minimax', 'qwen', 'openrouter', 'kimi', 'gemini', 'iflow']);
   return allowed.has(normalized) ? normalized : 'default';
+}
+
+function normalizeFirstRunProviderPreset(value) {
+  const normalized = normalizeString(value).toLowerCase();
+  return Object.hasOwn(FIRST_RUN_PROVIDER_PRESETS, normalized) ? normalized : 'default';
+}
+
+function normalizeFirstRunUrlValue(value) {
+  return String(value || '').trim().replace(/\/+$/u, '');
+}
+
+function normalizeFirstRunDeepSeekBaseUrl(value) {
+  const raw = normalizeFirstRunUrlValue(value);
+  if (!raw) {
+    return 'https://api.deepseek.com/v1';
+  }
+  if (/^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?\/v1(?:\/responses)?$/iu.test(raw)) {
+    return 'https://api.deepseek.com/v1';
+  }
+  if (/^https?:\/\/api\.deepseek\.com\/?$/iu.test(raw)) {
+    return 'https://api.deepseek.com/v1';
+  }
+  if (/^https?:\/\/api\.deepseek\.com\/v1(?:\/)?$/iu.test(raw)) {
+    return 'https://api.deepseek.com/v1';
+  }
+  return raw;
+}
+
+function normalizeFirstRunModelForPreset(preset, model, fallbackModel) {
+  const value = normalizeString(model);
+  const fallback = normalizeString(fallbackModel);
+  const lower = value.toLowerCase();
+  const fallbackLower = fallback.toLowerCase();
+  const capabilities = normalizeString(preset?.capabilities).toLowerCase() || 'default';
+  const allowedModels = Array.isArray(preset?.models) ? preset.models : [];
+  if (preset?.restrictModels && allowedModels.length) {
+    if (allowedModels.includes(value)) return value;
+    if (allowedModels.includes(fallback)) return fallback;
+    return preset.model || allowedModels[0] || '';
+  }
+  if (capabilities === 'deepseek') {
+    if (lower.startsWith('deepseek-')) return value;
+    if (fallbackLower.startsWith('deepseek-')) return fallback;
+    return preset.model || 'deepseek-v4-flash';
+  }
+  if (capabilities === 'claude-code' || capabilities === 'claude') {
+    if (lower.startsWith('claude-')) return value;
+    if (fallbackLower.startsWith('claude-')) return fallback;
+    return preset.model || 'claude-opus-4-8';
+  }
+  if (capabilities === 'qwen') {
+    if (lower.startsWith('qwen')) return value;
+    if (fallbackLower.startsWith('qwen')) return fallback;
+    return preset.model || 'qwen3-coder-flash';
+  }
+  if (capabilities === 'gemini') {
+    if (lower.startsWith('gemini-')) return value;
+    if (fallbackLower.startsWith('gemini-')) return fallback;
+    return preset.model || 'gemini-2.5-flash';
+  }
+  if (capabilities === 'kimi') {
+    if (lower.startsWith('kimi-') || lower.startsWith('moonshot-')) return value;
+    if (fallbackLower.startsWith('kimi-') || fallbackLower.startsWith('moonshot-')) return fallback;
+    return preset.model || 'kimi-k2-0905-preview';
+  }
+  if (capabilities === 'minimax') {
+    if (lower.startsWith('minimax-') || lower.startsWith('abab')) return value;
+    if (fallbackLower.startsWith('minimax-') || fallbackLower.startsWith('abab')) return fallback;
+    return preset.model || 'MiniMax-M2.0';
+  }
+  return value || fallback || preset?.model || '';
+}
+
+function presetKeyForFirstRunProvider(provider) {
+  const capabilities = normalizeString(provider?.capabilities).toLowerCase();
+  const providerId = normalizeString(provider?.providerId).toLowerCase();
+  const providerName = normalizeString(provider?.provider || provider?.providerName).replace(/\s+/gu, '').toLowerCase();
+  const baseUrl = normalizeString(provider?.baseUrl).toLowerCase();
+  const model = normalizeString(provider?.model).toLowerCase();
+  const isZToken = providerName.includes('ztoken') || baseUrl.includes('ztoken.app');
+  if (isZToken && model.startsWith('claude-')) {
+    return 'ztoken-claude';
+  }
+  if (isZToken) {
+    return 'default';
+  }
+  if ((providerName.includes('官网') || providerName.includes('official')) && providerName.includes('claude')) {
+    return 'official-claude-code';
+  }
+  if ((providerName.includes('官网') || providerName.includes('official') || baseUrl.includes('api.openai.com')) && (providerName.includes('codex') || model.startsWith('gpt-') || model.startsWith('o'))) {
+    return 'official-codex';
+  }
+  if (capabilities === 'claude') {
+    return 'official-claude-code';
+  }
+  if (Object.hasOwn(FIRST_RUN_PROVIDER_PRESETS, capabilities)) {
+    return capabilities;
+  }
+  if (providerName.includes('claude')) {
+    return 'ztoken-claude';
+  }
+  for (const [key, preset] of Object.entries(FIRST_RUN_PROVIDER_PRESETS)) {
+    if (providerId === normalizeString(preset.providerId).toLowerCase()) {
+      return key;
+    }
+  }
+  if (providerName.includes('deepseek')) return 'deepseek';
+  if (providerName.includes('qwen')) return 'qwen';
+  if (providerName.includes('openrouter')) return 'openrouter';
+  if (providerName.includes('kimi') || providerName.includes('moonshot')) return 'kimi';
+  if (providerName.includes('gemini') || providerName.includes('google')) return 'gemini';
+  if (providerName.includes('minimax')) return 'minimax';
+  if (providerName.includes('iflow')) return 'iflow';
+  return 'default';
 }
 
 async function writeFirstRunEnvFile(setup) {
   await fsp.mkdir(path.dirname(envFile), { recursive: true });
   const bundledCodex = resolveBundledCodexBin();
+  const preset = FIRST_RUN_PROVIDER_PRESETS[setup.preset] || FIRST_RUN_PROVIDER_PRESETS.default;
+  const capabilities = preset.capabilities || 'default';
+  const profileId = preset.profileId || 'openai-default';
+  const providerId = preset.providerId || 'openai-compatible';
+  const modelIds = Array.isArray(preset.models) && preset.models.length
+    ? preset.models.join(',')
+    : setup.model;
   const lines = [
     '# CodexBridge Weixin Admin configuration',
     '# Generated by the desktop app first-run setup.',
@@ -1248,14 +2051,15 @@ async function writeFirstRunEnvFile(setup) {
     'WEIXIN_ATTACHMENT_CONCURRENCY=3',
     'WEIXIN_ACCOUNT_POLL_CONCURRENCY=4',
     '',
-    'CODEX_DEFAULT_PROVIDER_PROFILE_ID=openai-compatible',
-    'CODEX_COMPAT_PROVIDER_ID=openai-compatible',
+    `CODEX_DEFAULT_PROVIDER_PROFILE_ID=${escapeEnvValue(profileId)}`,
+    `CODEX_COMPAT_PROVIDER_ID=${escapeEnvValue(providerId)}`,
     `CODEX_COMPAT_PROVIDER_NAME=${escapeEnvValue(setup.provider)}`,
     `CODEX_COMPAT_API_KEY=${escapeEnvValue(setup.apiKey)}`,
     `CODEX_COMPAT_BASE_URL=${escapeEnvValue(setup.baseUrl)}`,
     `CODEX_COMPAT_DEFAULT_MODEL=${escapeEnvValue(setup.model)}`,
-    `CODEX_COMPAT_MODEL_IDS=${escapeEnvValue(setup.model)}`,
-    `CODEX_COMPAT_CAPABILITIES=${escapeEnvValue(setup.preset)}`,
+    `CODEX_COMPAT_MODEL_IDS=${escapeEnvValue(modelIds)}`,
+    `CODEX_COMPAT_CAPABILITIES=${escapeEnvValue(capabilities)}`,
+    `CODEX_COMPAT_PRESET=${escapeEnvValue(setup.preset)}`,
     'CODEX_NATIVE_API_ENABLE=1',
     `CODEX_NATIVE_API_PORT=${DEFAULT_NATIVE_API_PORT}`,
   ];
@@ -1627,6 +2431,10 @@ function addQueryParam(url, key, value) {
 
 function createSetupPageUrl(defaults) {
   const payload = encodeURIComponent(JSON.stringify(defaults));
+  const presetsPayload = encodeURIComponent(JSON.stringify(FIRST_RUN_PROVIDER_PRESETS));
+  const presetOptions = Object.entries(FIRST_RUN_PROVIDER_PRESETS)
+    .map(([key, preset]) => `<option value="${escapeHtml(key)}">${escapeHtml(preset.label || preset.provider || key)}</option>`)
+    .join('\n            ');
   const html = `<!doctype html>
 <html>
 <head>
@@ -1737,15 +2545,7 @@ function createSetupPageUrl(defaults) {
         <label>
           供应商预设
           <select name="preset" id="preset">
-            <option value="default">OpenAI 兼容</option>
-            <option value="claude-code">Claude Code</option>
-            <option value="deepseek">DeepSeek</option>
-            <option value="qwen">Qwen</option>
-            <option value="openrouter">OpenRouter</option>
-            <option value="kimi">Kimi</option>
-            <option value="gemini">Gemini</option>
-            <option value="minimax">MiniMax</option>
-            <option value="iflow">iFlow</option>
+            ${presetOptions}
           </select>
         </label>
         <label>
@@ -1763,7 +2563,8 @@ function createSetupPageUrl(defaults) {
         </label>
         <label class="span">
           模型
-          <input name="model" id="model" autocomplete="off" required>
+          <select name="model" id="model" required></select>
+          <input id="model-custom" autocomplete="off" placeholder="自定义模型名称" style="display:none;">
         </label>
       </div>
       <div class="actions">
@@ -1776,17 +2577,8 @@ function createSetupPageUrl(defaults) {
   </main>
   <script>
     const defaults = JSON.parse(decodeURIComponent('${payload}'));
-    const presets = {
-      default: { provider: 'OpenAI Compatible', baseUrl: 'https://ztoken.app/', model: defaults.model || 'gpt-5.5' },
-      'claude-code': { provider: 'Claude Code', baseUrl: 'https://ztoken.app/', model: 'claude-opus-4-8' },
-      deepseek: { provider: 'DeepSeek', baseUrl: 'https://api.deepseek.com', model: 'deepseek-chat' },
-      qwen: { provider: 'Qwen', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: 'qwen-plus' },
-      openrouter: { provider: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' },
-      kimi: { provider: 'Kimi', baseUrl: 'https://api.kimi.com/coding', model: 'kimi-k2' },
-      gemini: { provider: 'Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.5-flash' },
-      minimax: { provider: 'MiniMax', baseUrl: 'https://api.minimaxi.com/v1', model: 'MiniMax-M2.0' },
-      iflow: { provider: 'iFlow', baseUrl: 'https://apis.iflow.cn/v1', model: 'qwen3-coder-flash' }
-    };
+    const presets = JSON.parse(decodeURIComponent('${presetsPayload}'));
+    const CUSTOM_MODEL_OPTION = '__custom__';
     const form = document.getElementById('setup-form');
     const status = document.getElementById('status');
     const submit = document.getElementById('submit');
@@ -1795,17 +2587,107 @@ function createSetupPageUrl(defaults) {
     const provider = document.getElementById('provider');
     const baseUrl = document.getElementById('baseUrl');
     const model = document.getElementById('model');
+    const modelCustom = document.getElementById('model-custom');
     const apiKey = document.getElementById('apiKey');
-    preset.value = defaults.preset || 'default';
+
+    function presetKeyForProvider(data) {
+      const capabilities = String(data?.capabilities || data?.preset || '').toLowerCase();
+      const providerId = String(data?.providerId || '').toLowerCase();
+      const providerName = String(data?.provider || data?.providerName || '').replace(/\s+/g, '').toLowerCase();
+      const url = String(data?.baseUrl || '').toLowerCase();
+      const modelName = String(data?.model || '').toLowerCase();
+      const isZToken = providerName.includes('ztoken') || url.includes('ztoken.app');
+      if (isZToken && modelName.startsWith('claude-')) return 'ztoken-claude';
+      if (isZToken) return 'default';
+      if ((providerName.includes('官网') || providerName.includes('official')) && providerName.includes('claude')) return 'official-claude-code';
+      if ((providerName.includes('官网') || providerName.includes('official') || url.includes('api.openai.com')) && (providerName.includes('codex') || modelName.startsWith('gpt-') || modelName.startsWith('o'))) return 'official-codex';
+      if (capabilities === 'claude') return 'official-claude-code';
+      if (presets[capabilities]) return capabilities;
+      if (providerName.includes('claude')) return 'ztoken-claude';
+      for (const [key, item] of Object.entries(presets)) {
+        if (providerId && providerId === String(item.providerId || '').toLowerCase()) return key;
+      }
+      if (providerName.includes('deepseek')) return 'deepseek';
+      if (providerName.includes('qwen')) return 'qwen';
+      if (providerName.includes('openrouter')) return 'openrouter';
+      if (providerName.includes('kimi') || providerName.includes('moonshot')) return 'kimi';
+      if (providerName.includes('gemini') || providerName.includes('google')) return 'gemini';
+      if (providerName.includes('minimax')) return 'minimax';
+      if (providerName.includes('iflow')) return 'iflow';
+      return 'default';
+    }
+
+    function populateModelOptions(presetKey, selectedModel) {
+      const item = presets[presetKey] || presets.default;
+      const models = Array.isArray(item.models) && item.models.length ? item.models.slice() : [item.model].filter(Boolean);
+      const wanted = String(selectedModel || '').trim();
+      if (wanted && !models.includes(wanted) && !item.restrictModels) {
+        models.push(wanted);
+      }
+      model.innerHTML = '';
+      for (const name of models) {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        model.appendChild(option);
+      }
+      const customOption = document.createElement('option');
+      customOption.value = CUSTOM_MODEL_OPTION;
+      customOption.textContent = '自定义';
+      model.appendChild(customOption);
+      if (wanted && models.includes(wanted)) {
+        model.value = wanted;
+      } else if (wanted && !item.restrictModels) {
+        model.value = wanted;
+      } else {
+        model.value = item.model || models[0] || '';
+      }
+      modelCustom.value = '';
+      syncCustomModelVisibility();
+    }
+
+    function syncCustomModelVisibility() {
+      const isCustom = model.value === CUSTOM_MODEL_OPTION;
+      modelCustom.style.display = isCustom ? '' : 'none';
+      modelCustom.required = isCustom;
+    }
+
+    function selectedModel() {
+      if (model.value === CUSTOM_MODEL_OPTION) {
+        return modelCustom.value.trim();
+      }
+      return String(model.value || '').trim();
+    }
+
+    function normalizeModelForPreset(item, value, fallback) {
+      const raw = String(value || '').trim();
+      const backup = String(fallback || '').trim();
+      const allowed = Array.isArray(item.models) ? item.models : [];
+      if (item.restrictModels && allowed.length) {
+        if (allowed.includes(raw)) return raw;
+        if (allowed.includes(backup)) return backup;
+        return item.model || allowed[0] || '';
+      }
+      return raw || backup || item.model || '';
+    }
+
+    function applyPreset(presetKey, selected) {
+      const item = presets[presetKey] || presets.default;
+      provider.value = item.provider;
+      baseUrl.value = item.baseUrl;
+      populateModelOptions(presetKey, selected || item.model);
+    }
+
+    preset.value = presets[defaults.preset] ? defaults.preset : presetKeyForProvider(defaults);
     provider.value = defaults.provider || presets[preset.value].provider;
     baseUrl.value = defaults.baseUrl || presets[preset.value].baseUrl;
-    model.value = defaults.model || presets[preset.value].model;
+    populateModelOptions(preset.value, defaults.model || presets[preset.value].model);
+
     preset.addEventListener('change', () => {
-      const next = presets[preset.value] || presets.default;
-      provider.value = next.provider;
-      baseUrl.value = next.baseUrl;
-      model.value = next.model;
+      applyPreset(preset.value);
     });
+    model.addEventListener('change', syncCustomModelVisibility);
+
     syncCcswitch.addEventListener('click', async () => {
       status.textContent = '';
       syncCcswitch.disabled = true;
@@ -1815,11 +2697,12 @@ function createSetupPageUrl(defaults) {
           throw new Error('Desktop setup bridge is unavailable.');
         }
         const result = await window.codexbridgeSetup.syncCcswitch();
+        const nextPreset = presetKeyForProvider(result);
+        preset.value = nextPreset;
         provider.value = result.provider || provider.value;
         baseUrl.value = result.baseUrl || baseUrl.value;
-        model.value = result.model || model.value;
+        populateModelOptions(nextPreset, result.model || selectedModel());
         apiKey.value = result.apiKey || apiKey.value;
-        preset.value = result.capabilities && presets[result.capabilities] ? result.capabilities : 'default';
         status.style.color = '#047857';
         status.textContent = '已同步 CCSwitch / Codex 当前配置：' + [
           result.provider,
@@ -1834,6 +2717,7 @@ function createSetupPageUrl(defaults) {
         syncCcswitch.textContent = '同步 CCSwitch';
       }
     });
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       status.textContent = '';
@@ -1844,7 +2728,14 @@ function createSetupPageUrl(defaults) {
         if (!window.codexbridgeSetup?.saveConfig) {
           throw new Error('Desktop setup bridge is unavailable.');
         }
-        await window.codexbridgeSetup.saveConfig(Object.fromEntries(new FormData(form).entries()));
+        const item = presets[preset.value] || presets.default;
+        await window.codexbridgeSetup.saveConfig({
+          preset: preset.value,
+          provider: provider.value.trim() || item.provider,
+          apiKey: apiKey.value.trim(),
+          baseUrl: baseUrl.value.trim() || item.baseUrl,
+          model: normalizeModelForPreset(item, selectedModel(), item.model)
+        });
       } catch (error) {
         submit.disabled = false;
         submit.textContent = '保存并启动';

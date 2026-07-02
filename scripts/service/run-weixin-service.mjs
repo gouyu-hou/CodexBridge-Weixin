@@ -4,12 +4,13 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRootDir = path.resolve(path.dirname(scriptPath), '..', '..');
 const args = parseArgs(process.argv.slice(2));
 const rootDir = path.resolve(args.rootDir ?? defaultRootDir);
+const baseRootDir = path.resolve(args.baseRootDir ?? process.env.CODEXBRIDGE_BASE_ROOT ?? rootDir);
 const homeDir = args.homeDir ? path.resolve(args.homeDir) : null;
 const stateDir = path.resolve(args.stateDir ?? process.env.CODEXBRIDGE_STATE_DIR ?? path.join(os.homedir(), '.codexbridge'));
 const envFile = path.resolve(args.serviceEnvFile ?? args.envFile ?? defaultServiceEnvFile());
@@ -22,9 +23,15 @@ const once = Boolean(args.once);
 let child = null;
 let stopping = false;
 
+if (baseRootDir !== rootDir) {
+  await loadEnvFile(path.join(baseRootDir, '.env'));
+  await loadEnvFile(path.join(baseRootDir, '.env.local'));
+}
 await loadEnvFile(path.join(rootDir, '.env'));
 await loadEnvFile(path.join(rootDir, '.env.local'));
 await loadEnvFile(envFile);
+process.env.CODEXBRIDGE_APP_ROOT = rootDir;
+process.env.CODEXBRIDGE_BASE_ROOT = baseRootDir;
 process.env.CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE = envFile;
 if (homeDir) {
   process.env.HOME = homeDir;
@@ -59,9 +66,10 @@ do {
 
 async function runServe() {
   const cliPath = path.join(rootDir, 'src', 'cli.ts');
+  const tsxLoader = resolveTsxLoader();
   const serveArgs = [
     '--import',
-    'tsx',
+    tsxLoader,
     cliPath,
     'weixin',
     'serve',
@@ -73,6 +81,8 @@ async function runServe() {
   }
 
   writeLine('stdout', `[codexbridge-service] starting: ${process.execPath} ${serveArgs.join(' ')}`);
+  writeLine('stdout', `[codexbridge-service] app root=${rootDir}`);
+  writeLine('stdout', `[codexbridge-service] base root=${baseRootDir}`);
   writeLine('stdout', `[codexbridge-service] env HOME=${process.env.HOME ?? ''}`);
   writeLine('stdout', `[codexbridge-service] env USERPROFILE=${process.env.USERPROFILE ?? ''}`);
   writeLine('stdout', `[codexbridge-service] env CODEX_HOME=${process.env.CODEX_HOME ?? ''}`);
@@ -98,6 +108,15 @@ async function runServe() {
       resolve(code);
     });
   });
+}
+
+function resolveTsxLoader() {
+  const candidates = [
+    path.join(rootDir, 'node_modules', 'tsx', 'dist', 'loader.mjs'),
+    path.join(baseRootDir, 'node_modules', 'tsx', 'dist', 'loader.mjs'),
+  ];
+  const localLoader = candidates.find((candidate) => fs.existsSync(candidate));
+  return localLoader ? pathToFileURL(localLoader).href : 'tsx';
 }
 
 function stop(signal) {

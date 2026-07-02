@@ -5321,6 +5321,37 @@ function renderAdminHtml() {
           <button class="danger" id="update-install">重启安装</button>
         </div>
         <div class="help-line">启动安装版时会自动检查更新。发现新版本后不会强制安装，需要你确认下载和重启安装；配置、API key、微信会话数据会保留在本机数据目录。</div>
+        <h3 class="subsection-title">轻量代码更新</h3>
+        <div class="status-grid">
+          <div class="metric">
+            <div class="metric-label">代码来源</div>
+            <div class="metric-value" id="light-update-source">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">轻量版本</div>
+            <div class="metric-value" id="light-update-version">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">轻量状态</div>
+            <div class="metric-value" id="light-update-status">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">上次操作</div>
+            <div class="metric-value" id="light-update-last-action">-</div>
+          </div>
+        </div>
+        <label class="field provider-span">
+          <span>本地轻量包路径</span>
+          <input id="light-update-path" autocomplete="off" placeholder="选择或粘贴轻量更新包目录 / zip 文件路径" />
+        </label>
+        <div class="update-actions">
+          <button class="primary" id="light-update-check">检查轻量更新</button>
+          <button id="light-update-download-install">下载并安装轻量更新</button>
+          <button class="primary" id="light-update-install">安装轻量包</button>
+          <button id="light-update-refresh">刷新轻量状态</button>
+          <button class="danger" id="light-update-rollback">回退内置版本</button>
+        </div>
+        <div class="help-line" id="light-update-message">轻量更新只替换业务代码和页面，不重复下载 Electron、Node、Codex runtime。安装后关闭并重新打开应用即可使用新代码；启动失败会自动回退。</div>
         <h3 class="subsection-title">更新日志</h3>
         <pre class="release-notes" id="update-release-notes">暂无更新日志。</pre>
       </div>
@@ -6412,6 +6443,109 @@ function renderAdminHtml() {
       await api.install();
     }
 
+    function lightweightUpdaterApi() {
+      return window.codexbridgeLightweightUpdater || null;
+    }
+
+    function renderLightweightUpdaterStatus(status) {
+      const api = lightweightUpdaterApi();
+      const current = status || {
+        supported: Boolean(api),
+        usingLightweight: false,
+        builtInVersion: '-',
+        currentVersion: null,
+        currentRoot: '',
+        canRollback: false,
+        error: api ? '' : '请在桌面应用窗口中使用轻量更新。'
+      };
+      $('light-update-source').textContent = current.usingLightweight ? '轻量代码包' : '内置安装包';
+      $('light-update-version').textContent = current.currentVersion || current.builtInVersion || '-';
+      $('light-update-status').textContent = current.busy
+        ? '处理中'
+        : current.error
+          ? '有错误'
+          : current.available
+            ? '发现轻量更新'
+          : current.usingLightweight
+            ? '已启用'
+            : '未启用';
+      $('light-update-last-action').textContent = current.lastActionAt ? fmtTime(current.lastActionAt) : '-';
+      $('light-update-message').textContent = current.error
+        || (current.downloading && current.progress && Number.isFinite(Number(current.progress.percent))
+          ? ('正在下载轻量更新：' + Math.round(Number(current.progress.percent)) + '%')
+          : '')
+        || (current.available ? ('发现轻量更新：' + (current.latestVersion || '-')) : '')
+        || (current.currentRoot ? ('当前代码目录：' + current.currentRoot) : '轻量更新只替换业务代码和页面，不重复下载 Electron、Node、Codex runtime。');
+      $('light-update-check').disabled = !api || current.busy || current.checking || current.downloading || current.canCheck === false;
+      $('light-update-download-install').disabled = !api || current.busy || current.downloading || current.canDownloadInstall === false;
+      $('light-update-install').disabled = !api || current.busy;
+      $('light-update-refresh').disabled = !api || current.busy;
+      $('light-update-rollback').disabled = !api || current.busy || !current.canRollback;
+    }
+
+    async function refreshLightweightUpdaterStatus() {
+      const api = lightweightUpdaterApi();
+      if (!api || !api.getStatus) {
+        renderLightweightUpdaterStatus(null);
+        return;
+      }
+      renderLightweightUpdaterStatus(await api.getStatus());
+    }
+
+    async function installLightweightUpdate() {
+      const api = lightweightUpdaterApi();
+      if (!api || !api.installLocal) {
+        renderLightweightUpdaterStatus(null);
+        return;
+      }
+      const sourcePath = $('light-update-path').value.trim();
+      if (!sourcePath) {
+        $('light-update-message').textContent = '请先填写轻量更新包目录或 zip 文件路径。';
+        return;
+      }
+      $('light-update-message').textContent = '正在安装轻量更新包...';
+      const status = await api.installLocal({ path: sourcePath });
+      renderLightweightUpdaterStatus(status);
+      $('light-update-message').textContent = '轻量更新已安装。请关闭并重新打开应用，让新代码生效。';
+    }
+
+    async function checkLightweightUpdate() {
+      const api = lightweightUpdaterApi();
+      if (!api || !api.check) {
+        renderLightweightUpdaterStatus(null);
+        return;
+      }
+      $('light-update-message').textContent = '正在检查轻量更新...';
+      renderLightweightUpdaterStatus(await api.check());
+    }
+
+    async function downloadInstallLightweightUpdate() {
+      const api = lightweightUpdaterApi();
+      if (!api || !api.downloadInstall) {
+        renderLightweightUpdaterStatus(null);
+        return;
+      }
+      $('light-update-message').textContent = '正在下载并安装轻量更新...';
+      const status = await api.downloadInstall();
+      renderLightweightUpdaterStatus(status);
+      $('light-update-message').textContent = '轻量更新已安装。请关闭并重新打开应用，让新代码生效。';
+    }
+
+    async function rollbackLightweightUpdate() {
+      const api = lightweightUpdaterApi();
+      if (!api || !api.rollback) {
+        renderLightweightUpdaterStatus(null);
+        return;
+      }
+      if (!confirm('确认回退到内置安装包代码？回退后请关闭并重新打开应用。')) {
+        return;
+      }
+      $('light-update-message').textContent = '正在回退轻量代码包...';
+      const status = await api.rollback();
+      renderLightweightUpdaterStatus(status);
+      $('light-update-message').textContent = '已回退到内置安装包代码。请关闭并重新打开应用。';
+    }
+
     function startUpdaterBridge() {
       const api = updaterApi();
       if (api && api.onStatus) {
@@ -6424,6 +6558,12 @@ function renderAdminHtml() {
           supported: false,
           reason: error.message || String(error),
           currentVersion: '-'
+        });
+      });
+      refreshLightweightUpdaterStatus().catch((error) => {
+        renderLightweightUpdaterStatus({
+          supported: false,
+          error: error.message || String(error)
         });
       });
     }
@@ -8090,6 +8230,30 @@ function renderAdminHtml() {
     $('update-install').onclick = () => installUpdate().catch((error) => {
       $('update-message').textContent = error.message;
       setMessage(error.message, true);
+    });
+    $('light-update-check').onclick = () => checkLightweightUpdate().catch((error) => {
+      $('light-update-message').textContent = error.message;
+      setMessage(error.message, true);
+      refreshLightweightUpdaterStatus().catch(() => {});
+    });
+    $('light-update-download-install').onclick = () => downloadInstallLightweightUpdate().catch((error) => {
+      $('light-update-message').textContent = error.message;
+      setMessage(error.message, true);
+      refreshLightweightUpdaterStatus().catch(() => {});
+    });
+    $('light-update-refresh').onclick = () => refreshLightweightUpdaterStatus().catch((error) => {
+      $('light-update-message').textContent = error.message;
+      setMessage(error.message, true);
+    });
+    $('light-update-install').onclick = () => installLightweightUpdate().catch((error) => {
+      $('light-update-message').textContent = error.message;
+      setMessage(error.message, true);
+      refreshLightweightUpdaterStatus().catch(() => {});
+    });
+    $('light-update-rollback').onclick = () => rollbackLightweightUpdate().catch((error) => {
+      $('light-update-message').textContent = error.message;
+      setMessage(error.message, true);
+      refreshLightweightUpdaterStatus().catch(() => {});
     });
     $('alert-test').onclick = () => testAlertWebhook().catch((error) => {
       $('settings-message').textContent = error.message;

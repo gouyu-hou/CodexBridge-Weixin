@@ -33,3 +33,21 @@ contextBridge.exposeInMainWorld('codexbridgeUpdater', {
     };
   },
 });
+
+contextBridge.exposeInMainWorld('codexbridgeLightweightUpdater', {
+  getStatus() {
+    return ipcRenderer.invoke('codexbridge:lightweight-update:get-status');
+  },
+  check() {
+    return ipcRenderer.invoke('codexbridge:lightweight-update:check');
+  },
+  downloadInstall() {
+    return ipcRenderer.invoke('codexbridge:lightweight-update:download-install');
+  },
+  installLocal(payload) {
+    return ipcRenderer.invoke('codexbridge:lightweight-update:install-local', payload);
+  },
+  rollback() {
+    return ipcRenderer.invoke('codexbridge:lightweight-update:rollback');
+  },
+});
