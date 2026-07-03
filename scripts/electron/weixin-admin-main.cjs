@@ -526,6 +526,20 @@ function installUpdateIpcHandlers() {
     await installLightweightUpdateFromPath(sourcePath);
     return getLightweightUpdateStatus();
   });
+  ipcMain.handle('codexbridge:lightweight-update:pick-local', async () => {
+    const result = await dialog.showOpenDialog(mainWindow || undefined, {
+      title: '选择轻量更新包',
+      properties: ['openFile', 'openDirectory'],
+      filters: [
+        { name: '轻量更新包', extensions: ['zip'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    });
+    if (result.canceled || !result.filePaths?.[0]) {
+      return { canceled: true, path: '' };
+    }
+    return { canceled: false, path: result.filePaths[0] };
+  });
   ipcMain.handle('codexbridge:lightweight-update:rollback', async () => {
     await rollbackLightweightCurrent(`manual-rollback-${Date.now()}`);
     patchLightweightUpdateState({ error: null });

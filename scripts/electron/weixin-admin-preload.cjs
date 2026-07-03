@@ -47,6 +47,9 @@ contextBridge.exposeInMainWorld('codexbridgeLightweightUpdater', {
   installLocal(payload) {
     return ipcRenderer.invoke('codexbridge:lightweight-update:install-local', payload);
   },
+  pickLocal() {
+    return ipcRenderer.invoke('codexbridge:lightweight-update:pick-local');
+  },
   rollback() {
     return ipcRenderer.invoke('codexbridge:lightweight-update:rollback');
   },

@@ -1346,6 +1346,9 @@ test('WeixinAdminServer admin page enables shutdown-on-close by default', async 
     assert.match(html, /\/api\/setup\/complete/u);
     assert.match(html, /id="provider-source"/u);
     assert.match(html, /id="provider-ccswitch-sync"/u);
+    assert.match(html, /id="setup-provider-key-status"/u);
+    assert.match(html, /function providerKeyStatusText/u);
+    assert.match(html, /renderSetupProvider\(syncedProvider\)/u);
     assert.match(html, /\/api\/model-provider\/sync-ccswitch/u);
     assert.match(html, /data-page="diagnostics"/u);
     assert.match(html, /id="diagnostics-run"/u);

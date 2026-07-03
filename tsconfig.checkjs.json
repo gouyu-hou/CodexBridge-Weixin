@@ -19,6 +19,7 @@
     "src/platforms/weixin/config.ts",
     "src/platforms/weixin/client.ts",
     "src/platforms/weixin/plugin.ts",
+    "src/platforms/weixin/official/vendor.d.ts",
     "src/platforms/weixin/account_store.ts",
     "src/platforms/weixin/formatting.ts",
     "src/platforms/weixin/poller.ts",

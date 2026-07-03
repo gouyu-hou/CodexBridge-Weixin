@@ -3518,6 +3518,35 @@ function renderAdminHtml() {
       --grad: linear-gradient(135deg, #2563eb 0%, #06b6d4 48%, #f43f5e 100%);
       --support-grad: linear-gradient(135deg, #ffb703 0%, #ff4d6d 48%, #8b5cf6 100%);
       --shadow: 0 22px 48px -26px rgba(37, 99, 235, 0.34), 0 8px 20px -16px rgba(15, 23, 42, 0.16);
+      --code-bg: #f5f7fb;
+      --code-text: #0f172a;
+      --doc-text: #465269;
+      --doc-muted: #4b5568;
+    }
+    body[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #0a1020;
+      --panel: rgba(15, 23, 42, 0.84);
+      --panel-solid: #101827;
+      --text: #edf4ff;
+      --muted: #9aa9bd;
+      --line: rgba(148, 163, 184, 0.16);
+      --line-strong: rgba(148, 163, 184, 0.26);
+      --accent: #60a5fa;
+      --accent-2: #fb7185;
+      --accent-dark: #93c5fd;
+      --cyan: #22d3ee;
+      --amber: #fbbf24;
+      --support: #fb7185;
+      --danger: #fb7185;
+      --ok: #34d399;
+      --grad: linear-gradient(135deg, #3b82f6 0%, #22d3ee 50%, #fb7185 100%);
+      --support-grad: linear-gradient(135deg, #fbbf24 0%, #fb7185 48%, #a78bfa 100%);
+      --shadow: 0 26px 58px -34px rgba(2, 6, 23, 0.9), 0 10px 24px -18px rgba(15, 23, 42, 0.8);
+      --code-bg: rgba(2, 6, 23, 0.54);
+      --code-text: #e5eefb;
+      --doc-text: #cbd5e1;
+      --doc-muted: #a9b7ca;
     }
     * { box-sizing: border-box; }
     body {
@@ -3531,6 +3560,36 @@ function renderAdminHtml() {
         radial-gradient(900px 720px at 50% 120%, rgba(245, 158, 11, 0.12), transparent 60%),
         var(--bg);
       background-attachment: fixed;
+      overflow-x: hidden;
+    }
+    body[data-theme="dark"] {
+      background:
+        radial-gradient(1000px 640px at 8% -12%, rgba(59, 130, 246, 0.20), transparent 58%),
+        radial-gradient(900px 600px at 108% 2%, rgba(251, 113, 133, 0.12), transparent 55%),
+        radial-gradient(900px 720px at 50% 118%, rgba(34, 211, 238, 0.10), transparent 60%),
+        var(--bg);
+      background-attachment: fixed;
+    }
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(120deg, rgba(255, 255, 255, 0.42), transparent 34%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 38%);
+      opacity: 0.62;
+    }
+    body[data-theme="dark"]::before {
+      background:
+        linear-gradient(120deg, rgba(255, 255, 255, 0.06), transparent 34%),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 42%);
+      opacity: 0.9;
+    }
+    header, main, .modal-overlay {
+      position: relative;
+      z-index: 2;
     }
     ::selection { background: rgba(139, 92, 246, 0.22); }
     a { color: #6d28d9; }
@@ -3587,6 +3646,8 @@ function renderAdminHtml() {
       background: rgba(255, 255, 255, 0.82);
       box-shadow: var(--shadow);
       overflow: hidden;
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
     }
     .side-title {
       padding: 14px 15px 8px;
@@ -3602,6 +3663,7 @@ function renderAdminHtml() {
       gap: 4px;
     }
     .side-nav a {
+      position: relative;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -3613,10 +3675,25 @@ function renderAdminHtml() {
       font-weight: 650;
       transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
     }
+    .side-nav a::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 999px;
+      background: transparent;
+      box-shadow: inset 0 0 0 1px rgba(100, 112, 138, 0.38);
+      flex: 0 0 auto;
+      margin-right: 2px;
+      transition: background 0.15s ease, box-shadow 0.15s ease;
+    }
     .side-nav a.active {
       background: linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(6, 182, 212, 0.12));
       color: var(--accent-dark);
       box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.18);
+    }
+    .side-nav a.active::before {
+      background: var(--accent);
+      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
     }
     .side-nav a:hover {
       background: rgba(37, 99, 235, 0.10);
@@ -3624,7 +3701,7 @@ function renderAdminHtml() {
       transform: translateX(2px);
     }
     .side-nav a::after {
-      content: "›";
+      content: ">";
       color: var(--muted);
       font-size: 18px;
       line-height: 1;
@@ -3659,6 +3736,11 @@ function renderAdminHtml() {
     }
     .page-group.active {
       display: grid;
+      animation: pageEnter 0.22s ease-out both;
+    }
+    @keyframes pageEnter {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
     }
     .grid {
       display: grid;
@@ -3698,6 +3780,7 @@ function renderAdminHtml() {
       justify-content: space-between;
       gap: 12px;
       min-width: 0;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.36));
     }
     h2 {
       margin: 0;
@@ -3713,6 +3796,187 @@ function renderAdminHtml() {
       align-items: center;
       gap: 8px;
       flex-wrap: wrap;
+    }
+    .theme-toggle {
+      height: 40px;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 4px 13px 4px 5px;
+      border: 1px solid rgba(37, 99, 235, 0.16);
+      border-radius: 999px;
+      background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 255, 0.74));
+      box-shadow: 0 12px 26px -22px rgba(15, 23, 42, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      color: var(--accent-dark);
+      font-weight: 800;
+      transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, background 0.16s ease;
+    }
+    .theme-toggle:hover {
+      border-color: rgba(37, 99, 235, 0.28);
+      box-shadow: 0 16px 30px -22px rgba(37, 99, 235, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+      transform: translateY(-1px);
+    }
+    body[data-theme="dark"] .theme-toggle {
+      background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.8));
+      border-color: rgba(148, 163, 184, 0.24);
+      box-shadow: 0 18px 32px -24px rgba(2, 6, 23, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    }
+    .theme-icon {
+      position: relative;
+      width: 30px;
+      height: 30px;
+      border-radius: 999px;
+      flex: 0 0 auto;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 36% 32%, rgba(255, 255, 255, 0.9), transparent 34%),
+        linear-gradient(135deg, #fde68a, #60a5fa);
+      box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.16), 0 7px 14px -10px rgba(37, 99, 235, 0.85);
+    }
+    .theme-icon::before,
+    .theme-icon::after {
+      content: "";
+      position: absolute;
+      display: block;
+      transition: transform 0.22s ease, opacity 0.22s ease, background 0.22s ease, box-shadow 0.22s ease;
+    }
+    .theme-icon::before {
+      width: 11px;
+      height: 11px;
+      border-radius: 999px;
+      background: #f59e0b;
+      box-shadow:
+        0 0 0 5px rgba(245, 158, 11, 0.16),
+        0 -12px 0 -4px rgba(245, 158, 11, 0.75),
+        0 12px 0 -4px rgba(245, 158, 11, 0.75),
+        12px 0 0 -4px rgba(245, 158, 11, 0.75),
+        -12px 0 0 -4px rgba(245, 158, 11, 0.75);
+    }
+    .theme-icon::after {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: transparent;
+      transform: translate(18px, -12px);
+      box-shadow: -5px 5px 0 #dbeafe;
+      opacity: 0;
+    }
+    body[data-theme="dark"] .theme-icon {
+      background:
+        radial-gradient(circle at 38% 34%, rgba(255, 255, 255, 0.18), transparent 36%),
+        linear-gradient(135deg, #172554, #0f172a);
+      box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.18), 0 10px 18px -12px rgba(2, 6, 23, 0.95);
+    }
+    body[data-theme="dark"] .theme-icon::before {
+      opacity: 0;
+      transform: translate(-16px, 12px) scale(0.6);
+    }
+    body[data-theme="dark"] .theme-icon::after {
+      opacity: 1;
+      transform: translate(2px, -1px);
+      box-shadow:
+        -5px 5px 0 #dbeafe,
+        8px -8px 0 -5px rgba(147, 197, 253, 0.9),
+        -9px -5px 0 -5px rgba(147, 197, 253, 0.75),
+        9px 8px 0 -5px rgba(147, 197, 253, 0.7);
+    }
+    .theme-label {
+      color: var(--accent-dark);
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    body[data-theme="dark"] header {
+      background: rgba(10, 16, 32, 0.76);
+      box-shadow: 0 1px 0 rgba(148, 163, 184, 0.12), 0 18px 36px -26px rgba(2, 6, 23, 0.9);
+    }
+    body[data-theme="dark"] .side-card,
+    body[data-theme="dark"] section {
+      background: var(--panel);
+      border-color: var(--line);
+    }
+    body[data-theme="dark"] .section-head,
+    body[data-theme="dark"] .modal-head {
+      background: linear-gradient(180deg, rgba(15, 23, 42, 0.86), rgba(15, 23, 42, 0.54));
+      border-color: var(--line);
+    }
+    body[data-theme="dark"] .side-support {
+      background:
+        radial-gradient(140px 120px at 100% 0%, rgba(251, 191, 36, 0.16), transparent 70%),
+        radial-gradient(160px 130px at 0% 100%, rgba(251, 113, 133, 0.12), transparent 70%),
+        rgba(15, 23, 42, 0.88);
+    }
+    body[data-theme="dark"] .side-support strong,
+    body[data-theme="dark"] .promo-title {
+      color: #fecdd3;
+    }
+    body[data-theme="dark"] button,
+    body[data-theme="dark"] input,
+    body[data-theme="dark"] select {
+      background: rgba(15, 23, 42, 0.86);
+      color: var(--text);
+      border-color: var(--line-strong);
+    }
+    body[data-theme="dark"] button:hover {
+      background: rgba(30, 41, 59, 0.92);
+      border-color: rgba(148, 163, 184, 0.36);
+    }
+    body[data-theme="dark"] select option {
+      background: #111827;
+      color: var(--text);
+    }
+    body[data-theme="dark"] th {
+      background: rgba(96, 165, 250, 0.08);
+      color: var(--muted);
+    }
+    body[data-theme="dark"] tbody tr:hover {
+      background: rgba(96, 165, 250, 0.08);
+    }
+    body[data-theme="dark"] .pill,
+    body[data-theme="dark"] .readonly-line,
+    body[data-theme="dark"] .chart-card,
+    body[data-theme="dark"] .metric,
+    body[data-theme="dark"] .diagnostic-card,
+    body[data-theme="dark"] .release-notes,
+    body[data-theme="dark"] .qr-box,
+    body[data-theme="dark"] .file-picker,
+    body[data-theme="dark"] .promo,
+    body[data-theme="dark"] .modal-card,
+    body[data-theme="dark"] .setup-card,
+    body[data-theme="dark"] .setup-info,
+    body[data-theme="dark"] .setup-test-card,
+    body[data-theme="dark"] .doc-card,
+    body[data-theme="dark"] .command-row,
+    body[data-theme="dark"] .download-links a {
+      background: rgba(15, 23, 42, 0.78);
+      color: var(--text);
+      border-color: var(--line);
+    }
+    body[data-theme="dark"] .donut::after {
+      background: #101827;
+      color: var(--text);
+    }
+    body[data-theme="dark"] .bar-track,
+    body[data-theme="dark"] .progress-track,
+    body[data-theme="dark"] .account-bar-track {
+      background: rgba(148, 163, 184, 0.16);
+    }
+    body[data-theme="dark"] .qr-box img {
+      background: #ffffff;
+      border-color: rgba(255, 255, 255, 0.12);
+    }
+    body[data-theme="dark"] .diagnostic-detail,
+    body[data-theme="dark"] .release-notes {
+      color: #cbd5e1;
+    }
+    body[data-theme="dark"] .log-box {
+      background: #050914;
+      color: #dbeafe;
+      border-color: rgba(148, 163, 184, 0.2);
     }
     button, input, select {
       height: 36px;
@@ -4098,6 +4362,12 @@ function renderAdminHtml() {
       background: linear-gradient(160deg, #ffffff, #f5f6fd);
       min-height: 78px;
       overflow: hidden;
+      transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+    }
+    .metric:hover {
+      transform: translateY(-1px);
+      border-color: rgba(37, 99, 235, 0.2);
+      box-shadow: 0 15px 30px -24px rgba(37, 99, 235, 0.52);
     }
     .metric::after {
       content: "";
@@ -4601,7 +4871,8 @@ function renderAdminHtml() {
     }
     .setup-body {
       padding: 18px;
-      overflow: auto;
+      overflow-y: auto;
+      overflow-x: hidden;
       display: grid;
       gap: 16px;
     }
@@ -4657,6 +4928,8 @@ function renderAdminHtml() {
     }
     .setup-check {
       min-width: 0;
+      max-width: 100%;
+      overflow: hidden;
       border: 1px solid var(--line);
       border-radius: 12px;
       padding: 13px;
@@ -4674,16 +4947,61 @@ function renderAdminHtml() {
     }
     .setup-check-title {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       justify-content: space-between;
       gap: 8px;
       font-weight: 800;
+    }
+    .setup-check-title > span:first-child {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      line-height: 1.35;
+    }
+    .setup-check-title .pill {
+      flex: 0 0 auto;
+    }
+    .setup-check-main {
+      min-width: 0;
+      max-width: 100%;
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .setup-check-detail {
       color: var(--muted);
       font-size: 12px;
       line-height: 1.6;
       overflow-wrap: anywhere;
+    }
+    .setup-provider-panel .settings-grid {
+      align-items: start;
+    }
+    .setup-provider-panel .provider-grid {
+      gap: 14px;
+    }
+    .setup-provider-panel .field {
+      min-width: 0;
+    }
+    .setup-provider-panel input,
+    .setup-provider-panel select,
+    .setup-provider-panel .readonly-line {
+      width: 100%;
+    }
+    .setup-provider-panel .readonly-line {
+      min-height: 36px;
+      align-items: center;
+      line-height: 1.45;
+    }
+    .setup-provider-hint {
+      grid-column: 1 / -1;
+      margin-top: -2px;
+      padding: 10px 12px;
+      border: 1px solid rgba(37, 99, 235, 0.14);
+      border-radius: 10px;
+      background: rgba(37, 99, 235, 0.05);
     }
     .setup-actions {
       display: flex;
@@ -4754,7 +5072,7 @@ function renderAdminHtml() {
     }
     .doc-card p,
     .doc-card li {
-      color: #465269;
+      color: var(--doc-text);
     }
     .doc-card p {
       margin: 0;
@@ -4786,18 +5104,31 @@ function renderAdminHtml() {
     .command-row code,
     .doc-code code {
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      color: #0f172a;
+      color: var(--code-text);
       overflow-wrap: anywhere;
     }
+    .doc-card :not(.doc-code) > code,
+    .command-row span code {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 1px 6px;
+      border-radius: 6px;
+      background: var(--code-bg);
+      border: 1px solid var(--line);
+      color: var(--code-text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.94em;
+    }
     .command-row span {
-      color: #4b5568;
+      color: var(--doc-muted);
     }
     .doc-code {
       display: grid;
       gap: 6px;
       padding: 12px;
       border-radius: 12px;
-      background: #f5f7fb;
+      background: var(--code-bg);
       border: 1px solid var(--line);
     }
     .download-links {
@@ -4949,6 +5280,14 @@ function renderAdminHtml() {
         margin-bottom: 4px;
       }
     }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.001ms !important;
+      }
+    }
   </style>
 </head>
 <body>
@@ -4959,6 +5298,10 @@ function renderAdminHtml() {
         <h1>CodexBridge Weixin 管理面板</h1>
       </div>
       <div class="toolbar">
+        <button class="theme-toggle" id="theme-toggle" type="button" aria-label="切换亮色或暗色主题">
+          <span class="theme-icon" aria-hidden="true"></span>
+          <span class="theme-label" id="theme-label">亮色</span>
+        </button>
         <span class="pill" id="service-state">加载中</span>
         <button id="bridge-start">启动微信桥接</button>
         <button id="bridge-restart">重启微信桥接</button>
@@ -5345,6 +5688,7 @@ function renderAdminHtml() {
           <input id="light-update-path" autocomplete="off" placeholder="选择或粘贴轻量更新包目录 / zip 文件路径" />
         </label>
         <div class="update-actions">
+          <button id="light-update-pick-local">选择文件/文件夹</button>
           <button class="primary" id="light-update-check">检查轻量更新</button>
           <button id="light-update-download-install">下载并安装轻量更新</button>
           <button class="primary" id="light-update-install">安装轻量包</button>
@@ -5924,7 +6268,7 @@ function renderAdminHtml() {
             </div>
           </div>
         </div>
-        <div class="setup-step" data-setup-panel="1">
+        <div class="setup-step setup-provider-panel" data-setup-panel="1">
           <div class="setup-intro">
             <strong>填写模型供应商</strong>
             <span class="muted">这里会保存到服务配置文件。API key 留空表示保留已有 key。</span>
@@ -5962,14 +6306,18 @@ function renderAdminHtml() {
               <select id="setup-provider-model"></select>
               <input id="setup-provider-model-custom" autocomplete="off" placeholder="自定义模型名称" style="display:none;" />
             </div>
-            <div class="field">
+            <div class="field provider-span">
               <label for="setup-provider-api-key">API key</label>
               <input id="setup-provider-api-key" type="password" autocomplete="off" placeholder="填写新 key，留空保留当前 key" />
             </div>
             <div class="field provider-span">
               <label for="setup-provider-base-url">接口地址 Base URL</label>
               <input id="setup-provider-base-url" autocomplete="off" />
-              <div class="help-line">如果使用中转站，可以点击 <a href="https://ztoken.app/register?aff=8M7CSMLY5J77" target="_blank" rel="noopener">ztoken.app</a> 跳转到中转站获取接口地址。</div>
+            </div>
+            <div class="help-line setup-provider-hint">如果使用中转站，可以点击 <a href="https://ztoken.app/register?aff=8M7CSMLY5J77" target="_blank" rel="noopener">ztoken.app</a> 跳转到中转站获取接口地址。API key 留空表示保留当前已保存的 key。</div>
+            <div class="field provider-span">
+              <label>当前 key</label>
+              <div class="readonly-line" id="setup-provider-key-status">-</div>
             </div>
             <div class="field provider-span">
               <label for="setup-provider-env-file">配置文件</label>
@@ -5983,7 +6331,7 @@ function renderAdminHtml() {
               <label for="setup-provider-ccswitch-interval">自动同步间隔（秒）</label>
               <input id="setup-provider-ccswitch-interval" type="number" min="2" max="60" step="1" />
             </div>
-            <div class="field">
+            <div class="field provider-span">
               <label>CCSwitch 同步状态</label>
               <div class="readonly-line" id="setup-provider-ccswitch-status">-</div>
             </div>
@@ -6075,6 +6423,49 @@ function renderAdminHtml() {
       setupAutoOpened: false
     };
     const $ = (id) => document.getElementById(id);
+    const THEME_STORAGE_KEY = 'codexbridge-admin-theme';
+
+    function normalizeThemeMode(mode) {
+      return ['light', 'dark'].includes(String(mode || '')) ? String(mode) : 'light';
+    }
+
+    function getPreferredThemeMode() {
+      try {
+        const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+        if (saved) {
+          return normalizeThemeMode(saved);
+        }
+      } catch {}
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+
+    function setThemeMode(mode) {
+      const next = normalizeThemeMode(mode);
+      document.body.dataset.theme = next;
+      const label = $('theme-label');
+      if (label) {
+        label.textContent = next === 'dark' ? '暗色' : '亮色';
+      }
+      const toggle = $('theme-toggle');
+      if (toggle) {
+        toggle.title = next === 'dark' ? '切换到亮色主题' : '切换到暗色主题';
+        toggle.setAttribute('aria-label', toggle.title);
+      }
+      try {
+        window.localStorage.setItem(THEME_STORAGE_KEY, next);
+      } catch {}
+    }
+
+    function initThemeMode() {
+      setThemeMode(getPreferredThemeMode());
+      const toggle = $('theme-toggle');
+      if (toggle) {
+        toggle.addEventListener('click', () => {
+          setThemeMode(document.body.dataset.theme === 'dark' ? 'light' : 'dark');
+        });
+      }
+    }
+
     const providerPresets = {
       default: {
         profileId: 'openai-default',
@@ -6344,6 +6735,49 @@ function renderAdminHtml() {
       return data;
     }
 
+    function browserSleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function isDesktopAdminWindow() {
+      return Boolean(window.codexbridgeSetup || window.codexbridgeUpdater || window.codexbridgeLightweightUpdater);
+    }
+
+    async function waitForAdminServerReadyAfterServiceRestart(timeoutMs) {
+      const deadline = Date.now() + timeoutMs;
+      await browserSleep(1200);
+      while (Date.now() < deadline) {
+        try {
+          await requestJson('/api/state', { method: 'GET', cache: 'no-store' });
+          return true;
+        } catch {
+          await browserSleep(1000);
+        }
+      }
+      return false;
+    }
+
+    async function restartServiceAfterProviderSave(messageId) {
+      const message = $(messageId);
+      if (!isDesktopAdminWindow()) {
+        message.textContent = '已保存。请手动重启软件或服务后生效。';
+        return;
+      }
+      message.textContent = '已保存，正在重启本地服务以应用新的 API key / 模型配置...';
+      await fetch('/api/service/shutdown', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reason: 'model-provider-settings-updated' })
+      }).catch(() => {});
+      const ready = await waitForAdminServerReadyAfterServiceRestart(60000);
+      if (!ready) {
+        message.textContent = '配置已保存，但没有检测到服务自动恢复。请关闭并重新打开软件。';
+        return;
+      }
+      await loadState().catch(() => {});
+      message.textContent = '服务已重启，新 API key / 模型配置已生效。';
+    }
+
     function updaterApi() {
       return window.codexbridgeUpdater || null;
     }
@@ -6478,6 +6912,7 @@ function renderAdminHtml() {
         || (current.currentRoot ? ('当前代码目录：' + current.currentRoot) : '轻量更新只替换业务代码和页面，不重复下载 Electron、Node、Codex runtime。');
       $('light-update-check').disabled = !api || current.busy || current.checking || current.downloading || current.canCheck === false;
       $('light-update-download-install').disabled = !api || current.busy || current.downloading || current.canDownloadInstall === false;
+      $('light-update-pick-local').disabled = !api || !api.pickLocal || current.busy;
       $('light-update-install').disabled = !api || current.busy;
       $('light-update-refresh').disabled = !api || current.busy;
       $('light-update-rollback').disabled = !api || current.busy || !current.canRollback;
@@ -6507,6 +6942,21 @@ function renderAdminHtml() {
       const status = await api.installLocal({ path: sourcePath });
       renderLightweightUpdaterStatus(status);
       $('light-update-message').textContent = '轻量更新已安装。请关闭并重新打开应用，让新代码生效。';
+    }
+
+    async function pickLocalLightweightUpdate() {
+      const api = lightweightUpdaterApi();
+      if (!api || !api.pickLocal) {
+        $('light-update-message').textContent = '请在桌面应用窗口中使用文件选择功能。';
+        return;
+      }
+      const result = await api.pickLocal();
+      if (!result || result.canceled) {
+        $('light-update-message').textContent = '已取消选择。';
+        return;
+      }
+      $('light-update-path').value = result.path || '';
+      $('light-update-message').textContent = result.path ? '已选择轻量更新包，可以点击“安装轻量包”。' : '没有选择文件。';
     }
 
     async function checkLightweightUpdate() {
@@ -7202,6 +7652,7 @@ function renderAdminHtml() {
       head.appendChild(label);
       head.appendChild(pill);
       const main = document.createElement('div');
+      main.className = 'setup-check-main';
       main.textContent = (check && check.label) || '-';
       const detail = document.createElement('div');
       detail.className = 'setup-check-detail';
@@ -7603,6 +8054,12 @@ function renderAdminHtml() {
       return 'default';
     }
 
+    function providerKeyStatusText(provider) {
+      return provider && provider.apiKeyConfigured
+        ? ('已配置：' + (provider.apiKeyMasked || '********'))
+        : '未配置';
+    }
+
     function renderModelProvider(provider) {
       state.currentModelProvider = provider || {};
       const presetKey = presetKeyForProvider(state.currentModelProvider);
@@ -7612,9 +8069,7 @@ function renderAdminHtml() {
       populateModelOptions(presetKey, state.currentModelProvider.model || '');
       $('provider-base-url').value = state.currentModelProvider.baseUrl || preset.baseUrl || '';
       $('provider-api-key').value = '';
-      $('provider-key-status').textContent = state.currentModelProvider.apiKeyConfigured
-        ? ('已配置：' + (state.currentModelProvider.apiKeyMasked || '********'))
-        : '未配置';
+      $('provider-key-status').textContent = providerKeyStatusText(state.currentModelProvider);
       $('provider-env-file').value = state.currentModelProvider.serviceEnvFile || '';
       $('provider-source').value = state.currentModelProvider.source || 'manual';
       $('provider-ccswitch-home').value = (state.currentModelProvider.ccswitch && state.currentModelProvider.ccswitch.codexHome) || '';
@@ -7639,6 +8094,7 @@ function renderAdminHtml() {
       populateModelOptionsFor('setup-provider-model', 'setup-provider-model-custom', presetKey, current.model || '');
       $('setup-provider-base-url').value = current.baseUrl || preset.baseUrl || '';
       $('setup-provider-api-key').value = '';
+      $('setup-provider-key-status').textContent = providerKeyStatusText(current);
       $('setup-provider-env-file').value = current.serviceEnvFile || '';
       $('setup-provider-source').value = current.source || 'manual';
       $('setup-provider-ccswitch-home').value = (current.ccswitch && current.ccswitch.codexHome) || '';
@@ -7804,7 +8260,11 @@ function renderAdminHtml() {
       });
       renderSettings(data.settings || {});
       $('provider-api-key').value = '';
-      $('provider-message').textContent = '已保存。新一轮微信对话会使用最新配置。';
+      if (data.restartRequired) {
+        await restartServiceAfterProviderSave('provider-message');
+      } else {
+        $('provider-message').textContent = '已保存。';
+      }
     }
 
     async function syncProviderFromCcswitch(targetPrefix) {
@@ -7820,9 +8280,19 @@ function renderAdminHtml() {
       });
       renderSettings(data.settings || {});
       renderSetup(data.state || {});
+      if (isSetup) {
+        const syncedProvider = (data.settings && data.settings.modelProvider)
+          || (data.state && data.state.settings && data.state.settings.modelProvider)
+          || state.currentModelProvider
+          || {};
+        renderSetupProvider(syncedProvider);
+      }
       $(messageId).textContent = data.message || '已同步 CCSwitch / Codex 当前配置';
       if (data.state && data.state.settings) {
         renderSettings(data.state.settings);
+        if (isSetup && data.state.settings.modelProvider) {
+          renderSetupProvider(data.state.settings.modelProvider);
+        }
       }
     }
 
@@ -7838,7 +8308,11 @@ function renderAdminHtml() {
       renderSettings(data.settings || {});
       renderSetup(data.state || {});
       $('setup-provider-api-key').value = '';
-      $('setup-provider-message').textContent = '已保存。新一轮微信对话会使用最新配置。';
+      if (data.restartRequired) {
+        await restartServiceAfterProviderSave('setup-provider-message');
+      } else {
+        $('setup-provider-message').textContent = '已保存。';
+      }
     }
 
     async function saveSettings() {
@@ -8072,6 +8546,8 @@ function renderAdminHtml() {
       }
     }
 
+    initThemeMode();
+
     for (const link of document.querySelectorAll('.side-nav a[data-page]')) {
       link.addEventListener('click', (event) => {
         event.preventDefault();
@@ -8240,6 +8716,10 @@ function renderAdminHtml() {
       $('light-update-message').textContent = error.message;
       setMessage(error.message, true);
       refreshLightweightUpdaterStatus().catch(() => {});
+    });
+    $('light-update-pick-local').onclick = () => pickLocalLightweightUpdate().catch((error) => {
+      $('light-update-message').textContent = error.message;
+      setMessage(error.message, true);
     });
     $('light-update-refresh').onclick = () => refreshLightweightUpdaterStatus().catch((error) => {
       $('light-update-message').textContent = error.message;
