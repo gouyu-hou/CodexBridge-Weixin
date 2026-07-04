@@ -156,6 +156,22 @@ test('file-backed provider profiles are reconciled to the current runtime config
   );
 });
 
+test('JsonFileStore quarantines corrupt JSON and reinitializes with empty data', () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-json-store-corrupt-'));
+  const providerProfilesPath = path.join(stateDir, 'provider_profiles.json');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(providerProfilesPath, '{ broken json', 'utf8');
+
+  const repositories = createFileJsonRepositories(stateDir);
+
+  assert.deepEqual(repositories.providerProfiles.list(), []);
+  assert.equal(fs.readFileSync(providerProfilesPath, 'utf8'), '[]\n');
+  const quarantined = fs.readdirSync(stateDir)
+    .filter((entry) => entry.startsWith('provider_profiles.json.corrupt-'));
+  assert.equal(quarantined.length, 1);
+  assert.equal(fs.readFileSync(path.join(stateDir, quarantined[0]), 'utf8'), '{ broken json');
+});
+
 test('file-backed repositories preserve thread aliases across runtime restarts', async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-json-store-'));
   const providerProfile = makeProviderProfile('openai-default', 'openai-native', 'OpenAI Default');

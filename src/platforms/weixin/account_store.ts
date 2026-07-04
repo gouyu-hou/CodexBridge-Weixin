@@ -14,6 +14,18 @@ export interface SavedWeixinAccount {
   saved_at: string;
   display_name?: string;
   disabled?: boolean;
+  group?: string;
+  role?: string;
+  permissions?: {
+    can_chat?: boolean;
+    can_upload?: boolean;
+    can_execute_commands?: boolean;
+  };
+  model_provider?: {
+    provider_profile_id?: string;
+    model?: string;
+    reasoning_effort?: string;
+  };
 }
 
 type ContextTokenMap = Record<string, string>;
@@ -52,7 +64,7 @@ export class WeixinAccountStore {
     return this.readJson<SavedWeixinAccount>(this.accountFile(accountId));
   }
 
-  updateAccount(accountId: string, patch: Partial<Pick<SavedWeixinAccount, 'display_name' | 'disabled'>>) {
+  updateAccount(accountId: string, patch: Partial<Pick<SavedWeixinAccount, 'display_name' | 'disabled' | 'group' | 'role' | 'permissions' | 'model_provider'>>) {
     const current = this.loadAccount(accountId);
     if (!current) {
       return null;
@@ -68,6 +80,33 @@ export class WeixinAccountStore {
     }
     if ('disabled' in patch) {
       next.disabled = Boolean(patch.disabled);
+    }
+    if ('group' in patch) {
+      const group = String(patch.group ?? '').trim();
+      if (group) {
+        next.group = group.slice(0, 80);
+      } else {
+        delete next.group;
+      }
+    }
+    if ('role' in patch) {
+      const role = normalizeAccountRole(patch.role);
+      if (role) {
+        next.role = role;
+      } else {
+        delete next.role;
+      }
+    }
+    if ('permissions' in patch) {
+      next.permissions = normalizeAccountPermissions(patch.permissions);
+    }
+    if ('model_provider' in patch) {
+      const modelProvider = normalizeAccountModelProvider(patch.model_provider);
+      if (modelProvider) {
+        next.model_provider = modelProvider;
+      } else {
+        delete next.model_provider;
+      }
     }
     this.writeJson(this.accountFile(accountId), next);
     return next;
@@ -136,6 +175,54 @@ export class WeixinAccountStore {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   }
+}
+
+function normalizeAccountRole(value: unknown): string {
+  const role = String(value ?? '').trim().toLowerCase();
+  if (['owner', 'admin', 'member', 'viewer'].includes(role)) {
+    return role;
+  }
+  return '';
+}
+
+function normalizeAccountPermissions(value: unknown): NonNullable<SavedWeixinAccount['permissions']> {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    can_chat: source.can_chat !== undefined
+      ? Boolean(source.can_chat)
+      : source.canChat !== undefined
+        ? Boolean(source.canChat)
+        : true,
+    can_upload: source.can_upload !== undefined
+      ? Boolean(source.can_upload)
+      : source.canUpload !== undefined
+        ? Boolean(source.canUpload)
+        : true,
+    can_execute_commands: source.can_execute_commands !== undefined
+      ? Boolean(source.can_execute_commands)
+      : source.canExecuteCommands !== undefined
+        ? Boolean(source.canExecuteCommands)
+        : false,
+  };
+}
+
+function normalizeAccountModelProvider(value: unknown): NonNullable<SavedWeixinAccount['model_provider']> | null {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const providerProfileId = String(source.provider_profile_id ?? source.providerProfileId ?? '').trim();
+  const model = String(source.model ?? '').trim();
+  const reasoningEffort = String(source.reasoning_effort ?? source.reasoningEffort ?? '').trim();
+  if (!providerProfileId && !model && !reasoningEffort) {
+    return null;
+  }
+  return {
+    ...(providerProfileId ? { provider_profile_id: providerProfileId.slice(0, 120) } : {}),
+    ...(model ? { model: model.slice(0, 160) } : {}),
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort.slice(0, 40) } : {}),
+  };
 }
 
 export function defaultWeixinAccountsDir() {

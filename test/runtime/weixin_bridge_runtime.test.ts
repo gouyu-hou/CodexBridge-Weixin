@@ -2757,6 +2757,145 @@ test('WeixinBridgeRuntime separates runtime errors from reply failures and reset
   assert.equal(Object.keys(reset.byAccount).length, 0);
 });
 
+test('WeixinBridgeRuntime records latency breakdown for completed replies', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-rt-metrics-latency-'));
+  const metricsStore = new WeixinMetricsStore(stateDir);
+  const runtime: any = new WeixinBridgeRuntime({
+    platformPlugin: {
+      async start() {},
+      async stop() {},
+      async pollOnce() { return { events: [] }; },
+      async sendText(payload: any) {
+        await sleep(5);
+        return { success: true, deliveredCount: 1, deliveredText: payload.content, failedIndex: null, failedText: '', error: '' };
+      },
+      async sendTyping() {},
+      async sendMedia(payload: any) { return { success: true, messageId: 'm', sentPath: payload.filePath, sentCaption: '', error: '' }; },
+    },
+    bridgeCoordinator: {
+      async handleInboundEvent() {
+        await sleep(5);
+        return completeResponse('latency ok');
+      },
+    },
+    metricsStore,
+    locale: null,
+  } as any);
+
+  await runtime.processInboundEventWithOptions(
+    { platform: 'weixin', externalScopeId: 'acctA:scope', text: 'hi', metadata: { weixinAccountId: 'acctA' } },
+    {},
+  );
+
+  const metrics = runtime.getMetrics();
+  assert.equal(metrics.latency.count, 1);
+  assert.ok(metrics.latency.last.totalMs >= metrics.latency.last.coordinatorMs);
+  assert.ok(metrics.latency.last.coordinatorMs >= 1);
+  assert.ok(metrics.latency.last.deliveryMs >= 1);
+  assert.equal(metrics.latency.last.accountId, 'acctA');
+  assert.equal(metrics.latency.recent.length, 1);
+
+  runtime.persistMetrics();
+  const runtime2: any = new WeixinBridgeRuntime({
+    platformPlugin: {
+      async start() {}, async stop() {}, async pollOnce() { return { events: [] }; },
+      async sendText() { return { success: true }; }, async sendTyping() {},
+    },
+    bridgeCoordinator: { async handleInboundEvent() { return {}; } },
+    metricsStore,
+    locale: null,
+  } as any);
+  assert.equal(runtime2.getMetrics().latency.count, 1);
+  assert.equal(runtime2.getMetrics().latency.recent.length, 1);
+});
+
+test('WeixinBridgeRuntime blocks protected computer-control commands from friend accounts', async () => {
+  const sent: Array<{ externalScopeId: string; content: string }> = [];
+  let coordinatorCalls = 0;
+  const runtime = makeRuntime({
+    sendText: async (payload) => {
+      sent.push(payload);
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        coordinatorCalls += 1;
+        return completeResponse('should not run');
+      },
+    },
+  });
+
+  const outcome = await runtime.dispatchInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'friend-account:wxid_1',
+    text: '/project D:\\IT_learn\\codex_weixin',
+    metadata: {
+      weixinAccountId: 'friend-account',
+      weixinPrimaryAccountId: 'primary-account',
+    },
+  } as any) as any;
+
+  await outcome?.afterCommit?.();
+
+  assert.equal(coordinatorCalls, 0);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0].content, /权限不足|只有主账号/);
+});
+
+test('WeixinBridgeRuntime enforces friend account chat, upload, and command permissions', async () => {
+  const sent: Array<{ externalScopeId: string; content: string }> = [];
+  let coordinatorCalls = 0;
+  const runtime = makeRuntime({
+    sendText: async (payload) => {
+      sent.push(payload);
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        coordinatorCalls += 1;
+        return completeResponse('should not run');
+      },
+    },
+  });
+
+  await runtime.dispatchInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'friend-account:wxid_chat',
+    text: 'hello',
+    metadata: {
+      weixinAccountId: 'friend-account',
+      weixinPrimaryAccountId: 'primary-account',
+      weixinAccountPermissions: { canChat: false, canUpload: true, canExecuteCommands: false },
+    },
+  } as any);
+  await runtime.dispatchInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'friend-account:wxid_upload',
+    text: '看图',
+    attachments: [{ kind: 'image', localPath: 'D:\\tmp\\a.png' }],
+    metadata: {
+      weixinAccountId: 'friend-account',
+      weixinPrimaryAccountId: 'primary-account',
+      weixinAccountPermissions: { canChat: true, canUpload: false, canExecuteCommands: false },
+    },
+  } as any);
+  const commandOutcome = await runtime.dispatchInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'friend-account:wxid_command',
+    text: '/project D:\\IT_learn',
+    metadata: {
+      weixinAccountId: 'friend-account',
+      weixinPrimaryAccountId: 'primary-account',
+      weixinAccountPermissions: { canChat: true, canUpload: true, canExecuteCommands: false },
+    },
+  } as any) as any;
+  await commandOutcome?.afterCommit?.();
+
+  assert.equal(coordinatorCalls, 0);
+  assert.equal(sent.length, 3);
+  assert.match(sent[0].content, /没有聊天权限|联系主账号/);
+  assert.match(sent[1].content, /没有上传权限|联系主账号/);
+  assert.match(sent[2].content, /权限不足|只有主账号/);
+});
+
 test('postAlert debounces identical alerts and ignores non-http urls', async () => {
   resetAlertDebounceForTests();
   const calls: string[] = [];

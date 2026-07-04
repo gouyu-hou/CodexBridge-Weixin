@@ -140,6 +140,168 @@ test('WeixinAdminServer can rename, disable, and delete non-primary accounts', a
   }
 });
 
+test('WeixinAdminServer updates account group, role, permissions, and model defaults', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-primary',
+    token: 'token-primary',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-primary',
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-friend',
+    token: 'token-friend',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-friend',
+  });
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env: {
+      WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
+    },
+    port: 0,
+  });
+
+  const binding = await server.start();
+  try {
+    const patchResponse = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        group: '朋友',
+        role: 'viewer',
+        permissions: {
+          canChat: true,
+          canUpload: false,
+          canExecuteCommands: false,
+        },
+        modelProvider: {
+          providerProfileId: 'deepseek',
+          model: 'deepseek-v4-flash',
+          reasoningEffort: 'low',
+        },
+      }),
+    });
+    assert.equal(patchResponse.status, 200);
+
+    const saved = accountStore.loadAccount('bot-friend') as any;
+    assert.equal(saved.group, '朋友');
+    assert.equal(saved.role, 'viewer');
+    assert.deepEqual(saved.permissions, {
+      can_chat: true,
+      can_upload: false,
+      can_execute_commands: false,
+    });
+    assert.deepEqual(saved.model_provider, {
+      provider_profile_id: 'deepseek',
+      model: 'deepseek-v4-flash',
+      reasoning_effort: 'low',
+    });
+
+    const stateResponse = await fetch(`${binding.url}/api/state`);
+    const stateBody = await stateResponse.json() as any;
+    const friend = stateBody.accounts.find((account: any) => account.accountId === 'bot-friend');
+    assert.equal(friend.group, '朋友');
+    assert.equal(friend.role, 'viewer');
+    assert.equal(friend.permissions.canUpload, false);
+    assert.equal(friend.modelProvider.model, 'deepseek-v4-flash');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer validates account model defaults against provider profiles', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-primary',
+    token: 'token-primary',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-primary',
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-friend',
+    token: 'token-friend',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-friend',
+  });
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const now = Date.now();
+  repositories.providerProfiles.save({
+    id: 'deepseek',
+    providerKind: 'openai-compatible',
+    displayName: 'DeepSeek',
+    config: {
+      defaultModel: 'deepseek-v4-flash',
+      modelIds: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+    },
+    createdAt: now,
+    updatedAt: now,
+  });
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env: {
+      WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
+    },
+    port: 0,
+    repositories,
+  });
+
+  const binding = await server.start();
+  try {
+    const stateResponse = await fetch(`${binding.url}/api/state`);
+    const stateBody = await stateResponse.json() as any;
+    const provider = stateBody.providerProfiles.find((item: any) => item.providerProfileId === 'deepseek');
+    assert.deepEqual(provider.models, ['deepseek-v4-flash', 'deepseek-v4-pro']);
+
+    const unknownProvider = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        modelProvider: {
+          providerProfileId: 'missing-provider',
+          model: 'deepseek-v4-flash',
+        },
+      }),
+    });
+    assert.equal(unknownProvider.status, 400);
+
+    const invalidModel = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        modelProvider: {
+          providerProfileId: 'deepseek',
+          model: 'not-a-real-model',
+        },
+      }),
+    });
+    assert.equal(invalidModel.status, 400);
+
+    const validModel = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        modelProvider: {
+          providerProfileId: 'deepseek',
+          model: 'deepseek-v4-pro',
+        },
+      }),
+    });
+    assert.equal(validModel.status, 200);
+    assert.equal(accountStore.loadAccount('bot-friend')?.model_provider?.model, 'deepseek-v4-pro');
+  } finally {
+    await server.stop();
+  }
+});
+
 test('WeixinAdminServer switches the primary account and persists service env', async () => {
   const stateDir = makeTempStateDir();
   const envFile = path.join(stateDir, 'service.env');
@@ -470,6 +632,72 @@ test('WeixinAdminServer runs diagnostics for service, account, provider, ports, 
     assert.equal(byId.get('model')?.status, 'ok');
     assert.equal(byId.get('ports')?.status, 'warn');
     assert.equal(byId.get('codex-native')?.status, 'warn');
+  } finally {
+    await server.stop();
+    await new Promise<void>((resolve) => modelServer.close(() => resolve()));
+  }
+});
+
+test('WeixinAdminServer exposes focused first-run setup tests with Chinese repair hints', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-primary',
+    token: 'token-primary',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-primary',
+  });
+  const modelServer = http.createServer((req, res) => {
+    if (req.url === '/v1/models') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'gpt-test' }] }));
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'not found' } }));
+  });
+  await new Promise<void>((resolve) => modelServer.listen(0, '127.0.0.1', resolve));
+  const address = modelServer.address();
+  const modelPort = typeof address === 'object' && address ? address.port : 0;
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env: {
+      WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
+      CODEX_COMPAT_API_KEY: 'test-key',
+      CODEX_COMPAT_BASE_URL: `http://127.0.0.1:${modelPort}`,
+      CODEX_COMPAT_DEFAULT_MODEL: 'gpt-test',
+      CODEX_COMPAT_PROVIDER_NAME: 'Z Token',
+      CODEX_NATIVE_API_ENABLE: '0',
+    },
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status() {
+        return { running: true };
+      },
+    },
+  });
+
+  const binding = await server.start();
+  try {
+    for (const target of ['api-key', 'weixin', 'codex-command']) {
+      const response = await fetch(`${binding.url}/api/setup/test`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ target }),
+      });
+      assert.equal(response.status, 200);
+      const body = await response.json() as any;
+      assert.equal(body.target, target);
+      assert.ok(['ok', 'warn'].includes(body.check.status));
+      assert.ok(String(body.message).includes('测试'));
+      assert.ok(String(body.repairHint).length > 0);
+    }
   } finally {
     await server.stop();
     await new Promise<void>((resolve) => modelServer.close(() => resolve()));
@@ -1370,6 +1598,12 @@ test('WeixinAdminServer admin page enables shutdown-on-close by default', async 
     assert.match(html, /id="metric-errors-total"/u);
     assert.match(html, /id="metric-reply-failures"/u);
     assert.match(html, /\/api\/metrics\/reset/u);
+    assert.match(html, /角色说明/u);
+    assert.match(html, /主账号：<\/b>你的账号，权限最高/u);
+    assert.match(html, /管理员：<\/b>适合可信任的人/u);
+    assert.match(html, /普通用户：<\/b>适合一般朋友/u);
+    assert.match(html, /只读用户：<\/b>限制最多/u);
+    assert.match(html, /实际权限以“可聊天 \/ 可上传 \/ 可执行命令”三个开关为准/u);
     assert.match(html, /\/api\/service\/shutdown/u);
     assert.match(html, /new Image\(\)/u);
     assert.match(html, /window\.addEventListener\('unload', closePage\)/u);
@@ -1544,6 +1778,154 @@ test('WeixinAdminServer exposes searchable session summaries for the panel', asy
     assert.equal(body.sessions[0].reasoningEffort, 'high');
     assert.equal(body.sessions[0].pinned, true);
     assert.equal(body.filters.accounts.find((account: any) => account.accountId === 'bot-friend')?.displayName, 'Friend A');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer shows the remembered Weixin account when the live scope binding moved away', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-primary',
+    token: 'token-primary',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-primary',
+  });
+  accountStore.updateAccount('bot-primary', { display_name: 'Owner A' });
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const now = Date.now();
+  repositories.providerProfiles.save({
+    id: 'openai-default',
+    providerKind: 'openai-native',
+    displayName: 'OpenAI Default',
+    config: {},
+    createdAt: now,
+    updatedAt: now,
+  });
+  repositories.bridgeSessions.save({
+    id: 'session-unbound-history',
+    providerProfileId: 'openai-default',
+    codexThreadId: 'thread-unbound-history',
+    cwd: 'D:/repo',
+    title: 'Historical Project',
+    createdAt: now - 1000,
+    updatedAt: now - 100,
+  });
+  repositories.sessionSettings.save({
+    bridgeSessionId: 'session-unbound-history',
+    model: null,
+    reasoningEffort: null,
+    serviceTier: null,
+    collaborationMode: null,
+    personality: null,
+    permissionsMode: null,
+    accessPreset: null,
+    approvalPolicy: null,
+    sandboxMode: null,
+    approvalsReviewer: null,
+    locale: 'zh-CN',
+    metadata: {
+      weixinAccountId: 'bot-primary',
+    },
+    updatedAt: now - 100,
+  });
+
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env: {
+      WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
+    },
+    port: 0,
+    repositories,
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/sessions?query=Historical`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    assert.equal(body.sessions[0]?.accountIds[0], 'bot-primary');
+    assert.equal(body.sessions[0]?.scopes[0]?.accountDisplayName, 'Owner A');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer falls back to the primary account for legacy unbound sessions', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-primary',
+    token: 'token-primary',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-primary',
+  });
+  accountStore.updateAccount('bot-primary', { display_name: 'Owner A' });
+  accountStore.saveAccount({
+    accountId: 'bot-other',
+    token: 'token-other',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-other',
+  });
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const now = Date.now();
+  repositories.providerProfiles.save({
+    id: 'openai-default',
+    providerKind: 'openai-native',
+    displayName: 'OpenAI Default',
+    config: {},
+    createdAt: now,
+    updatedAt: now,
+  });
+  repositories.bridgeSessions.save({
+    id: 'session-legacy-unbound',
+    providerProfileId: 'openai-default',
+    codexThreadId: 'thread-legacy-unbound',
+    cwd: 'D:/repo',
+    title: 'Legacy Project',
+    createdAt: now - 1000,
+    updatedAt: now - 100,
+  });
+  repositories.sessionSettings.save({
+    bridgeSessionId: 'session-legacy-unbound',
+    model: null,
+    reasoningEffort: null,
+    serviceTier: null,
+    collaborationMode: null,
+    personality: null,
+    permissionsMode: null,
+    accessPreset: null,
+    approvalPolicy: null,
+    sandboxMode: null,
+    approvalsReviewer: null,
+    locale: 'zh-CN',
+    metadata: {},
+    updatedAt: now - 100,
+  });
+
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env: {
+      WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
+    },
+    port: 0,
+    repositories,
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/sessions?query=Legacy`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    assert.equal(body.sessions[0]?.accountIds[0], 'bot-primary');
+    assert.equal(body.sessions[0]?.scopes[0]?.accountDisplayName, 'Owner A');
   } finally {
     await server.stop();
   }

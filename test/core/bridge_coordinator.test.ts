@@ -1074,6 +1074,49 @@ test('bridge coordinator creates a default-provider session for normal text and 
   assert.equal(openai.startTurnCalls.length, 1);
 });
 
+test('bridge coordinator applies per-account default provider and model to a new conversation', async () => {
+  const { runtime, compatible } = makeRuntime();
+
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'friend-account:wx-user-1',
+    text: 'hello with account model',
+    metadata: {
+      weixinAccountId: 'friend-account',
+      weixinAccountModelProvider: {
+        providerProfileId: 'compat-default',
+        model: 'deepseek-v4-flash',
+        reasoningEffort: 'low',
+      },
+    },
+  });
+
+  assert.equal(result.type, 'message');
+  assert.match(result.messages[0]?.text ?? '', /compatible: hello with account model/);
+  assert.equal(result.session?.providerProfileId, 'compat-default');
+  assert.equal(compatible.startThreadCalls.length, 1);
+  assert.equal(compatible.startTurnCalls.length, 1);
+  assert.equal(compatible.startTurnCalls[0]?.sessionSettings?.model, 'deepseek-v4-flash');
+  assert.equal(compatible.startTurnCalls[0]?.sessionSettings?.reasoningEffort, 'low');
+});
+
+test('bridge coordinator remembers the Weixin account on session settings metadata', async () => {
+  const { runtime } = makeRuntime();
+
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-1',
+    text: 'remember my account',
+    metadata: {
+      weixinAccountId: 'bot-primary',
+    },
+  });
+
+  assert.equal(result.type, 'message');
+  const settings = runtime.services.bridgeSessions.getSessionSettings(result.session?.bridgeSessionId ?? '');
+  assert.equal(settings?.metadata?.weixinAccountId, 'bot-primary');
+});
+
 test('bridge coordinator tells the user when an external app share cannot be read', async () => {
   const { runtime, openai } = makeRuntime();
 

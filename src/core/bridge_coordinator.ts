@@ -1301,8 +1301,10 @@ export class BridgeCoordinator {
         }
       } else {
         const pendingNewSession = this.consumePendingNewSession(scopeRef);
+        const accountProviderProfileId = this.resolveEventAccountProviderProfileId(effectiveEvent);
+        const accountInitialSettings = this.resolveEventAccountInitialSettings(effectiveEvent);
         session = await this.bridgeSessions.createSessionForScope(scopeRef, {
-          providerProfileId: pendingNewSession?.providerProfileId ?? this.resolveDefaultProviderProfileId(),
+          providerProfileId: pendingNewSession?.providerProfileId ?? accountProviderProfileId ?? this.resolveDefaultProviderProfileId(),
           cwd: pendingNewSession?.cwd ?? this.resolveEventCwd(effectiveEvent),
           initialSettings: pendingNewSession
             ? {
@@ -1310,6 +1312,7 @@ export class BridgeCoordinator {
               locale,
             }
             : {
+              ...accountInitialSettings,
               locale,
             },
           providerStartOptions: {
@@ -3445,6 +3448,7 @@ export class BridgeCoordinator {
   storeRetryableRequest(bridgeSessionId: string, event: InboundTextEvent) {
     const storedAt = this.now();
     const text = String(event?.text ?? '');
+    const weixinAccountId = normalizeNullableString(event?.metadata?.weixinAccountId);
     this.bridgeSessions.upsertSessionSettings(bridgeSessionId, {
       metadata: {
         lastRetryableRequest: {
@@ -3454,6 +3458,7 @@ export class BridgeCoordinator {
           storedAt,
         },
         lastUserPrompt: buildLastUserPromptSnapshot(text, storedAt),
+        ...(weixinAccountId ? { weixinAccountId } : {}),
       },
     });
   }
@@ -11821,6 +11826,26 @@ export class BridgeCoordinator {
     ) ?? null;
   }
 
+  resolveEventAccountProviderProfileId(event) {
+    const modelProvider = accountModelProviderFromEvent(event);
+    const providerProfileId = normalizeNullableText(modelProvider?.providerProfileId);
+    if (!providerProfileId) {
+      return null;
+    }
+    return this.providerProfiles.get(providerProfileId) ? providerProfileId : null;
+  }
+
+  resolveEventAccountInitialSettings(event) {
+    const modelProvider = accountModelProviderFromEvent(event);
+    if (!modelProvider) {
+      return {};
+    }
+    return {
+      ...(normalizeNullableText(modelProvider.model) ? { model: normalizeNullableText(modelProvider.model) } : {}),
+      ...(normalizeNullableText(modelProvider.reasoningEffort) ? { reasoningEffort: normalizeNullableText(modelProvider.reasoningEffort) } : {}),
+    };
+  }
+
   resolveEventCwd(event) {
     return normalizeCwd(event.cwd) ?? this.defaultCwd ?? null;
   }
@@ -12749,6 +12774,18 @@ function selectUsageWindows(report) {
 function normalizeCwd(value) {
   const normalized = typeof value === 'string' ? value.trim() : '';
   return normalized || null;
+}
+
+function accountModelProviderFromEvent(event) {
+  const metadata = event?.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return null;
+  }
+  const modelProvider = metadata.weixinAccountModelProvider;
+  if (!modelProvider || typeof modelProvider !== 'object' || Array.isArray(modelProvider)) {
+    return null;
+  }
+  return modelProvider;
 }
 
 const PROJECT_STATUS_ARGS = new Set(['status', 'current', 'info', 'show']);

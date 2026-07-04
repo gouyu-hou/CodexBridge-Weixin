@@ -12,7 +12,7 @@ import { resolveCodexSwitchProviderState, type CodexSwitchProviderState } from '
 import type { BridgeSession, SessionSettings, ThreadMetadata } from '../../types/core.js';
 import type { ProviderProfile } from '../../types/provider.js';
 import type { PlatformBinding } from '../../types/repository.js';
-import { WeixinAccountStore } from './account_store.js';
+import { WeixinAccountStore, type SavedWeixinAccount } from './account_store.js';
 import { postAlert } from '../../runtime/alert_webhook.js';
 import { DEFAULT_ILINK_BOT_TYPE, officialQrLogin, type OfficialQrLoginCredentials } from './official/login.js';
 
@@ -360,6 +360,10 @@ export class WeixinAdminServer {
       await this.handleRunDiagnostics(res);
       return;
     }
+    if (req.method === 'POST' && pathname === '/api/setup/test') {
+      await this.handleSetupTest(req, res);
+      return;
+    }
     if (req.method === 'POST' && pathname === '/api/alert/test') {
       await this.handleAlertTest(req, res);
       return;
@@ -480,6 +484,7 @@ export class WeixinAdminServer {
       settings: this.buildSettings(),
       logs: this.buildLogSummary(),
       accounts: this.listAccounts(),
+      providerProfiles: this.listProviderProfiles(),
       pairing: this.serializePairing(this.currentPairing),
       setup: this.buildSetupState(),
     };
@@ -672,6 +677,10 @@ export class WeixinAdminServer {
         baseUrl: String(account?.base_url ?? ''),
         savedAt: String(account?.saved_at ?? ''),
         disabled: Boolean(account?.disabled),
+        group: String(account?.group ?? ''),
+        role: normalizeAccountRole(account?.role, accountId === primaryAccountId ? 'owner' : 'member'),
+        permissions: serializeAccountPermissions(account, accountId === primaryAccountId),
+        modelProvider: serializeAccountModelProvider(account),
         primary: accountId === primaryAccountId,
         syncUpdatedAt: statMtimeIso(this.accountStore.syncFile(accountId)),
       };
@@ -738,6 +747,36 @@ export class WeixinAdminServer {
           updatedAt: binding.updatedAt,
         };
       });
+      const rawRememberedAccountId = settings?.metadata?.weixinAccountId;
+      const rememberedAccountId = typeof rawRememberedAccountId === 'string'
+        ? normalizeAccountId(rawRememberedAccountId)
+        : '';
+      if (
+        rememberedAccountId
+        && this.accountStore.loadAccount(rememberedAccountId)
+        && !scopes.some((scope) => scope.accountId === rememberedAccountId)
+      ) {
+        const account = this.accountStore.loadAccount(rememberedAccountId);
+        scopes.push({
+          platform: 'weixin',
+          externalScopeId: '',
+          scopeId: '',
+          accountId: rememberedAccountId,
+          accountDisplayName: String(account?.display_name ?? ''),
+          updatedAt: settings?.updatedAt ?? session.updatedAt,
+        });
+      }
+      if (scopes.length === 0 && primaryAccountId && this.accountStore.loadAccount(primaryAccountId)) {
+        const account = this.accountStore.loadAccount(primaryAccountId);
+        scopes.push({
+          platform: 'weixin',
+          externalScopeId: '',
+          scopeId: '',
+          accountId: primaryAccountId,
+          accountDisplayName: String(account?.display_name ?? ''),
+          updatedAt: settings?.updatedAt ?? session.updatedAt,
+        });
+      }
       const accountIds = uniqueStrings(scopes.map((scope) => scope.accountId).filter(Boolean));
       const title = metadata?.alias
         || session.title
@@ -1075,8 +1114,14 @@ export class WeixinAdminServer {
         providerProfileId: profile.id,
         displayName: String(profile.displayName ?? profile.id),
         providerKind: String(profile.providerKind ?? ''),
+        defaultModel: normalizeEnvString(profile.config?.defaultModel) ?? '',
+        models: extractProviderProfileModelIds(profile),
       }))
       .sort((left, right) => left.displayName.localeCompare(right.displayName));
+  }
+
+  private listRawProviderProfiles() {
+    return safeList(() => this.repositories?.providerProfiles?.list?.() ?? []);
   }
 
   private getSessionSettings(bridgeSessionId: string) {
@@ -1392,6 +1437,33 @@ export class WeixinAdminServer {
       generatedAt: new Date().toISOString(),
       summary: summarizeDiagnosticChecks(checks),
       checks,
+    });
+  }
+
+  private async handleSetupTest(req: IncomingMessage, res: ServerResponse) {
+    const body = await readJsonBody(req);
+    const target = normalizeEnvString(body.target) ?? '';
+    let check: DiagnosticCheck;
+    if (target === 'api-key') {
+      const apiKey = this.diagnoseApiKey();
+      check = apiKey.status === 'fail' ? apiKey : await this.diagnoseModelAvailability();
+    } else if (target === 'weixin') {
+      check = this.diagnoseWeixinAccounts();
+    } else if (target === 'codex-command') {
+      check = await this.diagnoseCodexNative();
+    } else {
+      this.writeJson(res, 400, {
+        error: 'unknown setup test target',
+        targets: ['api-key', 'weixin', 'codex-command'],
+      });
+      return;
+    }
+    this.writeJson(res, 200, {
+      target,
+      generatedAt: new Date().toISOString(),
+      check,
+      message: buildSetupTestMessage(target, check),
+      repairHint: buildSetupRepairHint(target, check),
     });
   }
 
@@ -2247,11 +2319,79 @@ export class WeixinAdminServer {
     if (typeof body.displayName === 'string') {
       patch.display_name = body.displayName;
     }
+    if (typeof body.group === 'string') {
+      patch.group = body.group;
+    }
+    if (typeof body.role === 'string') {
+      patch.role = body.role;
+    }
+    if (isRecord(body.permissions)) {
+      patch.permissions = {
+        can_chat: body.permissions.canChat === undefined ? undefined : normalizeBooleanFlag(body.permissions.canChat),
+        can_upload: body.permissions.canUpload === undefined ? undefined : normalizeBooleanFlag(body.permissions.canUpload),
+        can_execute_commands: body.permissions.canExecuteCommands === undefined ? undefined : normalizeBooleanFlag(body.permissions.canExecuteCommands),
+      };
+    }
+    if (isRecord(body.modelProvider)) {
+      const modelProvider = this.normalizeAccountModelProviderPatch(body.modelProvider);
+      if ('error' in modelProvider) {
+        this.writeJson(res, 400, modelProvider.error);
+        return;
+      }
+      patch.model_provider = modelProvider.value;
+    }
     if (typeof nextDisabled === 'boolean') {
       patch.disabled = nextDisabled;
     }
     const updated = this.accountStore.updateAccount(accountId, patch);
     this.writeJson(res, 200, { account: updated, accounts: this.listAccounts() });
+  }
+
+  private normalizeAccountModelProviderPatch(modelProvider: Record<string, unknown>):
+    | { value: NonNullable<SavedWeixinAccount['model_provider']> }
+    | { error: Record<string, unknown> } {
+    const providerProfileId = normalizeEnvString(modelProvider.providerProfileId) ?? '';
+    const model = normalizeEnvString(modelProvider.model) ?? '';
+    const reasoningEffort = normalizeEnvString(modelProvider.reasoningEffort) ?? '';
+    const profiles = this.listRawProviderProfiles();
+    const selectedProfile = providerProfileId
+      ? profiles.find((profile) => profile.id === providerProfileId) ?? null
+      : null;
+    if (profiles.length > 0 && providerProfileId && !selectedProfile) {
+      return {
+        error: {
+          error: 'unknown provider profile',
+          providerProfileId,
+        },
+      };
+    }
+    if (profiles.length > 0 && model && !providerProfileId) {
+      return {
+        error: {
+          error: 'provider profile is required when account model is set',
+        },
+      };
+    }
+    if (selectedProfile && model) {
+      const models = extractProviderProfileModelIds(selectedProfile);
+      if (models.length > 0 && !models.includes(model)) {
+        return {
+          error: {
+            error: 'model is not available for provider profile',
+            providerProfileId,
+            model,
+            availableModels: models,
+          },
+        };
+      }
+    }
+    return {
+      value: {
+        provider_profile_id: providerProfileId,
+        model,
+        reasoning_effort: reasoningEffort,
+      },
+    };
   }
 
   private handleDeleteAccount(res: ServerResponse, rawAccountId: string) {
@@ -2548,6 +2688,68 @@ export function resolvePrimaryAccountId(
     })[0]?.accountId ?? null;
 }
 
+function normalizeAccountRole(value: unknown, fallback = 'member'): string {
+  const role = String(value ?? '').trim().toLowerCase();
+  return ['owner', 'admin', 'member', 'viewer'].includes(role) ? role : fallback;
+}
+
+function serializeAccountPermissions(account: SavedWeixinAccount | null | undefined, isPrimary: boolean) {
+  const permissions = account?.permissions ?? {};
+  return {
+    canChat: permissions.can_chat ?? true,
+    canUpload: permissions.can_upload ?? true,
+    canExecuteCommands: isPrimary ? true : permissions.can_execute_commands ?? false,
+  };
+}
+
+function serializeAccountModelProvider(account: SavedWeixinAccount | null | undefined) {
+  const modelProvider = account?.model_provider ?? {};
+  return {
+    providerProfileId: String(modelProvider.provider_profile_id ?? ''),
+    model: String(modelProvider.model ?? ''),
+    reasoningEffort: String(modelProvider.reasoning_effort ?? ''),
+  };
+}
+
+function extractProviderProfileModelIds(profile: ProviderProfile): string[] {
+  const config = isRecord(profile.config) ? profile.config : {};
+  return uniqueStrings([
+    ...extractStringList(config.modelIds),
+    ...extractModelCatalogIds(config.modelCatalog),
+    normalizeEnvString(config.defaultModel),
+  ]);
+}
+
+function extractStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeEnvString(entry)).filter(Boolean) as string[];
+  }
+  const text = normalizeEnvString(value);
+  if (!text) {
+    return [];
+  }
+  return text.split(',')
+    .map((entry) => normalizeEnvString(entry))
+    .filter(Boolean) as string[];
+}
+
+function extractModelCatalogIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => {
+      if (isRecord(entry)) {
+        return normalizeEnvString(entry.id)
+          ?? normalizeEnvString(entry.model)
+          ?? normalizeEnvString(entry.slug)
+          ?? normalizeEnvString(entry.name);
+      }
+      return normalizeEnvString(entry);
+    })
+    .filter(Boolean) as string[];
+}
+
 async function renderQrImage(qrcode: string, qrcodeImageContent: string | null | undefined) {
   const content = String(qrcodeImageContent ?? '').trim();
   if (content.startsWith('data:image/')) {
@@ -2683,6 +2885,34 @@ function summarizeDiagnosticChecks(checks: DiagnosticCheck[]) {
       ? `发现 ${failed} 个需要处理的问题，另有 ${warned} 个提醒。`
       : (warned > 0 ? `基础功能可用，但有 ${warned} 个提醒需要留意。` : '全部检查通过。'),
   };
+}
+
+function buildSetupTestMessage(target: string, check: DiagnosticCheck): string {
+  const label = target === 'api-key'
+    ? 'API key / 模型'
+    : target === 'weixin'
+      ? '微信连通'
+      : 'Codex 命令能力';
+  if (check.status === 'ok') {
+    return `${label} 测试通过：${check.detail}`;
+  }
+  if (check.status === 'warn') {
+    return `${label} 测试有提醒：${check.detail}`;
+  }
+  return `${label} 测试未通过：${check.detail}`;
+}
+
+function buildSetupRepairHint(target: string, check: DiagnosticCheck): string {
+  if (check.status === 'ok') {
+    return '当前项目正常，可以继续下一步。';
+  }
+  const action = check.actions[0]?.label ? `建议先点击「${check.actions[0].label}」。` : '';
+  const defaultHint = target === 'api-key'
+    ? '请检查 API key、接口地址 Base URL、模型名称是否填写正确；如果使用 CCSwitch，可以先同步一次再保存。'
+    : target === 'weixin'
+      ? '请重新生成微信二维码并扫码确认，确认入口没有被禁用。'
+      : '请确认本地 Codex / Native API 已启动；如果刚打开软件，可以等待十几秒后重试。';
+  return [check.reason, action || defaultHint].filter(Boolean).join(' ');
 }
 
 function resolveNativeApiSettings(env: NodeJS.ProcessEnv | Record<string, unknown>) {
@@ -3941,6 +4171,7 @@ function renderAdminHtml() {
     body[data-theme="dark"] .chart-card,
     body[data-theme="dark"] .metric,
     body[data-theme="dark"] .diagnostic-card,
+    body[data-theme="dark"] .latency-panel,
     body[data-theme="dark"] .release-notes,
     body[data-theme="dark"] .qr-box,
     body[data-theme="dark"] .file-picker,
@@ -3949,6 +4180,9 @@ function renderAdminHtml() {
     body[data-theme="dark"] .setup-card,
     body[data-theme="dark"] .setup-info,
     body[data-theme="dark"] .setup-test-card,
+    body[data-theme="dark"] .setup-test-result,
+    body[data-theme="dark"] .account-permission,
+    body[data-theme="dark"] .role-help,
     body[data-theme="dark"] .doc-card,
     body[data-theme="dark"] .command-row,
     body[data-theme="dark"] .download-links a {
@@ -4103,6 +4337,86 @@ function renderAdminHtml() {
       grid-template-columns: minmax(150px, 1fr) auto;
       gap: 6px;
       align-items: center;
+    }
+    .account-config {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+    .account-config-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      align-items: center;
+    }
+    .account-config input,
+    .account-config select {
+      width: 100%;
+      min-width: 0;
+      height: 34px;
+      font-size: 12.5px;
+      padding: 0 10px;
+    }
+    .account-permissions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .account-permission {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 28px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.72);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .account-permission input {
+      width: 14px;
+      height: 14px;
+      padding: 0;
+      margin: 0;
+    }
+    .account-config-save {
+      justify-self: start;
+      height: 32px;
+      padding: 0 12px;
+      font-size: 12.5px;
+    }
+    .role-help {
+      margin: 14px 18px 0;
+      padding: 12px 14px;
+      border: 1px solid rgba(37, 99, 235, 0.16);
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(37, 99, 235, 0.07), rgba(6, 182, 212, 0.06));
+      color: var(--muted);
+      display: grid;
+      gap: 8px;
+      line-height: 1.65;
+    }
+    .role-help strong {
+      color: var(--text);
+      font-size: 13.5px;
+    }
+    .role-help-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px 14px;
+    }
+    .role-help-item {
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .role-help-item b {
+      color: var(--text);
+    }
+    .role-help-note {
+      font-size: 12.5px;
+      color: var(--muted);
     }
     .pill {
       display: inline-flex;
@@ -4326,6 +4640,49 @@ function renderAdminHtml() {
       border-radius: inherit;
       background: linear-gradient(90deg, #2563eb, #06b6d4);
       transition: width 0.25s ease;
+    }
+    .latency-panel {
+      margin: 14px 0 6px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background:
+        linear-gradient(135deg, rgba(37, 99, 235, 0.08), rgba(6, 182, 212, 0.08)),
+        rgba(255, 255, 255, 0.72);
+      display: grid;
+      gap: 12px;
+    }
+    .latency-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      min-width: 0;
+    }
+    .latency-head strong {
+      color: var(--text);
+      font-size: 14px;
+      flex: 0 0 auto;
+    }
+    .latency-head span {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      text-align: right;
+    }
+    .latency-bars {
+      display: grid;
+      gap: 10px;
+    }
+    .progress-fill.latency-queue {
+      background: linear-gradient(90deg, #f59e0b, #f97316);
+    }
+    .progress-fill.latency-coordinator {
+      background: linear-gradient(90deg, #2563eb, #8b5cf6);
+    }
+    .progress-fill.latency-delivery {
+      background: linear-gradient(90deg, #059669, #06b6d4);
     }
     .account-bars {
       display: grid;
@@ -5028,6 +5385,22 @@ function renderAdminHtml() {
     .setup-test-card strong {
       color: #065f46;
     }
+    .setup-test-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .setup-test-result {
+      min-height: 42px;
+      padding: 10px 12px;
+      border: 1px solid rgba(5, 150, 105, 0.18);
+      border-radius: 10px;
+      color: var(--muted);
+      background: rgba(255, 255, 255, 0.72);
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+    }
     .doc-hero {
       display: grid;
       gap: 12px;
@@ -5393,6 +5766,16 @@ function renderAdminHtml() {
           <h2>已添加用户</h2>
           <span class="muted" id="account-count"></span>
         </div>
+        <div class="role-help">
+          <strong>角色说明</strong>
+          <div class="role-help-grid">
+            <div class="role-help-item"><b>主账号：</b>你的账号，权限最高，不能禁用或删除，默认可执行电脑操作命令。</div>
+            <div class="role-help-item"><b>管理员：</b>适合可信任的人，可聊天、上传，也可以授权执行命令。</div>
+            <div class="role-help-item"><b>普通用户：</b>适合一般朋友，建议只允许聊天和上传，不允许执行电脑操作命令。</div>
+            <div class="role-help-item"><b>只读用户：</b>限制最多，建议只允许聊天，不允许上传和执行命令。</div>
+          </div>
+          <div class="role-help-note">实际权限以“可聊天 / 可上传 / 可执行命令”三个开关为准。</div>
+        </div>
         <div class="table-wrap">
           <table class="accounts-table">
             <thead>
@@ -5548,6 +5931,22 @@ function renderAdminHtml() {
             <div class="metric-value" id="metric-last-turn">-</div>
           </div>
           <div class="metric">
+            <div class="metric-label">最近链路总耗时</div>
+            <div class="metric-value" id="metric-latency-total">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">排队等待耗时</div>
+            <div class="metric-value" id="metric-latency-queue">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">Codex 处理耗时</div>
+            <div class="metric-value" id="metric-latency-coordinator">-</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">微信发送耗时</div>
+            <div class="metric-value" id="metric-latency-delivery">-</div>
+          </div>
+          <div class="metric">
             <div class="metric-label">进行中 / 排队回合</div>
             <div class="metric-value" id="metric-active-turns">-</div>
           </div>
@@ -5557,6 +5956,26 @@ function renderAdminHtml() {
           </div>
         </div>
         <div class="help-line" id="metrics-error-detail">统计随服务重启保留；清零统计只清数字，不会删除会话、账号或日志。</div>
+        <div class="latency-panel">
+          <div class="latency-head">
+            <strong>链路耗时统计</strong>
+            <span id="metric-latency-detail">暂无链路数据</span>
+          </div>
+          <div class="latency-bars">
+            <div class="progress-row">
+              <div class="progress-meta"><span>排队等待</span><strong id="latency-queue-label">0 ms</strong></div>
+              <div class="progress-track"><div class="progress-fill latency-queue" id="latency-queue-fill"></div></div>
+            </div>
+            <div class="progress-row">
+              <div class="progress-meta"><span>Codex 处理</span><strong id="latency-coordinator-label">0 ms</strong></div>
+              <div class="progress-track"><div class="progress-fill latency-coordinator" id="latency-coordinator-fill"></div></div>
+            </div>
+            <div class="progress-row">
+              <div class="progress-meta"><span>微信发送</span><strong id="latency-delivery-label">0 ms</strong></div>
+              <div class="progress-track"><div class="progress-fill latency-delivery" id="latency-delivery-fill"></div></div>
+            </div>
+          </div>
+        </div>
         <h3 class="subsection-title">按账号</h3>
         <div class="table-wrap">
           <table>
@@ -6371,6 +6790,12 @@ function renderAdminHtml() {
             <span>在微信里发送：你好，测试一下</span>
             <span>收到正常回复后，点击“完成引导”。如果暂时不测试，也可以先跳过，后面再从右上角打开配置向导。</span>
           </div>
+          <div class="setup-test-actions">
+            <button id="setup-test-api-key">测试 API key</button>
+            <button id="setup-test-weixin">测试微信连通</button>
+            <button id="setup-test-codex">测试 Codex 命令</button>
+          </div>
+          <div class="setup-test-result" id="setup-test-result">还没有测试；可以逐项点击上面的按钮。</div>
           <div class="setup-checks" id="setup-final-checks"></div>
         </div>
       </div>
@@ -6420,7 +6845,8 @@ function renderAdminHtml() {
       diagnostics: null,
       setup: null,
       setupStep: 0,
-      setupAutoOpened: false
+      setupAutoOpened: false,
+      providerProfiles: []
     };
     const $ = (id) => document.getElementById(id);
     const THEME_STORAGE_KEY = 'codexbridge-admin-theme';
@@ -6735,6 +7161,31 @@ function renderAdminHtml() {
       return data;
     }
 
+    async function runSetupTest(target, buttonId) {
+      const button = $(buttonId);
+      const result = $('setup-test-result');
+      button.disabled = true;
+      result.textContent = '正在测试，请稍等...';
+      result.style.color = '#64708a';
+      try {
+        const data = await requestJson('/api/setup/test', {
+          method: 'POST',
+          body: JSON.stringify({ target })
+        });
+        const check = data.check || {};
+        const ok = check.status === 'ok';
+        const warn = check.status === 'warn';
+        result.textContent = [
+          data.message || '测试完成。',
+          data.repairHint ? ('建议：' + data.repairHint) : ''
+        ].filter(Boolean).join('\\n');
+        result.style.color = ok ? '#047857' : (warn ? '#b45309' : '#e11d48');
+        await loadState();
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     function browserSleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
@@ -7021,6 +7472,7 @@ function renderAdminHtml() {
     async function loadState() {
       const data = await requestJson('/api/state');
       state.accounts = data.accounts || [];
+      state.providerProfiles = data.providerProfiles || [];
       state.setup = data.setup || null;
       renderAccounts(data.accounts || []);
       renderSessionFilters(data.accounts || []);
@@ -7130,6 +7582,7 @@ function renderAdminHtml() {
       $('metric-reply-failures').textContent = fmtNumber(replyFailures);
       $('metric-avg-turn').textContent = fmtDuration(m.avgTurnDurationMs);
       $('metric-last-turn').textContent = fmtDuration(m.lastTurnDurationMs);
+      renderLatencyMetrics(m.latency || {});
       $('metric-active-turns').textContent = fmtNumber(m.activeTurns || 0) + ' / ' + fmtNumber(m.queuedTurns || 0);
       $('metric-pending').textContent = fmtNumber(m.pendingDeliveryRetries || 0);
       $('metrics-uptime').textContent = m.uptimeMs ? ('运行 ' + fmtDuration(m.uptimeMs)) : '';
@@ -7138,6 +7591,33 @@ function renderAdminHtml() {
         : ('当前无持续错误。最近 1 小时错误 ' + fmtNumber(m.errorsRecentHour || 0) + ' 次；后台错误累计 ' + fmtNumber(m.errors || 0) + ' 次。');
       renderMetricCharts(m);
       renderMetricsByAccount(m.byAccount || {});
+    }
+
+    function renderLatencyMetrics(latency) {
+      const last = latency.last || {};
+      const avg = latency.avg || {};
+      const total = Number(last.totalMs || 0);
+      const queue = Number(last.queueMs || 0);
+      const coordinator = Number(last.coordinatorMs || 0);
+      const delivery = Number(last.deliveryMs || 0);
+      $('metric-latency-total').textContent = fmtDuration(total);
+      $('metric-latency-queue').textContent = fmtDuration(queue);
+      $('metric-latency-coordinator').textContent = fmtDuration(coordinator);
+      $('metric-latency-delivery').textContent = fmtDuration(delivery);
+      $('latency-queue-label').textContent = fmtDuration(queue);
+      $('latency-coordinator-label').textContent = fmtDuration(coordinator);
+      $('latency-delivery-label').textContent = fmtDuration(delivery);
+      setWidth('latency-queue-fill', total ? Math.max(4, pct(queue, total)) : 0);
+      setWidth('latency-coordinator-fill', total ? Math.max(4, pct(coordinator, total)) : 0);
+      setWidth('latency-delivery-fill', total ? Math.max(4, pct(delivery, total)) : 0);
+      const count = Number(latency.count || 0);
+      const command = last.commandName ? (' · ' + last.commandName) : '';
+      const account = last.accountId ? (' · ' + last.accountId) : '';
+      $('metric-latency-detail').textContent = count
+        ? ('最近一次' + account + command + '；平均总耗时 ' + fmtDuration(avg.totalMs)
+          + '，平均 Codex ' + fmtDuration(avg.coordinatorMs)
+          + '，平均微信发送 ' + fmtDuration(avg.deliveryMs))
+        : '暂无链路数据；收到并回复一条微信消息后会自动统计。';
     }
 
     async function resetMetrics() {
@@ -7817,7 +8297,7 @@ function renderAdminHtml() {
         const tr = document.createElement('tr');
         tr.appendChild(nameCell(account));
         tr.appendChild(accountIdCell(account));
-        tr.appendChild(textCell('用户', account.userId || '-'));
+        tr.appendChild(accountConfigCell(account));
         tr.appendChild(statusCell(account));
         tr.appendChild(actionCell(account));
         body.appendChild(tr);
@@ -7872,6 +8352,159 @@ function renderAdminHtml() {
       td.dataset.label = label;
       td.textContent = text || '-';
       return td;
+    }
+
+    function accountConfigCell(account) {
+      const td = document.createElement('td');
+      td.dataset.label = '用户 / 权限';
+      const wrap = document.createElement('div');
+      wrap.className = 'account-config';
+      const user = document.createElement('div');
+      user.className = 'muted';
+      user.textContent = '用户：' + (account.userId || '-');
+      wrap.appendChild(user);
+
+      const groupRole = document.createElement('div');
+      groupRole.className = 'account-config-row';
+      const group = document.createElement('input');
+      group.value = account.group || '';
+      group.placeholder = '分组，例如：朋友';
+      const role = document.createElement('select');
+      for (const item of [
+        ['owner', '主账号'],
+        ['admin', '管理员'],
+        ['member', '普通用户'],
+        ['viewer', '只读用户'],
+      ]) {
+        const option = document.createElement('option');
+        option.value = item[0];
+        option.textContent = item[1];
+        role.appendChild(option);
+      }
+      role.value = account.role || (account.primary ? 'owner' : 'member');
+      role.disabled = Boolean(account.primary);
+      groupRole.appendChild(group);
+      groupRole.appendChild(role);
+      wrap.appendChild(groupRole);
+
+      const permissions = account.permissions || {};
+      const permissionRow = document.createElement('div');
+      permissionRow.className = 'account-permissions';
+      const canChat = accountPermissionToggle('可聊天', permissions.canChat !== false);
+      const canUpload = accountPermissionToggle('可上传', permissions.canUpload !== false);
+      const canExecute = accountPermissionToggle('可执行命令', account.primary || permissions.canExecuteCommands === true);
+      canExecute.input.disabled = Boolean(account.primary);
+      permissionRow.appendChild(canChat.label);
+      permissionRow.appendChild(canUpload.label);
+      permissionRow.appendChild(canExecute.label);
+      wrap.appendChild(permissionRow);
+
+      const modelRow = document.createElement('div');
+      modelRow.className = 'account-config-row';
+      const provider = document.createElement('select');
+      populateAccountProviderOptions(provider, (account.modelProvider && account.modelProvider.providerProfileId) || '');
+      const model = document.createElement('select');
+      populateAccountModelOptions(model, provider.value, (account.modelProvider && account.modelProvider.model) || '');
+      provider.onchange = () => populateAccountModelOptions(model, provider.value, '');
+      modelRow.appendChild(provider);
+      modelRow.appendChild(model);
+      wrap.appendChild(modelRow);
+
+      const effortRow = document.createElement('div');
+      effortRow.className = 'account-config-row';
+      const effort = document.createElement('select');
+      for (const item of ['', 'low', 'medium', 'high', 'xhigh']) {
+        const option = document.createElement('option');
+        option.value = item;
+        option.textContent = item || '推理默认';
+        effort.appendChild(option);
+      }
+      effort.value = (account.modelProvider && account.modelProvider.reasoningEffort) || '';
+      const save = document.createElement('button');
+      save.className = 'account-config-save';
+      save.textContent = '保存权限';
+      save.onclick = async () => {
+        await patchAccount(account.accountId, {
+          group: group.value,
+          role: role.value,
+          permissions: {
+            canChat: canChat.input.checked,
+            canUpload: canUpload.input.checked,
+            canExecuteCommands: canExecute.input.checked,
+          },
+          modelProvider: {
+            providerProfileId: provider.value,
+            model: model.value,
+            reasoningEffort: effort.value,
+          },
+        });
+      };
+      effortRow.appendChild(effort);
+      effortRow.appendChild(save);
+      wrap.appendChild(effortRow);
+
+      td.appendChild(wrap);
+      return td;
+    }
+
+    function populateAccountProviderOptions(select, selectedProviderProfileId) {
+      const wanted = String(selectedProviderProfileId || '').trim();
+      select.textContent = '';
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = '默认 provider';
+      select.appendChild(empty);
+      const profiles = Array.isArray(state.providerProfiles) ? state.providerProfiles : [];
+      for (const profile of profiles) {
+        const id = String(profile.providerProfileId || '').trim();
+        if (!id) continue;
+        const option = document.createElement('option');
+        option.value = id;
+        option.textContent = profile.displayName ? (profile.displayName + ' (' + id + ')') : id;
+        select.appendChild(option);
+      }
+      if (wanted && !profiles.some((profile) => profile.providerProfileId === wanted)) {
+        const missing = document.createElement('option');
+        missing.value = wanted;
+        missing.textContent = wanted + ' (未找到)';
+        select.appendChild(missing);
+      }
+      select.value = wanted;
+    }
+
+    function populateAccountModelOptions(select, providerProfileId, selectedModel) {
+      const wanted = String(selectedModel || '').trim();
+      const profile = (Array.isArray(state.providerProfiles) ? state.providerProfiles : [])
+        .find((item) => item.providerProfileId === providerProfileId);
+      const models = Array.isArray(profile && profile.models) ? profile.models.slice() : [];
+      select.textContent = '';
+      const empty = document.createElement('option');
+      empty.value = '';
+      empty.textContent = providerProfileId ? 'provider 默认模型' : '默认模型';
+      select.appendChild(empty);
+      if (wanted && !models.includes(wanted)) {
+        models.unshift(wanted);
+      }
+      for (const modelId of models) {
+        const option = document.createElement('option');
+        option.value = modelId;
+        option.textContent = modelId;
+        select.appendChild(option);
+      }
+      select.value = wanted;
+    }
+
+    function accountPermissionToggle(text, checked) {
+      const label = document.createElement('label');
+      label.className = 'account-permission';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = Boolean(checked);
+      const span = document.createElement('span');
+      span.textContent = text;
+      label.appendChild(input);
+      label.appendChild(span);
+      return { label, input };
     }
 
     function statusCell(account) {
@@ -8611,6 +9244,21 @@ function renderAdminHtml() {
     });
     $('setup-ccswitch-sync').onclick = () => syncProviderFromCcswitch('setup-provider').catch((error) => {
       $('setup-provider-message').textContent = error.message;
+      setMessage(error.message, true);
+    });
+    $('setup-test-api-key').onclick = () => runSetupTest('api-key', 'setup-test-api-key').catch((error) => {
+      $('setup-test-result').textContent = error.message;
+      $('setup-test-result').style.color = '#e11d48';
+      setMessage(error.message, true);
+    });
+    $('setup-test-weixin').onclick = () => runSetupTest('weixin', 'setup-test-weixin').catch((error) => {
+      $('setup-test-result').textContent = error.message;
+      $('setup-test-result').style.color = '#e11d48';
+      setMessage(error.message, true);
+    });
+    $('setup-test-codex').onclick = () => runSetupTest('codex-command', 'setup-test-codex').catch((error) => {
+      $('setup-test-result').textContent = error.message;
+      $('setup-test-result').style.color = '#e11d48';
       setMessage(error.message, true);
     });
     $('setup-complete').onclick = () => completeSetup(false).catch((error) => setMessage(error.message, true));

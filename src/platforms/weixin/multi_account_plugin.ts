@@ -183,8 +183,9 @@ export class MultiAccountWeixinPlatformPlugin {
         continue;
       }
       nextCursors[entry.accountId] = entry.result.syncCursor ?? requestedCursors.get(entry.accountId) ?? null;
+      const account = this.accountStore.loadAccount(entry.accountId);
       events.push(
-        ...(entry.result.events ?? []).map((event) => scopeEventToAccount(entry.accountId, event, primaryAccountId)),
+        ...(entry.result.events ?? []).map((event) => scopeEventToAccount(entry.accountId, event, primaryAccountId, account)),
       );
     }
     return {
@@ -358,7 +359,12 @@ function accountRuntimeSignature(
   });
 }
 
-function scopeEventToAccount(accountId: string, event: unknown, primaryAccountId: string | null) {
+function scopeEventToAccount(
+  accountId: string,
+  event: unknown,
+  primaryAccountId: string | null,
+  account: ReturnType<WeixinAccountStore['loadAccount']> = null,
+) {
   if (!event || typeof event !== 'object') {
     return event;
   }
@@ -376,6 +382,21 @@ function scopeEventToAccount(accountId: string, event: unknown, primaryAccountId
     metadata: {
       ...(record.metadata && typeof record.metadata === 'object' ? record.metadata as Record<string, unknown> : {}),
       weixinAccountId: accountId,
+      weixinPrimaryAccountId: primaryAccountId,
+      weixinAccountGroup: String(account?.group ?? ''),
+      weixinAccountRole: String(account?.role ?? (accountId === primaryAccountId ? 'owner' : 'member')),
+      weixinAccountPermissions: {
+        canChat: account?.permissions?.can_chat ?? true,
+        canUpload: account?.permissions?.can_upload ?? true,
+        canExecuteCommands: accountId === primaryAccountId
+          ? true
+          : account?.permissions?.can_execute_commands ?? false,
+      },
+      weixinAccountModelProvider: {
+        providerProfileId: String(account?.model_provider?.provider_profile_id ?? ''),
+        model: String(account?.model_provider?.model ?? ''),
+        reasoningEffort: String(account?.model_provider?.reasoning_effort ?? ''),
+      },
     },
   };
 }

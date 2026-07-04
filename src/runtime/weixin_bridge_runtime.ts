@@ -18,6 +18,27 @@ interface MetricErrorEvent {
   message: string;
 }
 
+interface MetricLatencyEvent {
+  at: number;
+  scopeId: string;
+  accountId: string;
+  commandName: string;
+  totalMs: number;
+  queueMs: number;
+  coordinatorMs: number;
+  deliveryMs: number;
+}
+
+interface ActiveLatencyTrace {
+  startedAt: number;
+  scopeId: string;
+  accountId: string;
+  commandName: string;
+  queueMs: number;
+  coordinatorMs: number;
+  deliveryMs: number;
+}
+
 interface DeliveryResult {
   success: boolean;
   deliveredCount: number;
@@ -301,11 +322,13 @@ export class WeixinBridgeRuntime {
       totals?: Record<string, number>;
       byAccount?: Record<string, Record<string, number>>;
       recentErrors?: MetricErrorEvent[];
+      recentLatencies?: MetricLatencyEvent[];
     } | null;
     write: (
       totals: Record<string, number>,
       byAccount?: Record<string, Record<string, number>>,
       recentErrors?: MetricErrorEvent[],
+      recentLatencies?: MetricLatencyEvent[],
     ) => void;
   } | null;
 
@@ -321,15 +344,28 @@ export class WeixinBridgeRuntime {
     turnsFailed: number;
     deliveriesSucceeded: number;
     deliveriesFailed: number;
+    pipelinesCompleted: number;
     errors: number;
     pollErrors: number;
     runtimeErrors: number;
     commitErrors: number;
     totalTurnDurationMs: number;
     lastTurnDurationMs: number;
+    totalPipelineDurationMs: number;
+    lastPipelineDurationMs: number;
+    totalQueueDurationMs: number;
+    lastQueueDurationMs: number;
+    totalCoordinatorDurationMs: number;
+    lastCoordinatorDurationMs: number;
+    totalDeliveryDurationMs: number;
+    lastDeliveryDurationMs: number;
   };
 
   metricsRecentErrors: MetricErrorEvent[];
+
+  metricsRecentLatencies: MetricLatencyEvent[];
+
+  activeLatencyTraces: Map<string, ActiveLatencyTrace>;
 
   metricsByAccount: Map<string, { messagesReceived: number; turnsCompleted: number; turnsFailed: number; totalTurnDurationMs: number }>;
 
@@ -428,14 +464,25 @@ export class WeixinBridgeRuntime {
       turnsFailed: toCounter(seededTotals.turnsFailed),
       deliveriesSucceeded: toCounter(seededTotals.deliveriesSucceeded),
       deliveriesFailed: toCounter(seededTotals.deliveriesFailed),
+      pipelinesCompleted: toCounter(seededTotals.pipelinesCompleted),
       errors: toCounter(seededTotals.errors),
       pollErrors: toCounter(seededTotals.pollErrors),
       runtimeErrors: toCounter(seededTotals.runtimeErrors),
       commitErrors: toCounter(seededTotals.commitErrors),
       totalTurnDurationMs: toCounter(seededTotals.totalTurnDurationMs),
       lastTurnDurationMs: 0,
+      totalPipelineDurationMs: toCounter(seededTotals.totalPipelineDurationMs),
+      lastPipelineDurationMs: 0,
+      totalQueueDurationMs: toCounter(seededTotals.totalQueueDurationMs),
+      lastQueueDurationMs: 0,
+      totalCoordinatorDurationMs: toCounter(seededTotals.totalCoordinatorDurationMs),
+      lastCoordinatorDurationMs: 0,
+      totalDeliveryDurationMs: toCounter(seededTotals.totalDeliveryDurationMs),
+      lastDeliveryDurationMs: 0,
     };
     this.metricsRecentErrors = normalizeMetricErrorEvents(seeded.recentErrors);
+    this.metricsRecentLatencies = normalizeMetricLatencyEvents(seeded.recentLatencies);
+    this.activeLatencyTraces = new Map();
     this.metricsByAccount = new Map();
     const seededByAccount = seeded.byAccount ?? {};
     for (const [accountId, totals] of Object.entries(seededByAccount)) {
@@ -606,6 +653,7 @@ export class WeixinBridgeRuntime {
   getMetrics() {
     this.pruneMetricErrorEvents();
     const completed = this.metrics.turnsCompleted;
+    const latencyCount = this.metrics.pipelinesCompleted;
     const now = Date.now();
     const recentErrors = this.metricsRecentErrors
       .filter((event) => now - event.at <= METRICS_RECENT_ERROR_WINDOW_MS)
@@ -652,6 +700,26 @@ export class WeixinBridgeRuntime {
       recentErrors: recentErrors.slice(0, 20),
       lastTurnDurationMs: this.metrics.lastTurnDurationMs,
       avgTurnDurationMs: completed > 0 ? Math.round(this.metrics.totalTurnDurationMs / completed) : 0,
+      latency: {
+        count: latencyCount,
+        last: {
+          totalMs: this.metrics.lastPipelineDurationMs,
+          queueMs: this.metrics.lastQueueDurationMs,
+          coordinatorMs: this.metrics.lastCoordinatorDurationMs,
+          deliveryMs: this.metrics.lastDeliveryDurationMs,
+          at: this.metricsRecentLatencies.at(-1)?.at ?? null,
+          scopeId: this.metricsRecentLatencies.at(-1)?.scopeId ?? '',
+          accountId: this.metricsRecentLatencies.at(-1)?.accountId ?? '',
+          commandName: this.metricsRecentLatencies.at(-1)?.commandName ?? '',
+        },
+        avg: {
+          totalMs: latencyCount > 0 ? Math.round(this.metrics.totalPipelineDurationMs / latencyCount) : 0,
+          queueMs: latencyCount > 0 ? Math.round(this.metrics.totalQueueDurationMs / latencyCount) : 0,
+          coordinatorMs: latencyCount > 0 ? Math.round(this.metrics.totalCoordinatorDurationMs / latencyCount) : 0,
+          deliveryMs: latencyCount > 0 ? Math.round(this.metrics.totalDeliveryDurationMs / latencyCount) : 0,
+        },
+        recent: [...this.metricsRecentLatencies].sort((a, b) => b.at - a.at).slice(0, 20),
+      },
       uptimeMs: Math.max(0, Date.now() - this.metricsStartedAt),
       pendingDeliveryRetries: this.deliveryRetryQueue.length,
       activeTurns: this.turnLimiter.activeCount,
@@ -667,15 +735,26 @@ export class WeixinBridgeRuntime {
       turnsFailed: 0,
       deliveriesSucceeded: 0,
       deliveriesFailed: 0,
+      pipelinesCompleted: 0,
       errors: 0,
       pollErrors: 0,
       runtimeErrors: 0,
       commitErrors: 0,
       totalTurnDurationMs: 0,
       lastTurnDurationMs: 0,
+      totalPipelineDurationMs: 0,
+      lastPipelineDurationMs: 0,
+      totalQueueDurationMs: 0,
+      lastQueueDurationMs: 0,
+      totalCoordinatorDurationMs: 0,
+      lastCoordinatorDurationMs: 0,
+      totalDeliveryDurationMs: 0,
+      lastDeliveryDurationMs: 0,
     };
     this.metricsByAccount.clear();
     this.metricsRecentErrors = [];
+    this.metricsRecentLatencies = [];
+    this.activeLatencyTraces.clear();
     this.lastErrorAt = null;
     this.lastError = null;
     this.lastErrorStage = null;
@@ -689,6 +768,85 @@ export class WeixinBridgeRuntime {
     const metadata = event && typeof event.metadata === 'object' ? event.metadata as Record<string, unknown> : {};
     const accountId = typeof metadata.weixinAccountId === 'string' ? metadata.weixinAccountId.trim() : '';
     return accountId || 'default';
+  }
+
+  primaryAccountKeyOf(event: InboundTextEvent | null | undefined): string {
+    const metadata = event && typeof event.metadata === 'object' ? event.metadata as Record<string, unknown> : {};
+    const accountId = typeof metadata.weixinPrimaryAccountId === 'string' ? metadata.weixinPrimaryAccountId.trim() : '';
+    return accountId;
+  }
+
+  isFriendAccountEvent(event: InboundTextEvent | null | undefined): boolean {
+    const accountId = this.accountKeyOf(event);
+    const primaryAccountId = this.primaryAccountKeyOf(event);
+    return Boolean(primaryAccountId && accountId && accountId !== 'default' && accountId !== primaryAccountId);
+  }
+
+  accountPermissionsFor(event: InboundTextEvent | null | undefined): {
+    canChat: boolean;
+    canUpload: boolean;
+    canExecuteCommands: boolean;
+  } {
+    if (!this.isFriendAccountEvent(event)) {
+      return { canChat: true, canUpload: true, canExecuteCommands: true };
+    }
+    const metadata = event && typeof event.metadata === 'object' ? event.metadata as Record<string, unknown> : {};
+    const raw = metadata.weixinAccountPermissions && typeof metadata.weixinAccountPermissions === 'object'
+      ? metadata.weixinAccountPermissions as Record<string, unknown>
+      : {};
+    return {
+      canChat: raw.canChat === undefined ? true : Boolean(raw.canChat),
+      canUpload: raw.canUpload === undefined ? true : Boolean(raw.canUpload),
+      canExecuteCommands: raw.canExecuteCommands === undefined ? false : Boolean(raw.canExecuteCommands),
+    };
+  }
+
+  resolveAccountPermissionDenial(
+    event: InboundTextEvent,
+    command: { name?: string | null } | null,
+  ): { kind: 'chat' | 'upload' | 'command'; commandName?: string } | null {
+    if (!this.isFriendAccountEvent(event)) {
+      return null;
+    }
+    const permissions = this.accountPermissionsFor(event);
+    if (hasAttachments(event) && !permissions.canUpload) {
+      return { kind: 'upload' };
+    }
+    if (command && isProtectedComputerControlSlashCommand(command) && !permissions.canExecuteCommands) {
+      return { kind: 'command', commandName: String(command.name ?? '').trim().toLowerCase() };
+    }
+    if (!command && !permissions.canChat) {
+      return { kind: 'chat' };
+    }
+    return null;
+  }
+
+  async processAccountPermissionDenied(
+    event: InboundTextEvent,
+    denial: { kind: 'chat' | 'upload' | 'command'; commandName?: string },
+  ): Promise<RuntimeResponse> {
+    const content = denial.kind === 'upload'
+      ? '权限不足：当前账号没有上传文件/图片权限，请联系主账号在后台管理页开启。'
+      : denial.kind === 'command'
+        ? `权限不足：/${denial.commandName || 'command'} 属于电脑操作/服务管理命令，只有主账号或授权账号可以执行。`
+        : '权限不足：当前账号没有聊天权限，请联系主账号在后台管理页开启。';
+    const delivery = await this.sendTextWithRetry({
+      externalScopeId: event.externalScopeId,
+      content,
+    });
+    return {
+      type: 'message',
+      messages: [{ text: content }],
+      meta: {
+        runtimeDelivery: {
+          mode: `account_${denial.kind}_permission_denied`,
+          delivered: delivery.success,
+          rateLimited: this.isRateLimitedDeliveryFailure(delivery),
+          error: delivery.error || null,
+          errorCode: delivery.errorCode ?? null,
+        },
+      },
+    };
   }
 
   accountMetricsFor(accountId: string) {
@@ -730,6 +888,59 @@ export class WeixinBridgeRuntime {
     this.metricsDirty = true;
   }
 
+  beginLatencyTrace(event: InboundTextEvent): ActiveLatencyTrace {
+    const command = parseSlashCommand(String(event?.text ?? ''));
+    const trace: ActiveLatencyTrace = {
+      startedAt: Date.now(),
+      scopeId: String(event?.externalScopeId ?? ''),
+      accountId: this.accountKeyOf(event),
+      commandName: command?.name ? `/${String(command.name).trim().toLowerCase()}` : '',
+      queueMs: 0,
+      coordinatorMs: 0,
+      deliveryMs: 0,
+    };
+    if (trace.scopeId) {
+      this.activeLatencyTraces.set(trace.scopeId, trace);
+    }
+    return trace;
+  }
+
+  recordLatencyTrace(trace: ActiveLatencyTrace | null | undefined): void {
+    if (!trace) {
+      return;
+    }
+    if (trace.scopeId && this.activeLatencyTraces.get(trace.scopeId) === trace) {
+      this.activeLatencyTraces.delete(trace.scopeId);
+    }
+    const event: MetricLatencyEvent = {
+      at: Date.now(),
+      scopeId: trace.scopeId,
+      accountId: trace.accountId || 'default',
+      commandName: trace.commandName,
+      totalMs: Math.max(0, Date.now() - trace.startedAt),
+      queueMs: Math.max(0, Math.round(trace.queueMs)),
+      coordinatorMs: Math.max(0, Math.round(trace.coordinatorMs)),
+      deliveryMs: Math.max(0, Math.round(trace.deliveryMs)),
+    };
+    this.metrics.pipelinesCompleted += 1;
+    this.metrics.lastPipelineDurationMs = event.totalMs;
+    this.metrics.totalPipelineDurationMs += event.totalMs;
+    this.metrics.lastQueueDurationMs = event.queueMs;
+    this.metrics.totalQueueDurationMs += event.queueMs;
+    this.metrics.lastCoordinatorDurationMs = event.coordinatorMs;
+    this.metrics.totalCoordinatorDurationMs += event.coordinatorMs;
+    this.metrics.lastDeliveryDurationMs = event.deliveryMs;
+    this.metrics.totalDeliveryDurationMs += event.deliveryMs;
+    this.metricsRecentLatencies.push(event);
+    this.metricsRecentLatencies = this.metricsRecentLatencies.slice(-50);
+    this.metricsDirty = true;
+  }
+
+  activeLatencyTraceForScope(externalScopeId: string): ActiveLatencyTrace | null {
+    const scopeId = String(externalScopeId ?? '').trim();
+    return scopeId ? this.activeLatencyTraces.get(scopeId) ?? null : null;
+  }
+
   persistMetrics(): void {
     if (!this.metricsStore || !this.metricsDirty) {
       return;
@@ -740,7 +951,7 @@ export class WeixinBridgeRuntime {
         byAccount[accountId] = { ...totals };
       }
       this.pruneMetricErrorEvents();
-      this.metricsStore.write({ ...this.metrics }, byAccount, this.metricsRecentErrors);
+      this.metricsStore.write({ ...this.metrics }, byAccount, this.metricsRecentErrors, this.metricsRecentLatencies);
       this.metricsDirty = false;
     } catch {
       // Metrics persistence is best-effort; never let it break the runtime.
@@ -833,6 +1044,12 @@ export class WeixinBridgeRuntime {
     this.accountMetricsFor(this.accountKeyOf(event)).messagesReceived += 1;
     this.metricsDirty = true;
     const command = parseSlashCommand(String(event?.text ?? ''));
+    const permissionDenial = this.resolveAccountPermissionDenial(event, command);
+    if (permissionDenial) {
+      const response = await this.processAccountPermissionDenied(event, permissionDenial);
+      const afterCommit = this.buildAfterCommitAction(response, event);
+      return afterCommit ? { afterCommit } : undefined;
+    }
     if (command) {
       await this.flushPendingInboundMerge(event.externalScopeId, { textOnly: true });
       if (isRecoverySlashCommand(command) && !hasHelpArg(command)) {
@@ -1155,8 +1372,13 @@ export class WeixinBridgeRuntime {
     externalScopeId: string,
     kind: string,
     operation: () => Promise<T>,
+    timing?: {
+      onQueued?: (durationMs: number) => void;
+      onOperation?: (durationMs: number) => void;
+    } | null,
   ): Promise<T> {
     const queuedBefore = this.turnLimiter.queuedCount;
+    const waitStartedAt = Date.now();
     debugRuntime('turn_slot_wait', {
       scopeId: externalScopeId,
       kind,
@@ -1166,6 +1388,7 @@ export class WeixinBridgeRuntime {
     });
     const acquired = this.turnLimiter.acquire();
     const release = typeof acquired === 'function' ? acquired : await acquired;
+    timing?.onQueued?.(Math.max(0, Date.now() - waitStartedAt));
     debugRuntime('turn_slot_acquired', {
       scopeId: externalScopeId,
       kind,
@@ -1173,9 +1396,11 @@ export class WeixinBridgeRuntime {
       queued: this.turnLimiter.queuedCount,
       max: this.turnLimiter.maxConcurrency,
     });
+    const operationStartedAt = Date.now();
     try {
       return await operation();
     } finally {
+      timing?.onOperation?.(Math.max(0, Date.now() - operationStartedAt));
       release();
       debugRuntime('turn_slot_released', {
         scopeId: externalScopeId,
@@ -1216,6 +1441,7 @@ export class WeixinBridgeRuntime {
     const stopTypingKeepalive = suppressTyping
       ? async () => {}
       : this.startTypingKeepalive(event.externalScopeId);
+    const latencyTrace = this.beginLatencyTrace(event);
     try {
       const turnStartedAt = Date.now();
       let response: RuntimeResponse;
@@ -1234,7 +1460,14 @@ export class WeixinBridgeRuntime {
             onApprovalRequest: async () => {
               await this.notifyApprovalPrompt(event);
             },
-          })));
+          })), {
+          onQueued: (durationMs) => {
+            latencyTrace.queueMs += durationMs;
+          },
+          onOperation: (durationMs) => {
+            latencyTrace.coordinatorMs += durationMs;
+          },
+        });
       } catch (turnError) {
         this.recordTurnMetrics(turnStartedAt, false, this.accountKeyOf(event));
         throw turnError;
@@ -1340,6 +1573,7 @@ export class WeixinBridgeRuntime {
       }
       return response;
     } finally {
+      this.recordLatencyTrace(latencyTrace);
       await typingStart;
       await stopTypingKeepalive();
     }
@@ -1991,7 +2225,12 @@ export class WeixinBridgeRuntime {
     externalScopeId: string;
     content: string;
   }): Promise<DeliveryResult> {
+    const startedAt = Date.now();
     const result = await this.platformPlugin.sendText({ externalScopeId, content });
+    const trace = this.activeLatencyTraceForScope(externalScopeId);
+    if (trace) {
+      trace.deliveryMs += Math.max(0, Date.now() - startedAt);
+    }
     const normalized = this.normalizeTextDeliveryResult(result, content);
     this.recordDeliveryMetric(normalized.success);
     return normalized;
@@ -3411,6 +3650,34 @@ function normalizeMetricErrorEvents(value: unknown): MetricErrorEvent[] {
     .filter(Boolean) as MetricErrorEvent[];
 }
 
+function normalizeMetricLatencyEvents(value: unknown): MetricLatencyEvent[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => {
+      if (!isRecord(item)) {
+        return null;
+      }
+      const at = toCounter(item.at);
+      if (at <= 0) {
+        return null;
+      }
+      return {
+        at,
+        scopeId: String(item.scopeId ?? '').slice(0, 200),
+        accountId: String(item.accountId ?? 'default').slice(0, 120),
+        commandName: String(item.commandName ?? '').slice(0, 80),
+        totalMs: toCounter(item.totalMs),
+        queueMs: toCounter(item.queueMs),
+        coordinatorMs: toCounter(item.coordinatorMs),
+        deliveryMs: toCounter(item.deliveryMs),
+      };
+    })
+    .filter(Boolean)
+    .slice(-50) as MetricLatencyEvent[];
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<never>((_, reject) => {
@@ -3522,6 +3789,34 @@ function isRestartSlashCommand(command: { name?: string | null } | null | undefi
 function isRecoverySlashCommand(command: { name?: string | null } | null | undefined): boolean {
   const name = String(command?.name ?? '').trim().toLowerCase();
   return ['retry', 'rt', 'reconnect', 'rc', 'restart', 'rs'].includes(name);
+}
+
+function isProtectedComputerControlSlashCommand(command: { name?: string | null } | null | undefined): boolean {
+  const name = String(command?.name ?? '').trim().toLowerCase();
+  return new Set([
+    'allow',
+    'deny',
+    'permissions',
+    'project',
+    'agent',
+    'automation',
+    'review',
+    'rv',
+    'use',
+    'mcp',
+    'apps',
+    'plugins',
+    'login',
+    'experimental',
+    'compact',
+    'goal',
+    'instructions',
+    'fast',
+    'restart',
+    'rs',
+    'reconnect',
+    'rc',
+  ]).has(name);
 }
 
 function hasHelpArg(command: { args?: string[] | null } | null | undefined): boolean {

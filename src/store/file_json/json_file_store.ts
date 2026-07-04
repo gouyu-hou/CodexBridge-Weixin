@@ -13,7 +13,13 @@ export class JsonFileStore<T> {
 
   read(): T {
     this.ensureInitialized();
-    return JSON.parse(fs.readFileSync(this.filePath, 'utf8').replace(/^\uFEFF/u, ''));
+    const raw = fs.readFileSync(this.filePath, 'utf8');
+    try {
+      return JSON.parse(raw.replace(/^\uFEFF/u, ''));
+    } catch {
+      this.quarantineCorruptFile(raw);
+      return this.write(this.emptyValue);
+    }
   }
 
   write(value: T) {
@@ -42,5 +48,32 @@ export class JsonFileStore<T> {
     if (!fs.existsSync(this.filePath)) {
       this.write(this.emptyValue);
     }
+  }
+
+  private quarantineCorruptFile(raw: string) {
+    const corruptPath = this.nextCorruptPath();
+    try {
+      fs.renameSync(this.filePath, corruptPath);
+    } catch {
+      try {
+        fs.writeFileSync(corruptPath, raw, 'utf8');
+        fs.rmSync(this.filePath, { force: true });
+      } catch {
+        // If quarantine fails, still reinitialize the main store below.
+      }
+    }
+  }
+
+  private nextCorruptPath() {
+    const stamp = new Date().toISOString()
+      .replace(/[-:TZ]/gu, '')
+      .replace('.', '-');
+    let candidate = `${this.filePath}.corrupt-${stamp}`;
+    let suffix = 1;
+    while (fs.existsSync(candidate)) {
+      candidate = `${this.filePath}.corrupt-${stamp}-${suffix}`;
+      suffix += 1;
+    }
+    return candidate;
   }
 }
