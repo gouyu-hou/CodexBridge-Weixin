@@ -1,6 +1,6 @@
 {
   "name": "codexbridge",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "productName": "CodexBridge Weixin Admin",
   "private": true,
   "type": "module",

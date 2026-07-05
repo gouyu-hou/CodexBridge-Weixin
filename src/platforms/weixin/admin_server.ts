@@ -3730,24 +3730,26 @@ function renderAdminHtml() {
   <style>
     :root {
       color-scheme: light;
-      --bg: #f3f7ff;
-      --panel: rgba(255, 255, 255, 0.86);
+      --bg: #eef2f7;
+      --app-chrome: #e3e8ef;
+      --panel: rgba(255, 255, 255, 0.94);
       --panel-solid: #ffffff;
-      --text: #1f2533;
-      --muted: #64708a;
-      --line: rgba(15, 23, 42, 0.09);
-      --line-strong: rgba(15, 23, 42, 0.16);
-      --accent: #2563eb;
-      --accent-2: #f43f5e;
-      --accent-dark: #1d4ed8;
+      --text: #151b28;
+      --muted: #667085;
+      --line: rgba(15, 23, 42, 0.10);
+      --line-strong: rgba(15, 23, 42, 0.18);
+      --accent: #159661;
+      --accent-2: #2563eb;
+      --accent-dark: #087443;
       --cyan: #06b6d4;
       --amber: #f59e0b;
       --support: #ff4d6d;
       --danger: #e11d48;
       --ok: #059669;
-      --grad: linear-gradient(135deg, #2563eb 0%, #06b6d4 48%, #f43f5e 100%);
+      --grad: linear-gradient(135deg, #159661 0%, #17b681 55%, #2563eb 100%);
       --support-grad: linear-gradient(135deg, #ffb703 0%, #ff4d6d 48%, #8b5cf6 100%);
-      --shadow: 0 22px 48px -26px rgba(37, 99, 235, 0.34), 0 8px 20px -16px rgba(15, 23, 42, 0.16);
+      --shadow: 0 18px 42px -30px rgba(15, 23, 42, 0.34), 0 8px 18px -16px rgba(15, 23, 42, 0.18);
+      --sidebar-bg: #e4e9f0;
       --code-bg: #f5f7fb;
       --code-text: #0f172a;
       --doc-text: #465269;
@@ -3755,28 +3757,30 @@ function renderAdminHtml() {
     }
     body[data-theme="dark"] {
       color-scheme: dark;
-      --bg: #0a1020;
-      --panel: rgba(15, 23, 42, 0.84);
-      --panel-solid: #101827;
-      --text: #edf4ff;
-      --muted: #9aa9bd;
-      --line: rgba(148, 163, 184, 0.16);
-      --line-strong: rgba(148, 163, 184, 0.26);
-      --accent: #60a5fa;
-      --accent-2: #fb7185;
-      --accent-dark: #93c5fd;
+      --bg: #141414;
+      --app-chrome: #202226;
+      --panel: rgba(31, 31, 31, 0.96);
+      --panel-solid: #1f1f1f;
+      --text: #f3f4f6;
+      --muted: #a3a3a3;
+      --line: rgba(255, 255, 255, 0.10);
+      --line-strong: rgba(255, 255, 255, 0.17);
+      --accent: #34e99c;
+      --accent-2: #60a5fa;
+      --accent-dark: #34e99c;
       --cyan: #22d3ee;
       --amber: #fbbf24;
       --support: #fb7185;
       --danger: #fb7185;
-      --ok: #34d399;
-      --grad: linear-gradient(135deg, #3b82f6 0%, #22d3ee 50%, #fb7185 100%);
+      --ok: #34e99c;
+      --grad: linear-gradient(135deg, #34e99c 0%, #22d3ee 58%, #60a5fa 100%);
       --support-grad: linear-gradient(135deg, #fbbf24 0%, #fb7185 48%, #a78bfa 100%);
-      --shadow: 0 26px 58px -34px rgba(2, 6, 23, 0.9), 0 10px 24px -18px rgba(15, 23, 42, 0.8);
-      --code-bg: rgba(2, 6, 23, 0.54);
-      --code-text: #e5eefb;
-      --doc-text: #cbd5e1;
-      --doc-muted: #a9b7ca;
+      --shadow: none;
+      --sidebar-bg: #202226;
+      --code-bg: #151515;
+      --code-text: #e5e7eb;
+      --doc-text: #d4d4d4;
+      --doc-muted: #a3a3a3;
     }
     * { box-sizing: border-box; }
     body {
@@ -3784,38 +3788,17 @@ function renderAdminHtml() {
       min-height: 100vh;
       color: var(--text);
       font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background:
-        radial-gradient(1100px 620px at 12% -8%, rgba(37, 99, 235, 0.16), transparent 60%),
-        radial-gradient(1000px 600px at 108% 4%, rgba(244, 63, 94, 0.13), transparent 55%),
-        radial-gradient(900px 720px at 50% 120%, rgba(245, 158, 11, 0.12), transparent 60%),
-        var(--bg);
-      background-attachment: fixed;
+      background: var(--bg);
       overflow-x: hidden;
     }
     body[data-theme="dark"] {
-      background:
-        radial-gradient(1000px 640px at 8% -12%, rgba(59, 130, 246, 0.20), transparent 58%),
-        radial-gradient(900px 600px at 108% 2%, rgba(251, 113, 133, 0.12), transparent 55%),
-        radial-gradient(900px 720px at 50% 118%, rgba(34, 211, 238, 0.10), transparent 60%),
-        var(--bg);
-      background-attachment: fixed;
+      background: var(--bg);
     }
     body::before {
-      content: "";
-      position: fixed;
-      inset: 0;
-      z-index: 0;
-      pointer-events: none;
-      background:
-        linear-gradient(120deg, rgba(255, 255, 255, 0.42), transparent 34%),
-        linear-gradient(180deg, rgba(255, 255, 255, 0.2), transparent 38%);
-      opacity: 0.62;
+      content: none;
     }
     body[data-theme="dark"]::before {
-      background:
-        linear-gradient(120deg, rgba(255, 255, 255, 0.06), transparent 34%),
-        linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 42%);
-      opacity: 0.9;
+      content: none;
     }
     header, main, .modal-overlay {
       position: relative;
@@ -3825,124 +3808,178 @@ function renderAdminHtml() {
     a { color: #6d28d9; }
     header {
       border-bottom: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.72);
+      background: rgba(248, 250, 252, 0.92);
       backdrop-filter: blur(14px);
       -webkit-backdrop-filter: blur(14px);
       position: sticky;
       top: 0;
       z-index: 20;
-      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6), 0 12px 30px -22px rgba(15, 23, 42, 0.28);
+      box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
     }
     .wrap {
-      width: min(1680px, calc(100% - 28px));
-      margin: 0 auto;
+      width: 100%;
+      margin: 0;
+      padding: 0 clamp(16px, 2.4vw, 30px);
     }
     .topbar {
-      min-height: 64px;
+      min-height: 86px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
+      gap: 18px;
     }
     h1 {
       margin: 0;
-      font-size: 20px;
+      font-size: clamp(24px, 2vw, 32px);
       font-weight: 800;
       letter-spacing: 0.2px;
-      background: linear-gradient(120deg, #2563eb 0%, #0891b2 42%, #f43f5e 100%);
-      -webkit-background-clip: text;
-      background-clip: text;
-      color: transparent;
+      color: var(--text);
+      background: none;
+    }
+    .page-brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .page-brand img {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      box-shadow: 0 10px 24px -14px rgba(15, 23, 42, 0.46);
+      flex: 0 0 auto;
+    }
+    .page-brand strong {
+      display: block;
+      font-size: clamp(22px, 1.8vw, 30px);
+      line-height: 1.2;
+      font-weight: 800;
+    }
+    .page-brand span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 14px;
+      overflow-wrap: anywhere;
     }
     main {
-      padding: 24px 0 48px;
+      padding: 0 0 44px;
     }
     .shell {
       display: grid;
-      grid-template-columns: clamp(210px, 15vw, 260px) minmax(0, 1fr);
-      gap: clamp(14px, 1.4vw, 24px);
-      align-items: start;
+      grid-template-columns: 300px minmax(0, 1fr);
+      min-height: calc(100vh - 86px);
+      align-items: stretch;
     }
     .sidebar {
       position: sticky;
       top: 86px;
+      height: calc(100vh - 86px);
       display: grid;
-      gap: 12px;
-      align-self: start;
+      grid-template-rows: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-self: stretch;
+      padding: 18px 16px 20px 0;
+      overflow: hidden;
+      border-right: 1px solid var(--line);
+      background: var(--app-chrome);
     }
     .side-card {
-      border: 1px solid rgba(37, 99, 235, 0.18);
-      border-radius: 16px;
-      background: rgba(255, 255, 255, 0.82);
-      box-shadow: var(--shadow);
+      border: 1px solid rgba(15, 23, 42, 0.08);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.42);
+      box-shadow: none;
       overflow: hidden;
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
+    }
+    .side-nav-card {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
     }
     .side-title {
-      padding: 14px 15px 8px;
+      padding: 12px 12px 7px;
       color: var(--muted);
       font-size: 12px;
       font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.4px;
+      letter-spacing: 0.2px;
     }
     .side-nav {
       display: grid;
-      padding: 6px;
-      gap: 4px;
+      padding: 6px 8px 10px;
+      gap: 6px;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      align-content: start;
+      scrollbar-width: thin;
+    }
+    .side-nav::-webkit-scrollbar {
+      width: 8px;
+    }
+    .side-nav::-webkit-scrollbar-thumb {
+      background: rgba(100, 112, 138, 0.34);
+      border-radius: 999px;
     }
     .side-nav a {
       position: relative;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      min-height: 38px;
-      border-radius: 10px;
-      padding: 0 10px;
+      gap: 11px;
+      min-height: 46px;
+      border-radius: 9px;
+      padding: 0 13px;
       color: var(--text);
       text-decoration: none;
-      font-weight: 650;
-      transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+      font-size: 15px;
+      font-weight: 760;
+      transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
     }
     .side-nav a::before {
-      content: "";
-      width: 7px;
-      height: 7px;
-      border-radius: 999px;
-      background: transparent;
-      box-shadow: inset 0 0 0 1px rgba(100, 112, 138, 0.38);
+      content: attr(data-icon);
+      width: 26px;
+      height: 26px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      background: rgba(255, 255, 255, 0.55);
+      color: var(--muted);
+      box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
       flex: 0 0 auto;
-      margin-right: 2px;
-      transition: background 0.15s ease, box-shadow 0.15s ease;
+      font-size: 13px;
+      transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
     }
     .side-nav a.active {
-      background: linear-gradient(135deg, rgba(37, 99, 235, 0.14), rgba(6, 182, 212, 0.12));
+      background: rgba(21, 150, 97, 0.13);
       color: var(--accent-dark);
-      box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.18);
+      box-shadow: inset 0 0 0 1px rgba(21, 150, 97, 0.18);
     }
     .side-nav a.active::before {
       background: var(--accent);
-      box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+      color: #ffffff;
+      box-shadow: 0 8px 20px -12px rgba(21, 150, 97, 0.85);
     }
     .side-nav a:hover {
-      background: rgba(37, 99, 235, 0.10);
+      background: rgba(255, 255, 255, 0.72);
       color: var(--accent-dark);
       transform: translateX(2px);
     }
     .side-nav a::after {
-      content: ">";
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-top: 2px solid currentColor;
+      border-right: 2px solid currentColor;
+      transform: rotate(45deg);
       color: var(--muted);
-      font-size: 18px;
-      line-height: 1;
+      margin-left: auto;
+      opacity: 0.36;
     }
     .side-support {
       padding: 14px;
       display: grid;
       gap: 10px;
       background:
-        radial-gradient(120px 120px at 100% 0%, rgba(255, 183, 3, 0.24), transparent 70%),
-        radial-gradient(160px 130px at 0% 100%, rgba(244, 63, 94, 0.18), transparent 70%),
+        linear-gradient(135deg, rgba(255, 183, 3, 0.16), rgba(255, 77, 109, 0.12)),
         #ffffff;
     }
     .side-support strong {
@@ -3958,6 +3995,7 @@ function renderAdminHtml() {
       display: grid;
       gap: clamp(14px, 1.4vw, 22px);
       min-width: 0;
+      padding: 24px 0 0 24px;
     }
     .page-group {
       display: none;
@@ -3982,7 +4020,7 @@ function renderAdminHtml() {
       position: relative;
       background: var(--panel);
       border: 1px solid var(--line);
-      border-radius: 16px;
+      border-radius: 10px;
       box-shadow: var(--shadow);
       overflow: hidden;
       backdrop-filter: blur(12px);
@@ -3991,26 +4029,21 @@ function renderAdminHtml() {
       min-width: 0;
     }
     section::before {
-      content: "";
-      position: absolute;
-      inset: 0 0 auto 0;
-      height: 3px;
-      background: linear-gradient(90deg, #6366f1, #a855f7, #d946ef);
-      opacity: 0.85;
+      content: none;
     }
     section:hover { border-color: var(--line-strong); }
     section[id] {
       scroll-margin-top: 90px;
     }
     .section-head {
-      padding: 14px 18px;
+      padding: 16px 20px;
       border-bottom: 1px solid var(--line);
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
       min-width: 0;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.36));
+      background: rgba(248, 250, 252, 0.72);
     }
     h2 {
       margin: 0;
@@ -4028,101 +4061,95 @@ function renderAdminHtml() {
       flex-wrap: wrap;
     }
     .theme-toggle {
-      height: 40px;
+      width: 42px;
+      height: 42px;
       display: inline-flex;
       align-items: center;
-      gap: 9px;
-      padding: 4px 13px 4px 5px;
-      border: 1px solid rgba(37, 99, 235, 0.16);
-      border-radius: 999px;
-      background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(248, 251, 255, 0.74));
-      box-shadow: 0 12px 26px -22px rgba(15, 23, 42, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.78);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      color: var(--accent-dark);
-      font-weight: 800;
+      justify-content: center;
+      padding: 0;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: #ffffff;
+      color: #111827;
+      font-weight: 700;
       transition: border-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, background 0.16s ease;
     }
     .theme-toggle:hover {
-      border-color: rgba(37, 99, 235, 0.28);
-      box-shadow: 0 16px 30px -22px rgba(37, 99, 235, 0.46), inset 0 1px 0 rgba(255, 255, 255, 0.82);
+      border-color: rgba(15, 23, 42, 0.24);
+      box-shadow: 0 12px 22px -18px rgba(15, 23, 42, 0.45);
       transform: translateY(-1px);
     }
     body[data-theme="dark"] .theme-toggle {
-      background: linear-gradient(135deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.8));
-      border-color: rgba(148, 163, 184, 0.24);
-      box-shadow: 0 18px 32px -24px rgba(2, 6, 23, 0.9), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      background: #2b2b2b;
+      border-color: var(--line-strong);
+      color: #f8fafc;
+      box-shadow: none;
     }
     .theme-icon {
       position: relative;
-      width: 30px;
-      height: 30px;
-      border-radius: 999px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
       flex: 0 0 auto;
-      display: grid;
-      place-items: center;
-      overflow: hidden;
-      background:
-        radial-gradient(circle at 36% 32%, rgba(255, 255, 255, 0.9), transparent 34%),
-        linear-gradient(135deg, #fde68a, #60a5fa);
-      box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.16), 0 7px 14px -10px rgba(37, 99, 235, 0.85);
+      display: block;
+      background: transparent;
+      border: 0;
+      box-shadow: inset 6px -4px 0 0 currentColor;
+      transform: rotate(-12deg);
     }
     .theme-icon::before,
     .theme-icon::after {
       content: "";
       position: absolute;
       display: block;
-      transition: transform 0.22s ease, opacity 0.22s ease, background 0.22s ease, box-shadow 0.22s ease;
+      transition: transform 0.2s ease, opacity 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
     }
     .theme-icon::before {
-      width: 11px;
-      height: 11px;
-      border-radius: 999px;
-      background: #f59e0b;
-      box-shadow:
-        0 0 0 5px rgba(245, 158, 11, 0.16),
-        0 -12px 0 -4px rgba(245, 158, 11, 0.75),
-        0 12px 0 -4px rgba(245, 158, 11, 0.75),
-        12px 0 0 -4px rgba(245, 158, 11, 0.75),
-        -12px 0 0 -4px rgba(245, 158, 11, 0.75);
+      display: none;
     }
     .theme-icon::after {
-      width: 12px;
-      height: 12px;
-      border-radius: 999px;
-      background: transparent;
-      transform: translate(18px, -12px);
-      box-shadow: -5px 5px 0 #dbeafe;
+      width: 3px;
+      height: 3px;
+      left: 50%;
+      top: 50%;
+      border-radius: 50%;
+      background: currentColor;
+      transform: translate(-50%, -50%);
       opacity: 0;
     }
     body[data-theme="dark"] .theme-icon {
-      background:
-        radial-gradient(circle at 38% 34%, rgba(255, 255, 255, 0.18), transparent 36%),
-        linear-gradient(135deg, #172554, #0f172a);
-      box-shadow: inset 0 0 0 1px rgba(147, 197, 253, 0.18), 0 10px 18px -12px rgba(2, 6, 23, 0.95);
+      background: currentColor;
+      box-shadow: none;
+      transform: rotate(0deg) scale(0.72);
     }
     body[data-theme="dark"] .theme-icon::before {
       opacity: 0;
-      transform: translate(-16px, 12px) scale(0.6);
+      transform: scale(0);
     }
     body[data-theme="dark"] .theme-icon::after {
       opacity: 1;
-      transform: translate(2px, -1px);
+      transform: translate(-50%, -50%);
       box-shadow:
-        -5px 5px 0 #dbeafe,
-        8px -8px 0 -5px rgba(147, 197, 253, 0.9),
-        -9px -5px 0 -5px rgba(147, 197, 253, 0.75),
-        9px 8px 0 -5px rgba(147, 197, 253, 0.7);
+        0 -13px 0 currentColor,
+        0 13px 0 currentColor,
+        13px 0 0 currentColor,
+        -13px 0 0 currentColor,
+        9px 9px 0 currentColor,
+        -9px 9px 0 currentColor,
+        9px -9px 0 currentColor,
+        -9px -9px 0 currentColor;
     }
     .theme-label {
-      color: var(--accent-dark);
-      font-size: 12px;
-      font-weight: 800;
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
       white-space: nowrap;
     }
     body[data-theme="dark"] header {
-      background: rgba(10, 16, 32, 0.76);
-      box-shadow: 0 1px 0 rgba(148, 163, 184, 0.12), 0 18px 36px -26px rgba(2, 6, 23, 0.9);
+      background: rgba(20, 20, 20, 0.96);
+      box-shadow: none;
     }
     body[data-theme="dark"] .side-card,
     body[data-theme="dark"] section {
@@ -4131,8 +4158,15 @@ function renderAdminHtml() {
     }
     body[data-theme="dark"] .section-head,
     body[data-theme="dark"] .modal-head {
-      background: linear-gradient(180deg, rgba(15, 23, 42, 0.86), rgba(15, 23, 42, 0.54));
+      background: #1f1f1f;
       border-color: var(--line);
+    }
+    body[data-theme="dark"] .side-nav a::before {
+      background: #292b2f;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    }
+    body[data-theme="dark"] .side-nav a:hover {
+      background: #303236;
     }
     body[data-theme="dark"] .side-support {
       background:
@@ -4147,13 +4181,13 @@ function renderAdminHtml() {
     body[data-theme="dark"] button,
     body[data-theme="dark"] input,
     body[data-theme="dark"] select {
-      background: rgba(15, 23, 42, 0.86);
+      background: #2b2b2b;
       color: var(--text);
       border-color: var(--line-strong);
     }
     body[data-theme="dark"] button:hover {
-      background: rgba(30, 41, 59, 0.92);
-      border-color: rgba(148, 163, 184, 0.36);
+      background: #333333;
+      border-color: rgba(255, 255, 255, 0.22);
     }
     body[data-theme="dark"] select option {
       background: #111827;
@@ -4169,6 +4203,7 @@ function renderAdminHtml() {
     body[data-theme="dark"] .pill,
     body[data-theme="dark"] .readonly-line,
     body[data-theme="dark"] .chart-card,
+    body[data-theme="dark"] .overview-stat-card,
     body[data-theme="dark"] .metric,
     body[data-theme="dark"] .diagnostic-card,
     body[data-theme="dark"] .latency-panel,
@@ -4186,12 +4221,12 @@ function renderAdminHtml() {
     body[data-theme="dark"] .doc-card,
     body[data-theme="dark"] .command-row,
     body[data-theme="dark"] .download-links a {
-      background: rgba(15, 23, 42, 0.78);
+      background: #1f1f1f;
       color: var(--text);
       border-color: var(--line);
     }
     body[data-theme="dark"] .donut::after {
-      background: #101827;
+      background: #1f1f1f;
       color: var(--text);
     }
     body[data-theme="dark"] .bar-track,
@@ -4214,7 +4249,7 @@ function renderAdminHtml() {
     }
     button, input, select {
       height: 36px;
-      border-radius: 9px;
+      border-radius: 8px;
       border: 1px solid var(--line-strong);
       background: #ffffff;
       color: var(--text);
@@ -4249,11 +4284,11 @@ function renderAdminHtml() {
       background-size: 160% 160%;
       color: #fff;
       font-weight: 650;
-      box-shadow: 0 10px 22px -8px rgba(124, 58, 237, 0.55);
+      box-shadow: 0 10px 22px -8px rgba(21, 150, 97, 0.55);
     }
     button.primary:hover {
       background-position: 100% 0;
-      box-shadow: 0 14px 28px -8px rgba(124, 58, 237, 0.7);
+      box-shadow: 0 14px 28px -8px rgba(21, 150, 97, 0.68);
       transform: translateY(-1px);
     }
     button.support {
@@ -4284,9 +4319,9 @@ function renderAdminHtml() {
       transform: none;
     }
     button.refreshing {
-      border-color: rgba(37, 99, 235, 0.38);
-      background: rgba(37, 99, 235, 0.08);
-      color: #1d4ed8;
+      border-color: rgba(21, 150, 97, 0.38);
+      background: rgba(21, 150, 97, 0.09);
+      color: var(--accent-dark);
     }
     .refresh-spin {
       width: 14px;
@@ -4519,15 +4554,112 @@ function renderAdminHtml() {
     }
     .overview-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1.25fr) minmax(280px, 0.75fr);
+      grid-template-columns: 1fr;
+      gap: 14px;
+    }
+    .overview-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .overview-stat-card {
+      min-width: 0;
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: #ffffff;
+      display: grid;
+      gap: 8px;
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.05);
+    }
+    .overview-stat-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto;
+      height: 3px;
+      background: var(--overview-accent, var(--accent));
+      opacity: 0.9;
+    }
+    .overview-stat-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .overview-stat-icon {
+      width: 38px;
+      height: 38px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      color: var(--overview-accent, var(--accent-dark));
+      background: var(--overview-icon-bg, rgba(21, 150, 97, 0.12));
+      box-shadow: inset 0 0 0 1px var(--overview-icon-line, rgba(21, 150, 97, 0.18));
+      font-size: 18px;
+      font-weight: 800;
+      flex: 0 0 auto;
+    }
+    .overview-stat-icon::before {
+      content: attr(data-icon);
+      line-height: 1;
+    }
+    .overview-stat-card--messages {
+      --overview-accent: #3b82f6;
+      --overview-icon-bg: rgba(59, 130, 246, 0.12);
+      --overview-icon-line: rgba(59, 130, 246, 0.2);
+    }
+    .overview-stat-card--turns {
+      --overview-accent: #10b981;
+      --overview-icon-bg: rgba(16, 185, 129, 0.13);
+      --overview-icon-line: rgba(16, 185, 129, 0.22);
+    }
+    .overview-stat-card--errors {
+      --overview-accent: #f97316;
+      --overview-icon-bg: rgba(249, 115, 22, 0.13);
+      --overview-icon-line: rgba(249, 115, 22, 0.22);
+    }
+    .overview-stat-card--accounts {
+      --overview-accent: #06b6d4;
+      --overview-icon-bg: rgba(6, 182, 212, 0.13);
+      --overview-icon-line: rgba(6, 182, 212, 0.22);
+    }
+    .overview-stat-value {
+      font-size: clamp(22px, 2vw, 30px);
+      font-weight: 850;
+      line-height: 1.1;
+      overflow-wrap: anywhere;
+    }
+    .overview-stat-note {
+      color: var(--muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .overview-main-grid {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
+      gap: 14px;
+      align-items: stretch;
+    }
+    .overview-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 14px;
     }
     .chart-card {
       border: 1px solid var(--line);
-      border-radius: 14px;
+      border-radius: 9px;
       padding: 14px;
-      background: linear-gradient(160deg, #ffffff, #f7fbff);
+      background: #ffffff;
       min-width: 0;
+    }
+    .overview-health-card {
+      display: grid;
+      align-content: start;
+      gap: 12px;
     }
     .chart-title {
       display: flex;
@@ -4544,12 +4676,12 @@ function renderAdminHtml() {
     }
     .donut-wrap {
       display: grid;
-      grid-template-columns: 150px minmax(0, 1fr);
+      grid-template-columns: 126px minmax(0, 1fr);
       align-items: center;
       gap: 16px;
     }
     .donut {
-      width: 150px;
+      width: 126px;
       aspect-ratio: 1 / 1;
       border-radius: 50%;
       background: conic-gradient(var(--ok) 0deg, var(--ok) 0deg, #e5e7eb 0deg 360deg);
@@ -4559,7 +4691,7 @@ function renderAdminHtml() {
     }
     .donut::after {
       content: attr(data-label);
-      width: 96px;
+      width: 76px;
       aspect-ratio: 1 / 1;
       border-radius: 50%;
       background: #ffffff;
@@ -4572,7 +4704,7 @@ function renderAdminHtml() {
     }
     .legend {
       display: grid;
-      gap: 8px;
+      gap: 10px;
     }
     .legend-row {
       display: grid;
@@ -4714,9 +4846,9 @@ function renderAdminHtml() {
     .metric {
       position: relative;
       border: 1px solid var(--line);
-      border-radius: 12px;
+      border-radius: 9px;
       padding: 12px 14px;
-      background: linear-gradient(160deg, #ffffff, #f5f6fd);
+      background: #ffffff;
       min-height: 78px;
       overflow: hidden;
       transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
@@ -4727,14 +4859,7 @@ function renderAdminHtml() {
       box-shadow: 0 15px 30px -24px rgba(37, 99, 235, 0.52);
     }
     .metric::after {
-      content: "";
-      position: absolute;
-      right: -22px;
-      top: -22px;
-      width: 64px;
-      height: 64px;
-      border-radius: 50%;
-      background: radial-gradient(circle, rgba(6, 182, 212, 0.20), transparent 70%);
+      content: none;
     }
     .metric-label {
       color: var(--muted);
@@ -5522,6 +5647,12 @@ function renderAdminHtml() {
       font-weight: 750;
     }
     @media (max-width: 1240px) {
+      .shell {
+        grid-template-columns: 260px minmax(0, 1fr);
+      }
+      .content {
+        padding-left: 18px;
+      }
       .accounts-table,
       .accounts-table thead,
       .accounts-table tbody,
@@ -5565,19 +5696,42 @@ function renderAdminHtml() {
       }
     }
     @media (max-width: 1080px) {
+      .wrap {
+        padding: 0 16px;
+      }
       .shell {
         grid-template-columns: 1fr;
+        min-height: auto;
       }
       .sidebar {
         position: static;
+        height: auto;
+        padding: 16px 0 0;
+        overflow: visible;
+        border-right: 0;
+        background: transparent;
+      }
+      .content {
+        padding: 18px 0 0;
       }
       .side-nav {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
+        grid-template-columns: repeat(3, minmax(0, 1fr));
       }
       .side-nav a::after {
         content: "";
+        display: none;
+      }
+      .side-support {
+        display: none;
       }
       .overview-grid {
+        grid-template-columns: 1fr;
+      }
+      .overview-summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .overview-main-grid,
+      .overview-detail-grid {
         grid-template-columns: 1fr;
       }
     }
@@ -5588,7 +5742,14 @@ function renderAdminHtml() {
       .topbar {
         align-items: flex-start;
         flex-direction: column;
-        padding: 14px 0;
+        padding: 14px 0 16px;
+      }
+      .topbar .toolbar {
+        width: 100%;
+      }
+      .topbar .toolbar button,
+      .topbar .toolbar .pill {
+        flex: 1 1 auto;
       }
       .filter-row {
         grid-template-columns: 1fr;
@@ -5602,6 +5763,15 @@ function renderAdminHtml() {
       }
       .side-nav {
         grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .side-nav a {
+        min-height: 42px;
+        font-size: 14px;
+      }
+      .side-nav a::before {
+        width: 24px;
+        height: 24px;
+        font-size: 12px;
       }
       .accounts-table tr {
         grid-template-columns: 1fr;
@@ -5617,6 +5787,9 @@ function renderAdminHtml() {
       .donut-wrap {
         grid-template-columns: 1fr;
         justify-items: center;
+      }
+      .overview-summary {
+        grid-template-columns: 1fr;
       }
       .bar-row {
         grid-template-columns: 76px minmax(0, 1fr) 44px;
@@ -5661,14 +5834,46 @@ function renderAdminHtml() {
         transition-duration: 0.001ms !important;
       }
     }
+    @media (max-width: 560px) {
+      .wrap {
+        padding: 0 12px;
+      }
+      h1 {
+        font-size: 24px;
+      }
+      .page-brand span {
+        font-size: 13px;
+      }
+      .page-brand img {
+        width: 42px;
+        height: 42px;
+      }
+      .side-nav {
+        grid-template-columns: 1fr;
+      }
+      .section-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .body {
+        padding: 14px;
+      }
+      .topbar .toolbar button,
+      .topbar .toolbar .pill {
+        flex: 1 1 100%;
+      }
+    }
   </style>
 </head>
 <body>
   <header>
     <div class="wrap topbar">
-      <div class="brand">
+      <div class="page-brand">
         <img src="/favicon.png" alt="" />
-        <h1>CodexBridge Weixin 管理面板</h1>
+        <div>
+          <strong>CodexBridge</strong>
+          <span>微信管理控制台</span>
+        </div>
       </div>
       <div class="toolbar">
         <button class="theme-toggle" id="theme-toggle" type="button" aria-label="切换亮色或暗色主题">
@@ -5688,21 +5893,21 @@ function renderAdminHtml() {
   <main class="wrap">
     <div class="shell">
       <aside class="sidebar">
-        <div class="side-card">
-          <div class="side-title">导航</div>
+        <div class="side-card side-nav-card">
+          <div class="side-title">工作区</div>
           <nav class="side-nav" aria-label="管理面板分区">
-            <a class="active" href="#overview" data-page="overview">数据概览</a>
-            <a href="#users" data-page="users">用户入口</a>
-            <a href="#runtime" data-page="runtime">运行状态</a>
-            <a href="#diagnostics" data-page="diagnostics">诊断修复</a>
-            <a href="#metrics" data-page="metrics">用量统计</a>
-            <a href="#settings" data-page="settings">运行配置</a>
-            <a href="#updates" data-page="updates">软件更新</a>
-            <a href="#provider" data-page="provider">模型供应商</a>
-            <a href="#phone-guide" data-page="phone-guide">手机使用 Codex</a>
-            <a href="#sessions" data-page="sessions">会话管理</a>
-            <a href="#logs" data-page="logs">运行日志</a>
-            <a href="#backup" data-page="backup">备份恢复</a>
+            <a class="active" href="#overview" data-page="overview" data-icon="▦">数据概览</a>
+            <a href="#users" data-page="users" data-icon="◎">用户入口</a>
+            <a href="#runtime" data-page="runtime" data-icon="◌">运行状态</a>
+            <a href="#diagnostics" data-page="diagnostics" data-icon="✓">诊断修复</a>
+            <a href="#metrics" data-page="metrics" data-icon="▥">用量统计</a>
+            <a href="#settings" data-page="settings" data-icon="⚙">运行配置</a>
+            <a href="#updates" data-page="updates" data-icon="↻">软件更新</a>
+            <a href="#provider" data-page="provider" data-icon="⌁">模型供应商</a>
+            <a href="#phone-guide" data-page="phone-guide" data-icon="▯">手机使用 Codex</a>
+            <a href="#sessions" data-page="sessions" data-icon="◇">会话管理</a>
+            <a href="#logs" data-page="logs" data-icon="≡">运行日志</a>
+            <a href="#backup" data-page="backup" data-icon="□">备份恢复</a>
           </nav>
         </div>
         <div class="side-card side-support">
@@ -5720,39 +5925,65 @@ function renderAdminHtml() {
       </div>
       <div class="body">
         <div class="overview-grid">
-          <div class="chart-card">
-            <div class="chart-title">回复健康度 <span id="delivery-rate-label">-</span></div>
-            <div class="donut-wrap">
-              <div class="donut" id="delivery-donut" data-label="-"></div>
-              <div class="legend">
-                <div class="legend-row"><span class="legend-dot" style="background:#059669"></span><span>投递成功</span><strong id="chart-delivery-success">0</strong></div>
-                <div class="legend-row"><span class="legend-dot" style="background:#e11d48"></span><span>投递失败</span><strong id="chart-delivery-failed">0</strong></div>
-                <div class="legend-row"><span class="legend-dot" style="background:#f59e0b"></span><span>待补发</span><strong id="chart-delivery-pending">0</strong></div>
+          <div class="overview-summary">
+            <div class="overview-stat-card overview-stat-card--messages">
+              <div class="overview-stat-top"><span>收到消息</span><span class="overview-stat-icon" data-icon="↙" aria-hidden="true"></span></div>
+              <div class="overview-stat-value" id="overview-messages-total">-</div>
+              <div class="overview-stat-note">微信入口累计消息</div>
+            </div>
+            <div class="overview-stat-card overview-stat-card--turns">
+              <div class="overview-stat-top"><span>完成回合</span><span class="overview-stat-icon" data-icon="✓" aria-hidden="true"></span></div>
+              <div class="overview-stat-value" id="overview-turns-total">-</div>
+              <div class="overview-stat-note">已完成 Codex 回复</div>
+            </div>
+            <div class="overview-stat-card overview-stat-card--errors">
+              <div class="overview-stat-top"><span>最近错误</span><span class="overview-stat-icon" data-icon="!" aria-hidden="true"></span></div>
+              <div class="overview-stat-value" id="overview-errors-hour">-</div>
+              <div class="overview-stat-note">最近 1 小时错误</div>
+            </div>
+            <div class="overview-stat-card overview-stat-card--accounts">
+              <div class="overview-stat-top"><span>微信账号</span><span class="overview-stat-icon" data-icon="◎" aria-hidden="true"></span></div>
+              <div class="overview-stat-value" id="overview-account-total">-</div>
+              <div class="overview-stat-note">当前已接入账号</div>
+            </div>
+          </div>
+          <div class="overview-main-grid">
+            <div class="chart-card overview-health-card">
+              <div class="chart-title">回复健康度 <span id="delivery-rate-label">-</span></div>
+              <div class="donut-wrap">
+                <div class="donut" id="delivery-donut" data-label="-"></div>
+                <div class="legend">
+                  <div class="legend-row"><span class="legend-dot" style="background:#059669"></span><span>投递成功</span><strong id="chart-delivery-success">0</strong></div>
+                  <div class="legend-row"><span class="legend-dot" style="background:#e11d48"></span><span>投递失败</span><strong id="chart-delivery-failed">0</strong></div>
+                  <div class="legend-row"><span class="legend-dot" style="background:#f59e0b"></span><span>待补发</span><strong id="chart-delivery-pending">0</strong></div>
+                </div>
+              </div>
+            </div>
+            <div class="chart-card mini-grid">
+              <div class="chart-title">并发占用 <span id="chart-concurrency-label">-</span></div>
+              <div class="progress-row">
+                <div class="progress-meta"><span>回复回合</span><strong id="chart-turns-active-label">0 / 0</strong></div>
+                <div class="progress-track"><div class="progress-fill" id="chart-turns-active-fill"></div></div>
+              </div>
+              <div class="progress-row">
+                <div class="progress-meta"><span>事件分发</span><strong id="chart-events-label">0</strong></div>
+                <div class="progress-track"><div class="progress-fill" id="chart-events-fill"></div></div>
+              </div>
+              <div class="progress-row">
+                <div class="progress-meta"><span>账号轮询</span><strong id="chart-poll-label">0</strong></div>
+                <div class="progress-track"><div class="progress-fill" id="chart-poll-fill"></div></div>
               </div>
             </div>
           </div>
-          <div class="chart-card mini-grid">
-            <div class="chart-title">并发占用 <span id="chart-concurrency-label">-</span></div>
-            <div class="progress-row">
-              <div class="progress-meta"><span>回复回合</span><strong id="chart-turns-active-label">0 / 0</strong></div>
-              <div class="progress-track"><div class="progress-fill" id="chart-turns-active-fill"></div></div>
+          <div class="overview-detail-grid">
+            <div class="chart-card">
+              <div class="chart-title">核心数据 <span>累计</span></div>
+              <div class="bar-chart" id="metrics-bars"></div>
             </div>
-            <div class="progress-row">
-              <div class="progress-meta"><span>事件分发</span><strong id="chart-events-label">0</strong></div>
-              <div class="progress-track"><div class="progress-fill" id="chart-events-fill"></div></div>
+            <div class="chart-card">
+              <div class="chart-title">账号活跃度 <span id="account-bars-summary">暂无数据</span></div>
+              <div class="account-bars" id="account-bars"></div>
             </div>
-            <div class="progress-row">
-              <div class="progress-meta"><span>账号轮询</span><strong id="chart-poll-label">0</strong></div>
-              <div class="progress-track"><div class="progress-fill" id="chart-poll-fill"></div></div>
-            </div>
-          </div>
-          <div class="chart-card">
-            <div class="chart-title">核心数据 <span>累计</span></div>
-            <div class="bar-chart" id="metrics-bars"></div>
-          </div>
-          <div class="chart-card">
-            <div class="chart-title">账号活跃度 <span id="account-bars-summary">暂无数据</span></div>
-            <div class="account-bars" id="account-bars"></div>
           </div>
         </div>
       </div>
@@ -6870,7 +7101,7 @@ function renderAdminHtml() {
       document.body.dataset.theme = next;
       const label = $('theme-label');
       if (label) {
-        label.textContent = next === 'dark' ? '暗色' : '亮色';
+        label.textContent = next === 'dark' ? '切换到亮色主题' : '切换到暗色主题';
       }
       const toggle = $('theme-toggle');
       if (toggle) {
@@ -7754,6 +7985,9 @@ function renderAdminHtml() {
       $('chart-delivery-success').textContent = fmtNumber(success);
       $('chart-delivery-failed').textContent = fmtNumber(failed);
       $('chart-delivery-pending').textContent = fmtNumber(pending);
+      $('overview-messages-total').textContent = fmtNumber(m.messagesReceived || 0);
+      $('overview-turns-total').textContent = fmtNumber(m.turnsCompleted || 0);
+      $('overview-errors-hour').textContent = fmtNumber(m.errorsRecentHour || 0);
 
       const bars = [
         { label: '收到消息', value: Number(m.messagesReceived || 0), color: 'linear-gradient(90deg, #2563eb, #06b6d4)' },
@@ -8215,6 +8449,7 @@ function renderAdminHtml() {
         ? String(bridge.lastError).slice(0, 80)
         : '无';
       $('metric-error').title = bridge.lastError || '';
+      $('overview-account-total').textContent = fmtNumber(accountCount);
       $('status-updated').textContent = [
         '上次轮询 ' + fmtRelativeMs(bridge.lastPollAt),
         '上次提交 ' + fmtRelativeMs(bridge.lastCommitAt),
