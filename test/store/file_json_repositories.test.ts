@@ -93,6 +93,34 @@ function makeProviderProfile(id: string, providerKind: string, displayName: stri
   };
 }
 
+test('runtime exposes a provider model catalog backed by registered providers', async () => {
+  const providerProfile = makeProviderProfile('catalog-profile', 'catalog-provider', 'Catalog Provider');
+  let calls = 0;
+  const runtime = createCodexBridgeRuntime({
+    providerProfiles: [providerProfile],
+    providerPlugins: [{
+      kind: 'catalog-provider',
+      async listModels() {
+        calls += 1;
+        return [{
+          id: 'catalog-model',
+          model: 'catalog-model',
+          displayName: 'Catalog Model',
+          description: '',
+          isDefault: true,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        }];
+      },
+    }],
+  });
+
+  const result = await runtime.services.providerModelCatalog.listModels('catalog-profile');
+
+  assert.equal(calls, 1);
+  assert.deepEqual(result.models.map((item) => item.id), ['catalog-model']);
+});
+
 test('file-backed repositories preserve scope bindings across runtime restarts', async () => {
   const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-json-store-'));
   const providerProfile = makeProviderProfile('openai-default', 'openai-native', 'OpenAI Default');
@@ -170,6 +198,20 @@ test('JsonFileStore quarantines corrupt JSON and reinitializes with empty data',
     .filter((entry) => entry.startsWith('provider_profiles.json.corrupt-'));
   assert.equal(quarantined.length, 1);
   assert.equal(fs.readFileSync(path.join(stateDir, quarantined[0]), 'utf8'), '{ broken json');
+});
+
+test('JsonFileStore recovers the previous file after an interrupted replacement', () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-json-store-recovery-'));
+  const providerProfilesPath = path.join(stateDir, 'provider_profiles.json');
+  const previousPath = `${providerProfilesPath}.123.previous`;
+  const profile = makeProviderProfile('openai-default', 'openai-native', 'OpenAI Default');
+  fs.writeFileSync(previousPath, `${JSON.stringify([profile], null, 2)}\n`, 'utf8');
+
+  const repositories = createFileJsonRepositories(stateDir);
+
+  assert.deepEqual(repositories.providerProfiles.list(), [profile]);
+  assert.equal(fs.existsSync(providerProfilesPath), true);
+  assert.equal(fs.existsSync(previousPath), false);
 });
 
 test('file-backed repositories preserve thread aliases across runtime restarts', async () => {

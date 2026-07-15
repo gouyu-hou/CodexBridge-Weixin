@@ -9,6 +9,8 @@ import { AssistantRecordService } from '../core/assistant_record_service.js';
 import { AutomationJobService } from '../core/automation_job_service.js';
 import { BridgeSessionService } from '../core/bridge_session_service.js';
 import { BridgeCoordinator } from '../core/bridge_coordinator.js';
+import { ProviderModelCatalogService } from '../core/provider_model_catalog_service.js';
+import { ProviderUsageService } from '../core/provider_usage_service.js';
 import { WeiboHotSearchService } from '../services/weibo_hot_search.js';
 import { SessionRouter } from '../core/session_router.js';
 import { InMemoryAgentJobRepository } from '../store/in_memory/in_memory_agent_job_repository.js';
@@ -139,6 +141,14 @@ export function createCodexBridgeRuntime({
       ?? path.join(defaultCwd ?? process.cwd(), '.codexbridge', 'assistant', 'attachments'),
   });
   const activeTurns = new ActiveTurnRegistry({ locale });
+  const providerModelCatalog = new ProviderModelCatalogService({
+    providerProfiles: providerProfilesRepository,
+    providerRegistry: registry,
+  });
+  const providerUsage = new ProviderUsageService({
+    providerProfiles: providerProfilesRepository,
+    providerRegistry: registry,
+  });
 
   const resolvedDefaultProviderProfileId = defaultProviderProfileId
     ?? providerProfiles[0]?.id
@@ -151,6 +161,7 @@ export function createCodexBridgeRuntime({
     activeTurns,
     providerProfiles: providerProfilesRepository,
     providerRegistry: registry,
+    providerUsage,
     pluginAliases: pluginAliasesRepository,
     defaultProviderProfileId: resolvedDefaultProviderProfileId,
     defaultCwd,
@@ -185,6 +196,8 @@ export function createCodexBridgeRuntime({
     },
     services: {
       activeTurns,
+      providerModelCatalog,
+      providerUsage,
       sessionRouter,
       bridgeSessions,
       automationJobs,

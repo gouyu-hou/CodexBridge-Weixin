@@ -2001,6 +2001,35 @@ test('/usage shows account plus 5-hour and weekly remaining quota', async () => 
   assert.ok(lines.some((line) => /本周剩余：58%（2 天后重置）/.test(line)));
 });
 
+test('/usage delegates provider access to the shared usage service with a forced refresh', async () => {
+  const { runtime } = makeRuntime();
+  const calls: Array<{ providerProfileId: string; forceRefresh: boolean }> = [];
+  runtime.services.providerUsage.getUsage = async (providerProfileId, options = {}) => {
+    calls.push({
+      providerProfileId,
+      forceRefresh: options.forceRefresh === true,
+    });
+    return {
+      providerProfileId,
+      providerKind: 'openai-native',
+      report: makeUsageReport(),
+      source: 'provider' as const,
+      fetchedAt: 1_000,
+      expiresAt: 2_000,
+      refreshFailed: false,
+    };
+  };
+
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-usage-service-1',
+    text: '/usage',
+  });
+
+  assert.deepEqual(calls, [{ providerProfileId: 'openai-default', forceRefresh: true }]);
+  assert.ok(result.messages.some((message) => /77%/.test(message.text ?? '')));
+});
+
 test('/status includes account and compact usage summary when usage is available', async () => {
   const { runtime, openai } = makeRuntime();
   openai.usageReport = makeUsageReport();

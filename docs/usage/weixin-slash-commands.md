@@ -93,7 +93,7 @@ It borrows the most useful CLI help conventions while staying chat-friendly:
 /model
 /m
 /model 1
-/model gpt-5.4
+/model gpt-5.6-sol
 /model default
 /models
 /ms
@@ -528,8 +528,8 @@ Examples:
 /model high
 /model 1
 /model 1 xhigh
-/model gpt-5.4 xhigh
-/model gpt-5.4
+/model gpt-5.6-sol ultra
+/model gpt-5.6-sol
 ```
 
 ### `/personality [friendly|pragmatic|none]` and `/psn [friendly|pragmatic|none]`

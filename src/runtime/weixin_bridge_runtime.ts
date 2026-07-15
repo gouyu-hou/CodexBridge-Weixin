@@ -3,6 +3,7 @@ import { isAgentCommandEnabled } from '../core/command_availability.js';
 import { writeSequencedDebugLog } from '../core/sequenced_stderr.js';
 import { WeixinPoller } from '../platforms/weixin/poller.js';
 import { createI18n, type Translator } from '../i18n/index.js';
+import type { WeixinPendingTextDelivery } from './weixin_delivery_outbox_store.js';
 import type { MissionHostNotification } from '../../packages/mission-control/src/index.js';
 import type {
   InboundTextEvent,
@@ -170,17 +171,7 @@ interface PendingScopeNotice {
   queuedAt: number;
 }
 
-interface PendingTextDelivery {
-  id: string;
-  externalScopeId: string;
-  content: string;
-  source: string;
-  createdAt: number;
-  nextAttemptAt: number;
-  attemptCount: number;
-  lastError: string;
-  lastErrorCode: number | null;
-}
+type PendingTextDelivery = WeixinPendingTextDelivery;
 
 interface WeixinBridgeRuntimeOptions {
   platformPlugin: PlatformPluginLike;
@@ -202,6 +193,24 @@ interface WeixinBridgeRuntimeOptions {
   autoRestartDelayMs?: number;
   maxConcurrentTurns?: number;
   eventDispatchConcurrency?: number;
+  deliveryOutboxStore?: {
+    read: () => PendingTextDelivery[];
+    write: (entries: PendingTextDelivery[]) => void;
+  } | null;
+  onAlert?: (payload: {
+    type: string;
+    stage: string;
+    message: string;
+    at: number;
+    restartCount?: number;
+    pendingDeliveryRetries?: number;
+  }) => Promise<void> | void;
+  deliveryOutboxAlertPendingThreshold?: number;
+  deliveryOutboxAlertAgeMs?: number;
+  deliveryOutboxAlertMinIntervalMs?: number;
+  metricsStore?: WeixinBridgeRuntime['metricsStore'];
+  turnTimeoutMs?: number;
+  pollTimeoutMs?: number;
   locale?: string | null;
 }
 
@@ -214,6 +223,11 @@ export class WeixinBridgeRuntime {
   static readonly DELIVERY_RETRY_INITIAL_MS = 15 * 1000;
   static readonly DELIVERY_RETRY_MAX_MS = 5 * 60 * 1000;
   static readonly DELIVERY_RETRY_MAX_ITEMS = 50;
+  static readonly DELIVERY_RETRY_RETENTION_MS = 24 * 60 * 60 * 1000;
+  static readonly DELIVERY_RETRY_MAX_ERROR_LENGTH = 500;
+  static readonly DEFAULT_DELIVERY_OUTBOX_ALERT_PENDING_THRESHOLD = 3;
+  static readonly DEFAULT_DELIVERY_OUTBOX_ALERT_AGE_MS = 5 * 60 * 1000;
+  static readonly DEFAULT_DELIVERY_OUTBOX_ALERT_MIN_INTERVAL_MS = 15 * 60 * 1000;
   static readonly INBOUND_DEDUP_TTL_MS = 10 * 60 * 1000;
   static readonly INBOUND_DEDUP_MAX_ITEMS = 1000;
   static readonly DEFAULT_MAX_CONCURRENT_TURNS = 3;
@@ -271,7 +285,22 @@ export class WeixinBridgeRuntime {
 
   deliveryRetryQueue: PendingTextDelivery[];
 
+  deliveryOutboxStore: {
+    read: () => PendingTextDelivery[];
+    write: (entries: PendingTextDelivery[]) => void;
+  } | null;
+
   deliveryRetryPumpPromise: Promise<void> | null;
+
+  deliveryRetryGeneration: number;
+
+  deliveryOutboxAlertPendingThreshold: number;
+
+  deliveryOutboxAlertAgeMs: number;
+
+  deliveryOutboxAlertMinIntervalMs: number;
+
+  lastDeliveryOutboxAlertAt: number;
 
   automationSweepTimer: ReturnType<typeof setInterval> | null;
 
@@ -379,7 +408,7 @@ export class WeixinBridgeRuntime {
     automationJobs = null,
     agentJobs = null,
     assistantRecords = null,
-    onError = async () => {},
+    onError = (_error: unknown): Promise<void> | void => {},
     previewSoftTargetBytes = 2048,
     previewHardLimitBytes = 2048,
     previewIntervalMs = 3000,
@@ -394,7 +423,18 @@ export class WeixinBridgeRuntime {
     maxConcurrentTurns = WeixinBridgeRuntime.DEFAULT_MAX_CONCURRENT_TURNS,
     eventDispatchConcurrency = WeixinBridgeRuntime.DEFAULT_EVENT_DISPATCH_CONCURRENCY,
     metricsStore = null,
-    onAlert = async () => {},
+    deliveryOutboxStore = null,
+    onAlert = (_payload: {
+      type: string;
+      stage: string;
+      message: string;
+      at: number;
+      restartCount?: number;
+      pendingDeliveryRetries?: number;
+    }): Promise<void> | void => {},
+    deliveryOutboxAlertPendingThreshold = WeixinBridgeRuntime.DEFAULT_DELIVERY_OUTBOX_ALERT_PENDING_THRESHOLD,
+    deliveryOutboxAlertAgeMs = WeixinBridgeRuntime.DEFAULT_DELIVERY_OUTBOX_ALERT_AGE_MS,
+    deliveryOutboxAlertMinIntervalMs = WeixinBridgeRuntime.DEFAULT_DELIVERY_OUTBOX_ALERT_MIN_INTERVAL_MS,
     turnTimeoutMs = 0,
     pollTimeoutMs = 0,
     locale = null,
@@ -434,8 +474,36 @@ export class WeixinBridgeRuntime {
     this.pendingScopeNotices = new Map();
     this.recentScopeNotices = new Map();
     this.recentInboundDedupKeys = new Map();
-    this.deliveryRetryQueue = [];
+    this.deliveryOutboxStore = deliveryOutboxStore;
+    let deliveryOutboxReadError: unknown = null;
+    try {
+      const restoredEntries = this.deliveryOutboxStore?.read?.() ?? [];
+      this.deliveryRetryQueue = Array.isArray(restoredEntries)
+        ? restoredEntries.map((entry) => ({
+          ...entry,
+          lastError: this.normalizeDeliveryRetryError(entry?.lastError),
+        }))
+        : [];
+      this.pruneExpiredDeliveryRetries();
+      if (this.deliveryRetryQueue.length > WeixinBridgeRuntime.DELIVERY_RETRY_MAX_ITEMS) {
+        this.deliveryRetryQueue.splice(
+          0,
+          this.deliveryRetryQueue.length - WeixinBridgeRuntime.DELIVERY_RETRY_MAX_ITEMS,
+        );
+      }
+    } catch (error) {
+      this.deliveryRetryQueue = [];
+      deliveryOutboxReadError = error;
+    }
     this.deliveryRetryPumpPromise = null;
+    this.deliveryRetryGeneration = 0;
+    this.deliveryOutboxAlertPendingThreshold = Math.max(
+      1,
+      Math.floor(Number(deliveryOutboxAlertPendingThreshold) || WeixinBridgeRuntime.DEFAULT_DELIVERY_OUTBOX_ALERT_PENDING_THRESHOLD),
+    );
+    this.deliveryOutboxAlertAgeMs = Math.max(0, Number(deliveryOutboxAlertAgeMs) || 0);
+    this.deliveryOutboxAlertMinIntervalMs = Math.max(0, Number(deliveryOutboxAlertMinIntervalMs) || 0);
+    this.lastDeliveryOutboxAlertAt = 0;
     this.automationSweepTimer = null;
     this.automationSweepInFlight = null;
     this.internalThreadCleanupTimer = null;
@@ -495,6 +563,12 @@ export class WeixinBridgeRuntime {
     }
     this.metricsStartedAt = Date.now();
     this.metricsDirty = false;
+    if (deliveryOutboxReadError) {
+      this.reportDeliveryOutboxError(deliveryOutboxReadError);
+    } else {
+      this.persistDeliveryRetryQueue();
+      this.maybeAlertDeliveryOutboxBacklog();
+    }
   }
 
   async start(): Promise<void> {
@@ -510,6 +584,9 @@ export class WeixinBridgeRuntime {
     this.clearAutoRestartTimer();
     this.startHealthMonitor();
     await this.platformPlugin.start();
+    void this.flushDeliveryRetryQueue().catch((error) => {
+      this.reportDeliveryOutboxError(error);
+    });
     this.automationJobs?.resetRunningJobs?.();
     if (typeof this.agentJobs?.recoverSupervisableMissions === 'function') {
       this.agentJobs.recoverSupervisableMissions();
@@ -580,11 +657,17 @@ export class WeixinBridgeRuntime {
       this.discardPendingInboundMergesWithoutText();
       await this.waitForIdle();
       await this.clearPendingRuntimeWork();
+      await this.deliveryRetryPumpPromise?.catch(() => {});
     } else {
       void pollerRunPromise?.catch(() => {});
+      this.deliveryRetryGeneration += 1;
+      void this.deliveryRetryPumpPromise?.catch(() => {});
+      this.deliveryRetryPumpPromise = null;
       await this.clearPendingRuntimeWork();
     }
     await this.platformPlugin.stop();
+    this.pruneExpiredDeliveryRetries();
+    this.persistDeliveryRetryQueue();
     this.persistMetrics();
   }
 
@@ -643,6 +726,7 @@ export class WeixinBridgeRuntime {
       healthCheckActive: Boolean(this.healthCheckTimer),
       stalePollThresholdMs: this.stalePollThresholdMs,
       pendingDeliveryRetries: this.deliveryRetryQueue.length,
+      deliveryOutbox: this.getDeliveryOutboxSummary(),
       maxConcurrentTurns: this.turnLimiter.maxConcurrency,
       activeTurns: this.turnLimiter.activeCount,
       queuedTurns: this.turnLimiter.queuedCount,
@@ -2262,9 +2346,13 @@ export class WeixinBridgeRuntime {
     delivery?: { error?: string | null; errorCode?: number | null } | null;
     source?: string;
   }): void {
+    const pruned = this.pruneExpiredDeliveryRetries();
     const scopeId = String(externalScopeId ?? '').trim();
     const normalizedContent = String(content ?? '').trim();
     if (!scopeId || !normalizedContent) {
+      if (pruned) {
+        this.persistDeliveryRetryQueue();
+      }
       return;
     }
     const now = Date.now();
@@ -2274,9 +2362,11 @@ export class WeixinBridgeRuntime {
       && entry.source === source
     ));
     if (existing) {
-      existing.lastError = String(delivery?.error ?? existing.lastError ?? '').trim();
+      existing.lastError = this.normalizeDeliveryRetryError(delivery?.error ?? existing.lastError);
       existing.lastErrorCode = typeof delivery?.errorCode === 'number' ? delivery.errorCode : existing.lastErrorCode;
       existing.nextAttemptAt = Math.min(existing.nextAttemptAt, now + this.resolveQueuedDeliveryRetryMs(delivery, existing.attemptCount + 1));
+      this.persistDeliveryRetryQueue();
+      this.maybeAlertDeliveryOutboxBacklog(now);
       return;
     }
     this.deliveryRetryQueue.push({
@@ -2287,18 +2377,17 @@ export class WeixinBridgeRuntime {
       createdAt: now,
       nextAttemptAt: now + this.resolveQueuedDeliveryRetryMs(delivery, 1),
       attemptCount: 0,
-      lastError: String(delivery?.error ?? '').trim(),
+      lastError: this.normalizeDeliveryRetryError(delivery?.error),
       lastErrorCode: typeof delivery?.errorCode === 'number' ? delivery.errorCode : null,
     });
     if (this.deliveryRetryQueue.length > WeixinBridgeRuntime.DELIVERY_RETRY_MAX_ITEMS) {
       this.deliveryRetryQueue.splice(0, this.deliveryRetryQueue.length - WeixinBridgeRuntime.DELIVERY_RETRY_MAX_ITEMS);
     }
+    this.persistDeliveryRetryQueue();
+    this.maybeAlertDeliveryOutboxBacklog(now);
     debugRuntime('text_delivery_retry_queued', {
-      scopeId,
       source,
       queueLength: this.deliveryRetryQueue.length,
-      contentPreview: truncateDebugText(normalizedContent),
-      error: delivery?.error ?? null,
       errorCode: delivery?.errorCode ?? null,
     });
   }
@@ -2310,10 +2399,29 @@ export class WeixinBridgeRuntime {
     externalScopeId?: string | null;
     force?: boolean;
   } = {}): Promise<void> {
+    const generation = this.deliveryRetryGeneration;
     if (this.deliveryRetryPumpPromise) {
-      return this.deliveryRetryPumpPromise;
+      if (!force) {
+        return this.deliveryRetryPumpPromise;
+      }
+      const previousTask = this.deliveryRetryPumpPromise;
+      const forcedTask = previousTask
+        .catch(() => {})
+        .then(() => {
+          if (generation !== this.deliveryRetryGeneration) {
+            return;
+          }
+          return this.flushDeliveryRetryQueueInternal({ externalScopeId, force: true, generation });
+        })
+        .finally(() => {
+          if (this.deliveryRetryPumpPromise === forcedTask) {
+            this.deliveryRetryPumpPromise = null;
+          }
+        });
+      this.deliveryRetryPumpPromise = forcedTask;
+      return forcedTask;
     }
-    const task = this.flushDeliveryRetryQueueInternal({ externalScopeId, force })
+    const task = this.flushDeliveryRetryQueueInternal({ externalScopeId, force, generation })
       .finally(() => {
         if (this.deliveryRetryPumpPromise === task) {
           this.deliveryRetryPumpPromise = null;
@@ -2326,16 +2434,30 @@ export class WeixinBridgeRuntime {
   async flushDeliveryRetryQueueInternal({
     externalScopeId = null,
     force = false,
+    generation = this.deliveryRetryGeneration,
   }: {
     externalScopeId?: string | null;
     force?: boolean;
+    generation?: number;
   }): Promise<void> {
+    if (generation !== this.deliveryRetryGeneration) {
+      return;
+    }
+    if (this.pruneExpiredDeliveryRetries()) {
+      this.persistDeliveryRetryQueue();
+    }
     const scopeFilter = String(externalScopeId ?? '').trim();
     if (this.deliveryRetryQueue.length === 0) {
       return;
     }
     const now = Date.now();
     for (const entry of [...this.deliveryRetryQueue]) {
+      if (generation !== this.deliveryRetryGeneration) {
+        return;
+      }
+      if (!this.deliveryRetryQueue.includes(entry)) {
+        continue;
+      }
       if (scopeFilter && entry.externalScopeId !== scopeFilter) {
         continue;
       }
@@ -2365,30 +2487,136 @@ export class WeixinBridgeRuntime {
           errorCode: null,
         }, entry.content);
       }
+      if (generation !== this.deliveryRetryGeneration) {
+        return;
+      }
       if (delivery.success) {
-        this.deliveryRetryQueue = this.deliveryRetryQueue.filter((candidate) => candidate.id !== entry.id);
+        // At-least-once: a crash after remote success and before this write can retry once.
+        this.deliveryRetryQueue = this.deliveryRetryQueue.filter((candidate) => candidate !== entry);
+        this.persistDeliveryRetryQueue();
         debugRuntime('text_delivery_retry_succeeded', {
-          scopeId: entry.externalScopeId,
           source: entry.source,
           queueLength: this.deliveryRetryQueue.length,
-          contentPreview: truncateDebugText(delivery.deliveredText || entry.content),
         });
         continue;
       }
       const nextAttemptCount = entry.attemptCount + 1;
+      const failedContinuation = String(delivery.failedText ?? '').trim();
+      if (failedContinuation) {
+        entry.content = failedContinuation;
+        this.deliveryRetryQueue = this.deliveryRetryQueue.filter((candidate) => (
+          candidate === entry
+          || candidate.externalScopeId !== entry.externalScopeId
+          || candidate.content !== entry.content
+          || candidate.source !== entry.source
+        ));
+      }
       entry.attemptCount = nextAttemptCount;
-      entry.lastError = delivery.error || this.i18n.t('runtime.error.unknownDeliveryFailure');
+      entry.lastError = this.normalizeDeliveryRetryError(
+        delivery.error || this.i18n.t('runtime.error.unknownDeliveryFailure'),
+      );
       entry.lastErrorCode = delivery.errorCode ?? null;
       entry.nextAttemptAt = Date.now() + this.resolveQueuedDeliveryRetryMs(delivery, nextAttemptCount);
+      this.persistDeliveryRetryQueue();
+      this.maybeAlertDeliveryOutboxBacklog();
       debugRuntime('text_delivery_retry_failed', {
-        scopeId: entry.externalScopeId,
         source: entry.source,
         attemptCount: entry.attemptCount,
         nextAttemptAt: entry.nextAttemptAt,
-        error: entry.lastError,
+        queueLength: this.deliveryRetryQueue.length,
         errorCode: entry.lastErrorCode,
       });
     }
+    this.maybeAlertDeliveryOutboxBacklog();
+  }
+
+  normalizeDeliveryRetryError(value: unknown): string {
+    return String(value ?? '')
+      .trim()
+      .slice(0, WeixinBridgeRuntime.DELIVERY_RETRY_MAX_ERROR_LENGTH);
+  }
+
+  pruneExpiredDeliveryRetries(now = Date.now()): boolean {
+    const threshold = now - WeixinBridgeRuntime.DELIVERY_RETRY_RETENTION_MS;
+    const retained = this.deliveryRetryQueue.filter((entry) => (
+      Number.isFinite(entry.createdAt) && entry.createdAt >= threshold
+    ));
+    if (retained.length === this.deliveryRetryQueue.length) {
+      return false;
+    }
+    this.deliveryRetryQueue = retained;
+    return true;
+  }
+
+  persistDeliveryRetryQueue(): void {
+    if (!this.deliveryOutboxStore) {
+      return;
+    }
+    try {
+      this.deliveryOutboxStore.write(this.deliveryRetryQueue.map((entry) => ({ ...entry })));
+    } catch (error) {
+      this.reportDeliveryOutboxError(error);
+    }
+  }
+
+  reportDeliveryOutboxError(error: unknown): void {
+    this.recordRuntimeError(error, 'runtime');
+    try {
+      void Promise.resolve(this.onError(error)).catch(() => {});
+    } catch {}
+  }
+
+  getDeliveryOutboxSummary(): {
+    pending: number;
+    oldestCreatedAt: number | null;
+    nextAttemptAt: number | null;
+  } {
+    let oldestCreatedAt: number | null = null;
+    let nextAttemptAt: number | null = null;
+    for (const entry of this.deliveryRetryQueue) {
+      if (Number.isFinite(entry.createdAt)) {
+        oldestCreatedAt = oldestCreatedAt === null
+          ? entry.createdAt
+          : Math.min(oldestCreatedAt, entry.createdAt);
+      }
+      if (Number.isFinite(entry.nextAttemptAt)) {
+        nextAttemptAt = nextAttemptAt === null
+          ? entry.nextAttemptAt
+          : Math.min(nextAttemptAt, entry.nextAttemptAt);
+      }
+    }
+    return {
+      pending: this.deliveryRetryQueue.length,
+      oldestCreatedAt,
+      nextAttemptAt,
+    };
+  }
+
+  maybeAlertDeliveryOutboxBacklog(now = Date.now()): void {
+    const summary = this.getDeliveryOutboxSummary();
+    if (summary.pending === 0 || summary.oldestCreatedAt === null) {
+      return;
+    }
+    const oldestAgeMs = Math.max(0, now - summary.oldestCreatedAt);
+    const thresholdReached = summary.pending >= this.deliveryOutboxAlertPendingThreshold;
+    const ageReached = oldestAgeMs >= this.deliveryOutboxAlertAgeMs;
+    if (!thresholdReached && !ageReached) {
+      return;
+    }
+    if (now - this.lastDeliveryOutboxAlertAt < this.deliveryOutboxAlertMinIntervalMs) {
+      return;
+    }
+    this.lastDeliveryOutboxAlertAt = now;
+    try {
+      void Promise.resolve(this.onAlert({
+        type: 'delivery_outbox_backlog',
+        stage: 'delivery',
+        message: 'Pending WeChat delivery retries require attention',
+        at: now,
+        pendingDeliveryRetries: summary.pending,
+        ...(ageReached ? { oldestPendingAgeMs: Math.floor(oldestAgeMs) } : {}),
+      })).catch(() => {});
+    } catch {}
   }
 
   resolveQueuedDeliveryRetryMs(

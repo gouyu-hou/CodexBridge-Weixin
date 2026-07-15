@@ -1,4 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
+const { resolveElectronUserArgs } = require('./weixin-admin-args.cjs');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -17,7 +18,7 @@ try {
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
 const PROJECT_PARENT = path.dirname(ROOT_DIR);
-const args = parseArgs(process.argv.slice(2));
+const args = parseArgs(resolveElectronUserArgs(process.argv, app.isPackaged));
 const stateDir = path.resolve(args.stateDir || process.env.CODEXBRIDGE_STATE_DIR || defaultStateDir());
 const envFile = path.resolve(args.envFile || preferredServiceEnvFile(stateDir));
 const defaultCwd = path.resolve(args.cwd || PROJECT_PARENT);
@@ -43,7 +44,7 @@ const FIRST_RUN_PROVIDER_PRESETS = {
     provider: 'Z Token - Codex',
     baseUrl: 'https://ztoken.app/',
     model: 'gpt-5.5',
-    models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
+    models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2'],
     capabilities: 'default',
     restrictModels: true,
   },
@@ -75,6 +76,9 @@ const FIRST_RUN_PROVIDER_PRESETS = {
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-5.5',
     models: [
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
       'gpt-5.5',
       'gpt-5.4',
       'gpt-5.4-mini',

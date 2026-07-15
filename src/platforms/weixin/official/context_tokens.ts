@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { readJsonFileSafely, writeJsonFileAtomically } from '../../../store/file_json/json_file_io.js';
+import { assertValidWeixinAccountId } from '../account_store.js';
 
 const contextTokenStore = new Map<string, string>();
 
@@ -8,48 +10,69 @@ function contextTokenKey(accountId: string, userId: string): string {
 }
 
 function resolveContextTokenFilePath(accountsDir: string, accountId: string): string {
-  return path.join(accountsDir, `${accountId}.context-tokens.json`);
+  const normalizedAccountId = assertValidWeixinAccountId(accountId);
+  const rootDir = path.resolve(accountsDir);
+  const filePath = path.resolve(rootDir, `${normalizedAccountId}.context-tokens.json`);
+  if (path.dirname(filePath) !== rootDir) {
+    throw new Error(`invalid Weixin account id: ${accountId}`);
+  }
+  return filePath;
 }
 
 function persistContextTokens(accountsDir: string, accountId: string): void {
-  const prefix = `${accountId}:`;
+  const normalizedAccountId = assertValidWeixinAccountId(accountId);
+  const prefix = `${normalizedAccountId}:`;
   const tokens: Record<string, string> = {};
   for (const [key, value] of contextTokenStore) {
     if (key.startsWith(prefix)) {
       tokens[key.slice(prefix.length)] = value;
     }
   }
-  const filePath = resolveContextTokenFilePath(accountsDir, accountId);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(tokens, null, 2), 'utf8');
+  const filePath = resolveContextTokenFilePath(accountsDir, normalizedAccountId);
+  writeJsonFileAtomically(filePath, tokens);
 }
 
 export function restoreContextTokens(accountsDir: string, accountId: string): void {
-  const filePath = resolveContextTokenFilePath(accountsDir, accountId);
-  if (!fs.existsSync(filePath)) {
-    return;
-  }
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const tokens = JSON.parse(raw) as Record<string, string>;
-    for (const [userId, token] of Object.entries(tokens)) {
-      if (typeof token === 'string' && token) {
-        contextTokenStore.set(contextTokenKey(accountId, userId), token);
-      }
-    }
-  } catch {
-    // Keep startup tolerant: a broken token cache should not stop the bridge.
-  }
+  reloadContextTokensForAccount(accountsDir, accountId);
+}
+
+export function reloadContextTokensForAccount(
+  accountsDir: string,
+  accountId: string,
+): Record<string, string> {
+  const normalizedAccountId = assertValidWeixinAccountId(accountId);
+  const filePath = resolveContextTokenFilePath(accountsDir, normalizedAccountId);
+  const tokens = normalizeContextTokenMap(
+    readJsonFileSafely<Record<string, unknown>>(filePath, { fallback: {} }),
+  );
+  replaceContextTokenCache(normalizedAccountId, tokens);
+  return tokens;
+}
+
+export function replaceContextTokensForAccount(
+  accountsDir: string,
+  accountId: string,
+  tokens: Record<string, unknown>,
+): Record<string, string> {
+  const normalizedAccountId = assertValidWeixinAccountId(accountId);
+  const normalizedTokens = normalizeContextTokenMap(tokens);
+  writeJsonFileAtomically(
+    resolveContextTokenFilePath(accountsDir, normalizedAccountId),
+    normalizedTokens,
+  );
+  replaceContextTokenCache(normalizedAccountId, normalizedTokens);
+  return normalizedTokens;
 }
 
 export function clearContextTokensForAccount(accountsDir: string, accountId: string): void {
-  const prefix = `${accountId}:`;
+  const normalizedAccountId = assertValidWeixinAccountId(accountId);
+  const prefix = `${normalizedAccountId}:`;
   for (const key of [...contextTokenStore.keys()]) {
     if (key.startsWith(prefix)) {
       contextTokenStore.delete(key);
     }
   }
-  const filePath = resolveContextTokenFilePath(accountsDir, accountId);
+  const filePath = resolveContextTokenFilePath(accountsDir, normalizedAccountId);
   try {
     if (fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
@@ -65,8 +88,9 @@ export function setContextToken(
   userId: string,
   token: string,
 ): void {
-  contextTokenStore.set(contextTokenKey(accountId, userId), token);
-  persistContextTokens(accountsDir, accountId);
+  const normalizedAccountId = assertValidWeixinAccountId(accountId);
+  contextTokenStore.set(contextTokenKey(normalizedAccountId, userId), token);
+  persistContextTokens(accountsDir, normalizedAccountId);
 }
 
 export function getContextToken(
@@ -74,13 +98,14 @@ export function getContextToken(
   accountId: string,
   userId: string,
 ): string | null {
-  const key = contextTokenKey(accountId, userId);
+  const normalizedAccountId = assertValidWeixinAccountId(accountId);
+  const key = contextTokenKey(normalizedAccountId, userId);
   const direct = contextTokenStore.get(key);
   if (typeof direct === 'string' && direct) {
     return direct;
   }
 
-  restoreContextTokens(accountsDir, accountId);
+  restoreContextTokens(accountsDir, normalizedAccountId);
   const restored = contextTokenStore.get(key);
   return typeof restored === 'string' && restored ? restored : null;
 }
@@ -95,4 +120,24 @@ export function findAccountIdsByContextToken(
 
 export function _resetContextTokenStoreForTest(): void {
   contextTokenStore.clear();
+}
+
+function normalizeContextTokenMap(tokens: Record<string, unknown>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(tokens).filter((entry): entry is [string, string] => (
+      Boolean(entry[0]) && typeof entry[1] === 'string' && Boolean(entry[1])
+    )),
+  );
+}
+
+function replaceContextTokenCache(accountId: string, tokens: Record<string, string>): void {
+  const prefix = `${accountId}:`;
+  for (const key of [...contextTokenStore.keys()]) {
+    if (key.startsWith(prefix)) {
+      contextTokenStore.delete(key);
+    }
+  }
+  for (const [userId, token] of Object.entries(tokens)) {
+    contextTokenStore.set(contextTokenKey(accountId, userId), token);
+  }
 }

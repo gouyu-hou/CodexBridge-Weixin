@@ -1227,7 +1227,7 @@ test('CodexProviderPlugin ignores unsupported ChatGPT-only model overrides and f
   ]);
 });
 
-test('CodexProviderPlugin ignores unsupported gpt-5.4 entries from model/list for ChatGPT auth and falls back to the first supported model', async () => {
+test('CodexProviderPlugin falls back to gpt-5.5 when gpt-5.6-sol is unavailable for ChatGPT auth', async () => {
   const calls = [];
   const plugin = makePlugin(() => ({
     async start() {},
@@ -1262,6 +1262,15 @@ test('CodexProviderPlugin ignores unsupported gpt-5.4 entries from model/list fo
           displayName: 'GPT-5.4',
           description: '',
           isDefault: true,
+          supportedReasoningEfforts: ['medium'],
+          defaultReasoningEffort: 'medium',
+        },
+        {
+          id: 'gpt-5.6-terra',
+          model: 'gpt-5.6-terra',
+          displayName: 'GPT-5.6-Terra',
+          description: '',
+          isDefault: false,
           supportedReasoningEfforts: ['medium'],
           defaultReasoningEffort: 'medium',
         },
@@ -1315,7 +1324,7 @@ test('CodexProviderPlugin ignores unsupported gpt-5.4 entries from model/list fo
   ]);
 });
 
-test('CodexProviderPlugin prefers gpt-5.5 over other supported ChatGPT models when no explicit model is selected', async () => {
+test('CodexProviderPlugin prefers gpt-5.6-sol over other supported ChatGPT models when no explicit model is selected', async () => {
   const calls = [];
   const plugin = makePlugin(() => ({
     async start() {},
@@ -1362,6 +1371,15 @@ test('CodexProviderPlugin prefers gpt-5.5 over other supported ChatGPT models wh
           supportedReasoningEfforts: ['medium'],
           defaultReasoningEffort: 'medium',
         },
+        {
+          id: 'gpt-5.6-sol',
+          model: 'gpt-5.6-sol',
+          displayName: 'GPT-5.6-Sol',
+          description: '',
+          isDefault: true,
+          supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+          defaultReasoningEffort: 'low',
+        },
       ];
     },
   }), {
@@ -1398,8 +1416,8 @@ test('CodexProviderPlugin prefers gpt-5.5 over other supported ChatGPT models wh
   });
 
   assert.deepEqual(calls, [
-    ['startThread', 'gpt-5.5'],
-    ['startTurn', 'gpt-5.5'],
+    ['startThread', 'gpt-5.6-sol'],
+    ['startTurn', 'gpt-5.6-sol'],
   ]);
 });
 

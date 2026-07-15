@@ -4,8 +4,14 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { NotFoundError } from '../../../src/core/errors.js';
 import { WeixinAccountStore } from '../../../src/platforms/weixin/account_store.js';
 import { WeixinAdminServer, resolveWeixinAdminServerOptions } from '../../../src/platforms/weixin/admin_server.js';
+import {
+  _resetContextTokenStoreForTest,
+  getContextToken as getOfficialContextToken,
+  setContextToken as setOfficialContextToken,
+} from '../../../src/platforms/weixin/official/context_tokens.js';
 import { createFileJsonRepositories } from '../../../src/store/file_json/create_file_json_repositories.js';
 
 function makeTempStateDir() {
@@ -15,6 +21,343 @@ function makeTempStateDir() {
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function makeProviderModelCatalogFake() {
+  const calls: Array<{ providerProfileId: string; forceRefresh: boolean }> = [];
+  const invalidations: Array<string | undefined> = [];
+  return {
+    calls,
+    invalidations,
+    async listModels(providerProfileId: string, options: { forceRefresh?: boolean } = {}) {
+      calls.push({ providerProfileId, forceRefresh: options.forceRefresh === true });
+      return {
+        providerProfileId,
+        providerKind: 'fake',
+        models: [{
+          id: 'gpt-5', model: 'gpt-5', displayName: 'GPT-5', description: '', isDefault: true,
+          supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high',
+        }],
+        source: 'provider' as const,
+        fetchedAt: 100,
+        expiresAt: 200,
+        refreshFailed: false,
+        stale: false,
+      };
+    },
+    invalidate(providerProfileId?: string) { invalidations.push(providerProfileId); },
+  };
+}
+
+function makeAccountValidationCatalogFake({
+  modelsByProvider = {},
+  error = null,
+  source = 'provider',
+  stale = false,
+  refreshFailed = false,
+  onLoad = () => {},
+}: {
+  modelsByProvider?: Record<string, Array<{ id: string; supportedReasoningEfforts: string[] }>>;
+  error?: Error | null;
+  source?: 'provider' | 'profile';
+  stale?: boolean;
+  refreshFailed?: boolean;
+  onLoad?: () => void;
+} = {}) {
+  const calls: Array<{ providerProfileId: string; forceRefresh: boolean }> = [];
+  return {
+    calls,
+    async listModels(providerProfileId: string, options: { forceRefresh?: boolean } = {}) {
+      calls.push({ providerProfileId, forceRefresh: options.forceRefresh === true });
+      onLoad();
+      if (error) {
+        throw error;
+      }
+      return {
+        providerProfileId,
+        providerKind: 'fake',
+        models: (modelsByProvider[providerProfileId] ?? []).map((item, index) => ({
+          id: item.id,
+          model: item.id,
+          displayName: item.id,
+          description: '',
+          isDefault: index === 0,
+          supportedReasoningEfforts: item.supportedReasoningEfforts,
+          defaultReasoningEffort: null,
+        })),
+        source,
+        fetchedAt: 100,
+        expiresAt: 200,
+        refreshFailed,
+        stale,
+      };
+    },
+    invalidate() {},
+  };
+}
+
+function makeProviderUsageFake() {
+  const calls: Array<{ providerProfileId: string; forceRefresh: boolean }> = [];
+  const invalidations: Array<string | undefined> = [];
+  return {
+    calls,
+    invalidations,
+    async getUsage(providerProfileId: string, options: { forceRefresh?: boolean } = {}) {
+      calls.push({ providerProfileId, forceRefresh: options.forceRefresh === true });
+      return {
+        providerProfileId,
+        providerKind: 'openai-native',
+        report: {
+          provider: 'codex',
+          accountId: 'private-account-id',
+          userId: 'private-user-id',
+          email: 'private@example.com',
+          plan: 'pro',
+          buckets: [{
+            name: 'Codex',
+            allowed: true,
+            limitReached: false,
+            windows: [{
+              name: 'Primary',
+              usedPercent: 23,
+              windowSeconds: 18_000,
+              resetAfterSeconds: 3_600,
+              resetAtUnix: 10_000,
+            }],
+          }],
+          credits: { hasCredits: true, unlimited: false, balance: '12.50' },
+        },
+        source: options.forceRefresh ? 'provider' as const : 'cache' as const,
+        fetchedAt: 100,
+        expiresAt: 200,
+        refreshFailed: false,
+      };
+    },
+    invalidate(providerProfileId?: string) { invalidations.push(providerProfileId); },
+  };
+}
+
+test('WeixinAdminServer serves cached provider models and refreshes them with browser authorization', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const catalog = makeProviderModelCatalogFake();
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    providerModelCatalog: catalog,
+    port: 0,
+  });
+
+  const binding = await server.start();
+  try {
+    const expectedCatalog = {
+      providerProfileId: 'openai-default',
+      providerKind: 'fake',
+      models: [{
+        id: 'gpt-5', model: 'gpt-5', displayName: 'GPT-5', description: '', isDefault: true,
+        supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high',
+      }],
+      source: 'provider',
+      fetchedAt: 100,
+      expiresAt: 200,
+      refreshFailed: false,
+      stale: false,
+    };
+    const getResponse = await fetch(`${binding.url}/api/provider-profiles/openai-default/models`, {
+      headers: { origin: binding.url },
+    });
+    assert.equal(getResponse.status, 200);
+    assert.deepEqual(await getResponse.json(), expectedCatalog);
+    assert.deepEqual(catalog.calls, [{ providerProfileId: 'openai-default', forceRefresh: false }]);
+
+    const adminPage = await fetch(binding.url);
+    const adminHtml = await adminPage.text();
+    const adminToken = adminHtml.match(/name="codexbridge-admin-token" content="([^"]+)"/u)?.[1];
+    assert.ok(adminToken);
+
+    const unauthorizedResponse = await fetch(`${binding.url}/api/provider-profiles/openai-default/models/refresh`, {
+      method: 'POST',
+      headers: { origin: binding.url },
+    });
+    assert.equal(unauthorizedResponse.status, 403);
+    assert.deepEqual(await unauthorizedResponse.json(), { error: 'missing or invalid admin token' });
+
+    const noOriginResponse = await fetch(`${binding.url}/api/provider-profiles/openai-default/models/refresh`, {
+      method: 'POST',
+    });
+    assert.equal(noOriginResponse.status, 403);
+
+    const refreshResponse = await fetch(`${binding.url}/api/provider-profiles/openai-default/models/refresh`, {
+      method: 'POST',
+      headers: {
+        origin: binding.url,
+        'x-codexbridge-admin-token': adminToken,
+      },
+    });
+    assert.equal(refreshResponse.status, 200);
+    assert.deepEqual(await refreshResponse.json(), expectedCatalog);
+    assert.deepEqual(catalog.calls, [
+      { providerProfileId: 'openai-default', forceRefresh: false },
+      { providerProfileId: 'openai-default', forceRefresh: true },
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer sanitizes provider model catalog failures', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const missingServer = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    providerModelCatalog: {
+      async listModels() {
+        throw new NotFoundError('profile not found');
+      },
+      invalidate() {},
+    },
+    port: 0,
+  });
+  const unavailableServer = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    providerModelCatalog: {
+      async listModels() {
+        throw new Error('api-key=secret upstream body');
+      },
+      invalidate() {},
+    },
+    port: 0,
+  });
+
+  const missingBinding = await missingServer.start();
+  const unavailableBinding = await unavailableServer.start();
+  try {
+    const missingResponse = await fetch(`${missingBinding.url}/api/provider-profiles/missing/models`);
+    assert.equal(missingResponse.status, 404);
+    assert.deepEqual(await missingResponse.json(), { error: 'provider profile not found' });
+
+    const unavailableResponse = await fetch(`${unavailableBinding.url}/api/provider-profiles/openai-default/models`);
+    assert.equal(unavailableResponse.status, 500);
+    const unavailableBody = await unavailableResponse.json() as { error: string };
+    assert.deepEqual(unavailableBody, { error: 'provider model catalog unavailable' });
+    assert.doesNotMatch(JSON.stringify(unavailableBody), /secret|upstream body/u);
+  } finally {
+    await missingServer.stop();
+    await unavailableServer.stop();
+  }
+});
+
+test('WeixinAdminServer serves sanitized provider usage and protects forced refresh', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const providerUsage = makeProviderUsageFake();
+  const server = new WeixinAdminServer({ accountStore, stateDir, providerUsage, port: 0 });
+  const binding = await server.start();
+  try {
+    const expected = {
+      providerProfileId: 'openai-default',
+      providerKind: 'openai-native',
+      status: 'available',
+      report: {
+        provider: 'codex',
+        plan: 'pro',
+        buckets: [{
+          name: 'Codex',
+          allowed: true,
+          limitReached: false,
+          windows: [{
+            name: 'Primary',
+            usedPercent: 23,
+            windowSeconds: 18_000,
+            resetAfterSeconds: 3_600,
+            resetAtUnix: 10_000,
+          }],
+        }],
+        credits: { hasCredits: true, unlimited: false, balance: '12.50' },
+      },
+      source: 'cache',
+      fetchedAt: 100,
+      expiresAt: 200,
+      refreshFailed: false,
+    };
+    const getResponse = await fetch(`${binding.url}/api/provider-profiles/openai-default/usage`);
+    assert.equal(getResponse.status, 200);
+    const getText = await getResponse.text();
+    assert.doesNotMatch(getText, /private-account|private-user|private@example/u);
+    assert.deepEqual(JSON.parse(getText), expected);
+
+    const html = await fetch(binding.url).then((response) => response.text());
+    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+    const unauthorized = await fetch(`${binding.url}/api/provider-profiles/openai-default/usage/refresh`, {
+      method: 'POST',
+      headers: { origin: binding.url },
+    });
+    assert.equal(unauthorized.status, 403);
+
+    const noOrigin = await fetch(`${binding.url}/api/provider-profiles/openai-default/usage/refresh`, {
+      method: 'POST',
+    });
+    assert.equal(noOrigin.status, 403);
+
+    const refreshResponse = await fetch(`${binding.url}/api/provider-profiles/openai-default/usage/refresh`, {
+      method: 'POST',
+      headers: { origin: binding.url, 'x-codexbridge-admin-token': token },
+    });
+    assert.equal(refreshResponse.status, 200);
+    const refreshed = await refreshResponse.json() as any;
+    assert.equal(refreshed.source, 'provider');
+    assert.deepEqual(providerUsage.calls, [
+      { providerProfileId: 'openai-default', forceRefresh: false },
+      { providerProfileId: 'openai-default', forceRefresh: true },
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer sanitizes provider usage lookup failures', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const missingServer = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    providerUsage: {
+      async getUsage() { throw new NotFoundError('private profile detail'); },
+      invalidate() {},
+    },
+    port: 0,
+  });
+  const failingServer = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    providerUsage: {
+      async getUsage() { throw new Error('api-key=private usage failure'); },
+      invalidate() {},
+    },
+    port: 0,
+  });
+  const missingBinding = await missingServer.start();
+  const failingBinding = await failingServer.start();
+  try {
+    const missing = await fetch(`${missingBinding.url}/api/provider-profiles/missing/usage`);
+    assert.equal(missing.status, 404);
+    assert.deepEqual(await missing.json(), { error: 'provider profile not found' });
+
+    const failing = await fetch(`${failingBinding.url}/api/provider-profiles/openai-default/usage`);
+    assert.equal(failing.status, 500);
+    const text = await failing.text();
+    assert.doesNotMatch(text, /api-key|private usage/u);
+    assert.deepEqual(JSON.parse(text), { error: 'provider usage unavailable' });
+  } finally {
+    await missingServer.stop();
+    await failingServer.stop();
+  }
+});
 
 test('WeixinAdminServer lists accounts and renders pairing QR data for the panel', async () => {
   const stateDir = makeTempStateDir();
@@ -214,16 +557,10 @@ test('WeixinAdminServer updates account group, role, permissions, and model defa
   }
 });
 
-test('WeixinAdminServer validates account model defaults against provider profiles', async () => {
+test('WeixinAdminServer validates account model defaults against the automatic provider catalog', async () => {
   const stateDir = makeTempStateDir();
   const accountStore = new WeixinAccountStore({
     rootDir: path.join(stateDir, 'weixin', 'accounts'),
-  });
-  accountStore.saveAccount({
-    accountId: 'bot-primary',
-    token: 'token-primary',
-    baseUrl: 'https://ilink.example.com',
-    userId: 'wxid-primary',
   });
   accountStore.saveAccount({
     accountId: 'bot-friend',
@@ -234,69 +571,288 @@ test('WeixinAdminServer validates account model defaults against provider profil
   const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
   const now = Date.now();
   repositories.providerProfiles.save({
-    id: 'deepseek',
+    id: 'profile-1',
     providerKind: 'openai-compatible',
-    displayName: 'DeepSeek',
+    displayName: 'Profile 1',
     config: {
-      defaultModel: 'deepseek-v4-flash',
-      modelIds: ['deepseek-v4-flash', 'deepseek-v4-pro'],
+      defaultModel: 'static-only-model',
+      modelIds: ['static-only-model'],
     },
     createdAt: now,
     updatedAt: now,
   });
+  const catalog = makeAccountValidationCatalogFake({
+    modelsByProvider: {
+      'profile-1': [
+        { id: 'gpt-5', supportedReasoningEfforts: ['low', 'high'] },
+        { id: 'flex-model', supportedReasoningEfforts: [] },
+      ],
+    },
+    source: 'profile',
+    stale: true,
+    refreshFailed: true,
+  });
   const server = new WeixinAdminServer({
     accountStore,
     stateDir,
-    env: {
-      WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
-    },
     port: 0,
     repositories,
+    providerModelCatalog: catalog,
   });
 
   const binding = await server.start();
   try {
-    const stateResponse = await fetch(`${binding.url}/api/state`);
-    const stateBody = await stateResponse.json() as any;
-    const provider = stateBody.providerProfiles.find((item: any) => item.providerProfileId === 'deepseek');
-    assert.deepEqual(provider.models, ['deepseek-v4-flash', 'deepseek-v4-pro']);
-
-    const unknownProvider = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+    const patch = (modelProvider: Record<string, string>) => fetch(`${binding.url}/api/accounts/bot-friend`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        modelProvider: {
-          providerProfileId: 'missing-provider',
-          model: 'deepseek-v4-flash',
-        },
-      }),
+      body: JSON.stringify({ modelProvider }),
     });
+
+    const accepted = await patch({ providerProfileId: 'profile-1', model: 'gpt-5', reasoningEffort: 'high' });
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(catalog.calls, [{ providerProfileId: 'profile-1', forceRefresh: false }]);
+
+    const unlisted = await patch({ providerProfileId: 'profile-1', model: 'missing-model', reasoningEffort: '' });
+    assert.equal(unlisted.status, 400);
+    assert.deepEqual(await unlisted.json(), {
+      error: 'model is not available for provider profile',
+      providerProfileId: 'profile-1',
+      model: 'missing-model',
+      availableModels: ['gpt-5', 'flex-model'],
+    });
+
+    const unsupportedEffort = await patch({ providerProfileId: 'profile-1', model: 'gpt-5', reasoningEffort: 'medium' });
+    assert.equal(unsupportedEffort.status, 400);
+    assert.deepEqual(await unsupportedEffort.json(), {
+      error: 'reasoning effort is not available for model',
+      providerProfileId: 'profile-1',
+      model: 'gpt-5',
+      reasoningEffort: 'medium',
+      availableReasoningEfforts: ['low', 'high'],
+    });
+
+    const emptyModel = await patch({ providerProfileId: 'profile-1', model: '', reasoningEffort: '' });
+    assert.equal(emptyModel.status, 200);
+
+    const emptyModelUnknownProvider = await patch({
+      providerProfileId: 'missing-provider',
+      model: '',
+      reasoningEffort: '',
+    });
+    assert.equal(emptyModelUnknownProvider.status, 400);
+    assert.deepEqual(await emptyModelUnknownProvider.json(), {
+      error: 'unknown provider profile',
+      providerProfileId: 'missing-provider',
+    });
+
+    const modelWithoutProvider = await patch({ providerProfileId: '', model: 'gpt-5', reasoningEffort: 'high' });
+    assert.equal(modelWithoutProvider.status, 400);
+
+    const unknownProvider = await patch({ providerProfileId: 'missing-provider', model: 'gpt-5', reasoningEffort: 'high' });
     assert.equal(unknownProvider.status, 400);
 
-    const invalidModel = await fetch(`${binding.url}/api/accounts/bot-friend`, {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        modelProvider: {
-          providerProfileId: 'deepseek',
-          model: 'not-a-real-model',
-        },
-      }),
+    for (const reasoningEffort of ['', 'low', 'medium', 'high', 'xhigh']) {
+      const compatible = await patch({ providerProfileId: 'profile-1', model: 'flex-model', reasoningEffort });
+      assert.equal(compatible.status, 200, `expected compatibility effort ${reasoningEffort || '(empty)'} to pass`);
+    }
+    const invalidCompatibleEffort = await patch({
+      providerProfileId: 'profile-1',
+      model: 'flex-model',
+      reasoningEffort: 'legacy-effort',
     });
-    assert.equal(invalidModel.status, 400);
+    assert.equal(invalidCompatibleEffort.status, 400);
+    assert.deepEqual((await invalidCompatibleEffort.json() as any).availableReasoningEfforts, [
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+    ]);
+    assert.ok(catalog.calls.every((call) => call.forceRefresh === false));
+  } finally {
+    await server.stop();
+  }
+});
 
-    const validModel = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+test('WeixinAdminServer preserves unavailable account model triples only for the unchanged account', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  for (const accountId of ['bot-legacy', 'bot-other', 'bot-orphan']) {
+    accountStore.saveAccount({ accountId, token: `token-${accountId}`, baseUrl: 'https://ilink.example.com' });
+  }
+  accountStore.updateAccount('bot-legacy', {
+    model_provider: {
+      provider_profile_id: 'profile-1',
+      model: 'removed-model',
+      reasoning_effort: 'legacy-effort',
+    },
+  });
+  accountStore.updateAccount('bot-orphan', {
+    model_provider: {
+      provider_profile_id: 'removed-provider',
+      model: 'removed-model',
+      reasoning_effort: 'legacy-effort',
+    },
+  });
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const now = Date.now();
+  for (const id of ['profile-1', 'profile-2']) {
+    repositories.providerProfiles.save({
+      id,
+      providerKind: 'openai-compatible',
+      displayName: id,
+      config: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+  const catalog = makeAccountValidationCatalogFake({
+    modelsByProvider: {
+      'profile-1': [{ id: 'gpt-5', supportedReasoningEfforts: ['low', 'high'] }],
+      'profile-2': [{ id: 'other-model', supportedReasoningEfforts: ['medium'] }],
+    },
+  });
+  const server = new WeixinAdminServer({ accountStore, stateDir, repositories, providerModelCatalog: catalog, port: 0 });
+  const binding = await server.start();
+  const patch = (accountId: string, modelProvider: Record<string, string>, extra: Record<string, unknown> = {}) => (
+    fetch(`${binding.url}/api/accounts/${accountId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...extra, modelProvider }),
+    })
+  );
+  const legacyTriple = {
+    providerProfileId: 'profile-1',
+    model: 'removed-model',
+    reasoningEffort: 'legacy-effort',
+  };
+  try {
+    const preserved = await patch('bot-legacy', legacyTriple, {
+      permissions: { canChat: true, canUpload: false, canExecuteCommands: false },
+    });
+    assert.equal(preserved.status, 200);
+    assert.deepEqual(catalog.calls, [{ providerProfileId: 'profile-1', forceRefresh: false }]);
+    assert.equal(accountStore.loadAccount('bot-legacy')?.permissions?.can_upload, false);
+
+    const transferred = await patch('bot-other', legacyTriple);
+    assert.equal(transferred.status, 400);
+    assert.equal(accountStore.loadAccount('bot-other')?.model_provider, undefined);
+
+    const changedEffort = await patch('bot-legacy', { ...legacyTriple, reasoningEffort: 'another-legacy-effort' });
+    assert.equal(changedEffort.status, 400);
+
+    const changedProvider = await patch('bot-legacy', { ...legacyTriple, providerProfileId: 'profile-2' });
+    assert.equal(changedProvider.status, 400);
+    assert.deepEqual((await changedProvider.json() as any).availableModels, ['other-model']);
+
+    const orphanTriple = {
+      providerProfileId: 'removed-provider',
+      model: 'removed-model',
+      reasoningEffort: 'legacy-effort',
+    };
+    const preservedOrphan = await patch('bot-orphan', orphanTriple);
+    assert.equal(preservedOrphan.status, 200);
+    const transferredOrphan = await patch('bot-other', orphanTriple);
+    assert.equal(transferredOrphan.status, 400);
+
+    const changedAway = await patch('bot-legacy', {
+      providerProfileId: 'profile-1',
+      model: 'gpt-5',
+      reasoningEffort: 'high',
+    });
+    assert.equal(changedAway.status, 200);
+    const changedBack = await patch('bot-legacy', legacyTriple);
+    assert.equal(changedBack.status, 400);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer preserves an unchanged orphan triple when provider profiles are gone', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  for (const accountId of ['bot-orphan', 'bot-other']) {
+    accountStore.saveAccount({ accountId, token: `token-${accountId}`, baseUrl: 'https://ilink.example.com' });
+  }
+  accountStore.updateAccount('bot-orphan', {
+    model_provider: {
+      provider_profile_id: 'removed-provider',
+      model: 'removed-model',
+      reasoning_effort: 'legacy-effort',
+    },
+  });
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const catalog = makeAccountValidationCatalogFake();
+  const server = new WeixinAdminServer({ accountStore, stateDir, repositories, providerModelCatalog: catalog, port: 0 });
+  const binding = await server.start();
+  const patch = (accountId: string, modelProvider: Record<string, string>) => (
+    fetch(`${binding.url}/api/accounts/${accountId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ modelProvider }),
+    })
+  );
+  const orphanTriple = {
+    providerProfileId: 'removed-provider',
+    model: 'removed-model',
+    reasoningEffort: 'legacy-effort',
+  };
+  try {
+    const preservedOrphan = await patch('bot-orphan', orphanTriple);
+    assert.equal(preservedOrphan.status, 200);
+
+    const transferredOrphan = await patch('bot-other', orphanTriple);
+    assert.equal(transferredOrphan.status, 400);
+    assert.deepEqual(await transferredOrphan.json(), {
+      error: 'unknown provider profile',
+      providerProfileId: 'removed-provider',
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer sanitizes account catalog errors before updating the account', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  accountStore.saveAccount({ accountId: 'bot-friend', token: 'token-friend', baseUrl: 'https://ilink.example.com' });
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const now = Date.now();
+  repositories.providerProfiles.save({
+    id: 'profile-1',
+    providerKind: 'openai-compatible',
+    displayName: 'Profile 1',
+    config: {},
+    createdAt: now,
+    updatedAt: now,
+  });
+  let updateCalls = 0;
+  const originalUpdateAccount = accountStore.updateAccount.bind(accountStore);
+  accountStore.updateAccount = (...args) => {
+    updateCalls += 1;
+    return originalUpdateAccount(...args);
+  };
+  const catalog = makeAccountValidationCatalogFake({
+    error: new Error('api-key=secret upstream body'),
+    onLoad: () => assert.equal(updateCalls, 0),
+  });
+  const server = new WeixinAdminServer({ accountStore, stateDir, repositories, providerModelCatalog: catalog, port: 0 });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/accounts/bot-friend`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        modelProvider: {
-          providerProfileId: 'deepseek',
-          model: 'deepseek-v4-pro',
-        },
+        displayName: 'Changed',
+        modelProvider: { providerProfileId: 'profile-1', model: 'gpt-5', reasoningEffort: 'high' },
       }),
     });
-    assert.equal(validModel.status, 200);
-    assert.equal(accountStore.loadAccount('bot-friend')?.model_provider?.model, 'deepseek-v4-pro');
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.deepEqual(body, { error: 'provider model catalog unavailable', providerProfileId: 'profile-1' });
+    assert.doesNotMatch(JSON.stringify(body), /api-key|secret|upstream/iu);
+    assert.deepEqual(catalog.calls, [{ providerProfileId: 'profile-1', forceRefresh: false }]);
+    assert.equal(updateCalls, 0);
+    assert.equal(accountStore.loadAccount('bot-friend')?.display_name, undefined);
   } finally {
     await server.stop();
   }
@@ -408,6 +964,314 @@ test('WeixinAdminServer controls bridge start and stop from the panel API', asyn
     const restartBody = await restartResponse.json() as any;
     assert.equal(restartBody.bridge.running, true);
     assert.deepEqual(calls, ['stop', 'start', 'restart']);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer retries the delivery outbox through an authorized aggregate-only API', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  let retryCalls = 0;
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status() {
+        return {
+          running: true,
+          deliveryOutbox: {
+            pending: retryCalls === 0 ? 2 : 1,
+            oldestCreatedAt: 1_000,
+            nextAttemptAt: 2_000,
+          },
+        };
+      },
+      async retryPendingDeliveries() {
+        retryCalls += 1;
+        return {
+          before: {
+            pending: 2,
+            oldestCreatedAt: 1_000,
+            nextAttemptAt: 2_000,
+            content: 'private queued message',
+            externalScopeId: 'wx-private-scope',
+          },
+          after: {
+            pending: 1,
+            oldestCreatedAt: 1_500,
+            nextAttemptAt: 2_500,
+            lastError: 'private retry error',
+          },
+        } as any;
+      },
+    },
+  });
+
+  const binding = await server.start();
+  try {
+    const html = await fetch(binding.url).then((response) => response.text());
+    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+
+    const unauthorized = await fetch(`${binding.url}/api/delivery-outbox/retry`, {
+      method: 'POST',
+      headers: { origin: binding.url },
+    });
+    assert.equal(unauthorized.status, 403);
+
+    const noOrigin = await fetch(`${binding.url}/api/delivery-outbox/retry`, {
+      method: 'POST',
+    });
+    assert.equal(noOrigin.status, 403);
+
+    const response = await fetch(`${binding.url}/api/delivery-outbox/retry`, {
+      method: 'POST',
+      headers: {
+        origin: binding.url,
+        'x-codexbridge-admin-token': token,
+      },
+    });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.doesNotMatch(text, /private queued|private-scope|private retry error/u);
+    assert.deepEqual(JSON.parse(text), {
+      ok: true,
+      before: { pending: 2, oldestCreatedAt: 1_000, nextAttemptAt: 2_000 },
+      after: { pending: 1, oldestCreatedAt: 1_500, nextAttemptAt: 2_500 },
+    });
+    assert.equal(retryCalls, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer rejects delivery outbox retries while the bridge is stopped or unsupported', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  let retryCalls = 0;
+  const stoppedServer = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status: () => ({ running: false }),
+      async retryPendingDeliveries() {
+        retryCalls += 1;
+        return {
+          before: { pending: 0, oldestCreatedAt: null, nextAttemptAt: null },
+          after: { pending: 0, oldestCreatedAt: null, nextAttemptAt: null },
+        };
+      },
+    },
+  });
+  const stoppedBinding = await stoppedServer.start();
+  try {
+    const html = await fetch(stoppedBinding.url).then((response) => response.text());
+    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+    const response = await fetch(`${stoppedBinding.url}/api/delivery-outbox/retry`, {
+      method: 'POST',
+      headers: { origin: stoppedBinding.url, 'x-codexbridge-admin-token': token },
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: 'bridge is not running' });
+    assert.equal(retryCalls, 0);
+  } finally {
+    await stoppedServer.stop();
+  }
+
+  const unsupportedServer = new WeixinAdminServer({ accountStore, stateDir, port: 0 });
+  const unsupportedBinding = await unsupportedServer.start();
+  try {
+    const html = await fetch(unsupportedBinding.url).then((response) => response.text());
+    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+    const response = await fetch(`${unsupportedBinding.url}/api/delivery-outbox/retry`, {
+      method: 'POST',
+      headers: { origin: unsupportedBinding.url, 'x-codexbridge-admin-token': token },
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { error: 'delivery retry is unavailable' });
+  } finally {
+    await unsupportedServer.stop();
+  }
+
+  const failingServer = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status: () => ({
+        running: true,
+        deliveryOutbox: { pending: 1, oldestCreatedAt: 3_000, nextAttemptAt: 4_000 },
+      }),
+      async retryPendingDeliveries() {
+        throw new Error('private retry failure');
+      },
+    },
+  });
+  const failingBinding = await failingServer.start();
+  try {
+    const html = await fetch(failingBinding.url).then((response) => response.text());
+    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+    const response = await fetch(`${failingBinding.url}/api/delivery-outbox/retry`, {
+      method: 'POST',
+      headers: { origin: failingBinding.url, 'x-codexbridge-admin-token': token },
+    });
+    assert.equal(response.status, 500);
+    const text = await response.text();
+    assert.doesNotMatch(text, /private retry failure/u);
+    assert.deepEqual(JSON.parse(text), {
+      error: 'delivery retry failed',
+      deliveryOutbox: { pending: 1, oldestCreatedAt: 3_000, nextAttemptAt: 4_000 },
+    });
+  } finally {
+    await failingServer.stop();
+  }
+
+  let statusCalls = 0;
+  const statusFailingServer = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status() {
+        statusCalls += 1;
+        if (statusCalls > 1) {
+          throw new Error('private status failure');
+        }
+        return { running: true };
+      },
+      async retryPendingDeliveries() {
+        throw new Error('private retry failure');
+      },
+    },
+  });
+  const statusFailingBinding = await statusFailingServer.start();
+  try {
+    const html = await fetch(statusFailingBinding.url).then((response) => response.text());
+    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+    const response = await fetch(`${statusFailingBinding.url}/api/delivery-outbox/retry`, {
+      method: 'POST',
+      headers: {
+        origin: statusFailingBinding.url,
+        'x-codexbridge-admin-token': token,
+      },
+    });
+    assert.equal(response.status, 500);
+    const text = await response.text();
+    assert.doesNotMatch(text, /private status|private retry/u);
+    assert.deepEqual(JSON.parse(text), {
+      error: 'delivery retry failed',
+      deliveryOutbox: { pending: 0, oldestCreatedAt: null, nextAttemptAt: null },
+    });
+  } finally {
+    await statusFailingServer.stop();
+  }
+});
+
+test('WeixinAdminServer sanitizes unexpected request failures', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status() { throw new Error('api-key=private unexpected failure'); },
+    },
+  });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/state`);
+    assert.equal(response.status, 500);
+    const text = await response.text();
+    assert.doesNotMatch(text, /api-key|private unexpected|WeixinAdminServer/u);
+    assert.deepEqual(JSON.parse(text), { error: 'internal server error' });
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer protects browser mutations with same-origin token checks and security headers', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const server = new WeixinAdminServer({ accountStore, stateDir, port: 0 });
+  const binding = await server.start();
+  try {
+    const pageResponse = await fetch(binding.url);
+    const html = await pageResponse.text();
+    assert.equal(pageResponse.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(pageResponse.headers.get('x-frame-options'), 'DENY');
+    assert.match(pageResponse.headers.get('content-security-policy') ?? '', /default-src 'self'/u);
+    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+    assert.ok(token.length >= 32);
+    const styleNonce = html.match(/<style nonce="([^"]+)">/u)?.[1] ?? '';
+    const csp = pageResponse.headers.get('content-security-policy') ?? '';
+    assert.ok(styleNonce);
+    assert.ok(csp.includes(`style-src-elem 'self' 'nonce-${styleNonce}'`));
+
+    const foreignOrigin = await fetch(`${binding.url}/api/pairing/cancel`, {
+      method: 'POST',
+      headers: { origin: 'https://evil.example' },
+    });
+    assert.equal(foreignOrigin.status, 403);
+
+    const missingToken = await fetch(`${binding.url}/api/pairing/cancel`, {
+      method: 'POST',
+      headers: { origin: binding.url },
+    });
+    assert.equal(missingToken.status, 403);
+
+    const crossSiteSubresource = await fetch(`${binding.url}/api/page/close`, {
+      headers: { 'sec-fetch-site': 'cross-site' },
+    });
+    assert.equal(crossSiteSubresource.status, 403);
+
+    const authorized = await fetch(`${binding.url}/api/pairing/cancel`, {
+      method: 'POST',
+      headers: {
+        origin: binding.url,
+        'x-codexbridge-admin-token': token,
+      },
+    });
+    assert.equal(authorized.status, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer accepts browser mutations on the IPv4 loopback range', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const server = new WeixinAdminServer({ accountStore, stateDir, host: '127.0.0.2', port: 0 });
+  const binding = await server.start();
+  try {
+    const html = await fetch(binding.url).then((response) => response.text());
+    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+    const response = await fetch(`${binding.url}/api/pairing/cancel`, {
+      method: 'POST',
+      headers: {
+        origin: binding.url,
+        'x-codexbridge-admin-token': token,
+      },
+    });
+
+    assert.equal(response.status, 200);
   } finally {
     await server.stop();
   }
@@ -897,6 +1761,8 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: envFile,
     CODEX_COMPAT_API_KEY: 'old-key',
   };
+  const catalog = makeProviderModelCatalogFake();
+  const providerUsage = makeProviderUsageFake();
   let restartCount = 0;
   const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
   repositories.bridgeSessions.save({
@@ -922,6 +1788,8 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     stateDir,
     env,
     repositories,
+    providerModelCatalog: catalog,
+    providerUsage,
     port: 0,
     bridgeControl: {
       async start() {},
@@ -982,6 +1850,8 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     assert.equal(clearedSettings?.metadata.modelOverrideClearedReason, 'model-provider-updated');
     const qwenProfile = repositories.providerProfiles.getById('qwen');
     assert.equal((qwenProfile?.config as any)?.relayProfileMode, 'pure-api');
+    assert.ok(catalog.invalidations.includes('qwen'));
+    assert.ok(providerUsage.invalidations.includes('qwen'));
 
     const secondResponse = await fetch(`${binding.url}/api/settings`, {
       method: 'POST',
@@ -1030,7 +1900,7 @@ test('WeixinAdminServer renders separated Z Token and official provider presets'
     assert.match(html, /<option value="ztoken-claude">Z Token - Claude<\/option>/u);
     assert.match(html, /<option value="official-codex">官网 Codex<\/option>/u);
     assert.match(html, /<option value="official-claude-code">官网 Claude Code<\/option>/u);
-    assert.match(html, /models: \['gpt-5\.5', 'gpt-5\.4', 'gpt-5\.4-mini', 'gpt-5\.3-codex', 'gpt-5\.2'\]/u);
+    assert.match(html, /models: \['gpt-5\.6-sol', 'gpt-5\.6-terra', 'gpt-5\.6-luna', 'gpt-5\.5', 'gpt-5\.4', 'gpt-5\.4-mini', 'gpt-5\.3-codex', 'gpt-5\.2'\]/u);
     assert.match(html, /models: \['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-6'\]/u);
     assert.match(html, /capabilities: 'claude'/u);
     assert.match(html, /id="refresh-btn">刷新列表<\/button>/u);
@@ -1143,6 +2013,27 @@ test('WeixinAdminServer exposes and completes first-run setup state', async () =
   }
 });
 
+test('WeixinAdminServer quarantines and reinitializes corrupt admin preferences', async () => {
+  const stateDir = makeTempStateDir();
+  const runtimeDir = path.join(stateDir, 'runtime');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  const preferencesFile = path.join(runtimeDir, 'weixin-admin-preferences.json');
+  fs.writeFileSync(preferencesFile, '{ private corrupt preferences', 'utf8');
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const server = new WeixinAdminServer({ accountStore, stateDir, env: {}, port: 0 });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/state`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(fs.readFileSync(preferencesFile, 'utf8')), {});
+    const quarantined = fs.readdirSync(runtimeDir)
+      .filter((name) => name.startsWith('weixin-admin-preferences.json.corrupt-'));
+    assert.equal(quarantined.length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config', async () => {
   const stateDir = makeTempStateDir();
   const envFile = path.join(stateDir, 'service.env');
@@ -1169,11 +2060,13 @@ test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config
     CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'openai-default',
   };
   const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const catalog = makeProviderModelCatalogFake();
   const server = new WeixinAdminServer({
     accountStore,
     stateDir,
     env,
     repositories,
+    providerModelCatalog: catalog,
     codexHome,
     port: 0,
   });
@@ -1201,9 +2094,15 @@ test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config
     const profile = repositories.providerProfiles.getById('openai-default');
     assert.equal(profile?.providerKind, 'openai-compatible');
     assert.equal((profile?.config as any)?.defaultModel, 'gpt-5.5');
+    assert.ok(catalog.invalidations.includes('openai-default'));
     const preference = JSON.parse(fs.readFileSync(path.join(stateDir, 'runtime', 'weixin-admin-preferences.json'), 'utf8'));
     assert.equal(preference.modelProviderSource, 'ccswitch');
     assert.equal(preference.ccswitchCodexHome, codexHome);
+
+    const invalidationsAfterManualSync = catalog.invalidations.length;
+    const unchangedSync = (server as any).syncCcswitchProvider({ codexHome, reason: 'interval' });
+    assert.equal(unchangedSync.changed, false);
+    assert.equal(catalog.invalidations.length, invalidationsAfterManualSync);
 
     const saveResponse = await fetch(`${binding.url}/api/settings`, {
       method: 'POST',
@@ -1578,6 +2477,53 @@ test('WeixinAdminServer admin page enables shutdown-on-close by default', async 
     assert.match(html, /function providerKeyStatusText/u);
     assert.match(html, /renderSetupProvider\(syncedProvider\)/u);
     assert.match(html, /\/api\/model-provider\/sync-ccswitch/u);
+    assert.match(html, /providerModelCatalogs:\s*new Map\(\)/u);
+    assert.match(html, /providerModelCatalogPromises:\s*new Map\(\)/u);
+    assert.match(html, /providerModelCatalogGenerations:\s*new Map\(\)/u);
+    assert.match(html, /function reloadAccountsAfterProviderChange/u);
+    assert.equal([...html.matchAll(/reloadAccountsAfterProviderChange\(/gu)].length, 4);
+    assert.match(html, /\/api\/provider-profiles\//u);
+    assert.match(html, /\/models\/refresh/u);
+    assert.match(html, /account-model-control/u);
+    assert.match(html, /account-model-refresh/u);
+    assert.match(html, /id="delivery-retry-now"/u);
+    assert.match(html, /\/api\/delivery-outbox\/retry/u);
+    assert.match(html, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*34px/u);
+    assert.match(html, /\.table-wrap\s*\{[^}]*max-width:\s*100%;[^}]*overflow-x:\s*auto;/su);
+    assert.match(html, /if\s*\(provider\.value\s*!==\s*requestedProviderProfileId\)\s*return/u);
+    assert.match(html, /setAttribute\('aria-label',\s*'刷新模型'\)/u);
+    for (const visibleText of [
+      '正在刷新模型列表...',
+      '正在加载模型列表...',
+      '模型刷新失败，已保留当前选择',
+      '模型加载失败，已保留当前选择',
+      '（不可用）',
+      '支持的推理强度',
+      '推理默认',
+      '模型刷新失败，使用备用列表',
+      '已使用缓存模型',
+      '已使用配置模型',
+    ]) {
+      assert.equal(html.includes(visibleText), true, `missing visible Task 5 string: ${visibleText}`);
+    }
+    for (const mojibake of [
+      '姝ｅ湪鍒锋柊妯″瀷鍒楄〃...',
+      '姝ｅ湪鍔犺浇妯″瀷鍒楄〃...',
+      '妯″瀷鍒锋柊澶辫触锛屽凡淇濈暀宸蹭繚瀛樺€�',
+      '妯″瀷鍔犺浇澶辫触锛屽凡淇濈暀宸蹭繚瀛樺€�',
+      '涓嶅彲鐢?',
+      '鏀寔鐨勬帹鐞嗗己搴?',
+      '鎺ㄧ悊榛樿',
+      '妯″瀷鍒锋柊澶辫触锛屼娇鐢ㄥ鐢ㄥ垪琛?',
+      '宸蹭娇鐢ㄧ紦瀛樻ā鍨嬪垪琛?',
+      '宸蹭娇鐢ㄧ悗澶囨ā鍨嬪垪琛?',
+    ]) {
+      assert.equal(html.includes(mojibake), false, `unexpected Task 5 mojibake: ${mojibake}`);
+    }
+    assert.match(html, /supportedReasoningEfforts/u);
+    assert.match(html, /setAccountModelStatus\(modelStatus,\s*'',\s*false\);\s*setAccountModelControlsLoading\(rowState,\s*false\);\s*updateAccountModelSaveState\(rowState\);\s*return;/u);
+    assert.match(html, /populateAccountModelOptions\(model,\s*requestedProviderProfileId,\s*null,\s*selectedModel\)/u);
+    assert.match(html, /populateAccountReasoningEffortOptions\(effort,\s*null,\s*selectedEffort\)/u);
     assert.match(html, /data-page="diagnostics"/u);
     assert.match(html, /id="diagnostics-run"/u);
     assert.match(html, /\/api\/diagnostics\/run/u);
@@ -1607,11 +2553,68 @@ test('WeixinAdminServer admin page enables shutdown-on-close by default', async 
     assert.match(html, /\/api\/service\/shutdown/u);
     assert.match(html, /new Image\(\)/u);
     assert.match(html, /window\.addEventListener\('unload', closePage\)/u);
-    const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/gu)].map((match) => match[1]);
+    const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gu)].map((match) => match[1]);
     assert.ok(scripts.length > 0);
     for (const script of scripts) {
       assert.doesNotThrow(() => new Function(script));
     }
+    const accountScript = scripts.find((script) => script.includes('function findAccountCatalogModel'));
+    assert.ok(accountScript);
+    const catalogHelperStart = accountScript.indexOf('function invalidateProviderModelCatalogCache');
+    const catalogHelperEnd = accountScript.indexOf('function accountModelDisplayText', catalogHelperStart);
+    assert.ok(catalogHelperStart >= 0);
+    assert.ok(catalogHelperEnd > catalogHelperStart);
+    const browserCatalogState = {
+      providerModelCatalogs: new Map([['profile-1', { models: [{ id: 'expired' }], expiresAt: Date.now() - 1 }]]),
+      providerModelCatalogPromises: new Map(),
+      providerModelCatalogGenerations: new Map(),
+    };
+    const pendingCatalogRequests: Array<(catalog: any) => void> = [];
+    const browserCatalogHelpers = new Function(
+      'state',
+      'requestJson',
+      `${accountScript.slice(catalogHelperStart, catalogHelperEnd)}\nreturn { invalidateProviderModelCatalogCache, loadProviderModelCatalog };`,
+    )(
+      browserCatalogState,
+      () => new Promise((resolve) => pendingCatalogRequests.push(resolve)),
+    ) as {
+      invalidateProviderModelCatalogCache(providerProfileId: string): void;
+      loadProviderModelCatalog(providerProfileId: string, forceRefresh: boolean): Promise<any>;
+    };
+    const invalidatedRequest = browserCatalogHelpers.loadProviderModelCatalog('profile-1', false);
+    assert.equal(pendingCatalogRequests.length, 1);
+    browserCatalogHelpers.invalidateProviderModelCatalogCache('profile-1');
+    const currentRequest = browserCatalogHelpers.loadProviderModelCatalog('profile-1', false);
+    assert.equal(pendingCatalogRequests.length, 2);
+    pendingCatalogRequests[0]?.({ models: [{ id: 'old' }], expiresAt: Date.now() + 60_000 });
+    await assert.rejects(invalidatedRequest, /invalidated/u);
+    const currentCatalog = { models: [{ id: 'current' }], expiresAt: Date.now() + 60_000 };
+    pendingCatalogRequests[1]?.(currentCatalog);
+    assert.deepEqual(await currentRequest, currentCatalog);
+    assert.deepEqual(await browserCatalogHelpers.loadProviderModelCatalog('profile-1', false), currentCatalog);
+    assert.equal(pendingCatalogRequests.length, 2);
+    const helperStart = accountScript.indexOf('function findAccountCatalogModel');
+    const helperEnd = accountScript.indexOf('function syncAccountModelControlState', helperStart);
+    assert.ok(helperStart >= 0);
+    assert.ok(helperEnd > helperStart);
+    const canSaveAccountModelSelection = new Function(
+      'state',
+      `${accountScript.slice(helperStart, helperEnd)}\nreturn canSaveAccountModelSelection(state.rowState);`,
+    )({
+      providerProfiles: [{ providerProfileId: 'profile-1' }],
+      rowState: {
+        provider: { value: 'profile-1' },
+        model: { value: '' },
+        effort: { value: 'high' },
+        savedTriple: {
+          providerProfileId: 'profile-1',
+          model: 'saved-model',
+          reasoningEffort: 'medium',
+        },
+        catalog: { models: [] },
+      },
+    });
+    assert.equal(canSaveAccountModelSelection, true);
     const faviconResponse = await fetch(`${binding.url}/favicon.ico`);
     assert.equal(faviconResponse.status, 200);
     assert.equal(faviconResponse.headers.get('content-type'), 'image/x-icon');
@@ -1778,6 +2781,96 @@ test('WeixinAdminServer exposes searchable session summaries for the panel', asy
     assert.equal(body.sessions[0].reasoningEffort, 'high');
     assert.equal(body.sessions[0].pinned, true);
     assert.equal(body.filters.accounts.find((account: any) => account.accountId === 'bot-friend')?.displayName, 'Friend A');
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer resolves the effective model for session summaries', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  accountStore.saveAccount({
+    accountId: 'bot-primary',
+    token: 'token-primary',
+    baseUrl: 'https://ilink.example.com',
+    userId: 'wxid-primary',
+  });
+  accountStore.updateAccount('bot-primary', {
+    model_provider: {
+      provider_profile_id: 'openai-default',
+      model: 'gpt-5.4',
+      reasoning_effort: 'high',
+    },
+  });
+
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  const now = Date.now();
+  repositories.providerProfiles.save({
+    id: 'openai-default',
+    providerKind: 'openai-native',
+    displayName: 'OpenAI Default',
+    config: {
+      defaultModel: 'gpt-5.5',
+    },
+    createdAt: now - 5000,
+    updatedAt: now - 5000,
+  });
+  repositories.bridgeSessions.save({
+    id: 'session-effective-model',
+    providerProfileId: 'openai-default',
+    codexThreadId: 'thread-effective-model',
+    cwd: 'C:/repo',
+    title: 'Effective Model',
+    createdAt: now - 4000,
+    updatedAt: now - 1000,
+  });
+  repositories.platformBindings.save({
+    platform: 'weixin',
+    externalScopeId: 'bot-primary:wxid-peer',
+    bridgeSessionId: 'session-effective-model',
+    updatedAt: now - 900,
+  });
+  repositories.sessionSettings.save({
+    bridgeSessionId: 'session-effective-model',
+    model: null,
+    reasoningEffort: null,
+    serviceTier: null,
+    collaborationMode: null,
+    personality: null,
+    permissionsMode: null,
+    accessPreset: null,
+    approvalPolicy: null,
+    sandboxMode: null,
+    approvalsReviewer: null,
+    locale: 'zh-CN',
+    metadata: {},
+    updatedAt: now - 800,
+  });
+
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    env: {
+      WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-primary',
+      CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'openai-default',
+      CODEX_COMPAT_DEFAULT_MODEL: 'gpt-5.3-codex',
+    },
+    port: 0,
+    repositories,
+  });
+
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/sessions?query=Effective`);
+    assert.equal(response.status, 200);
+    const body = await response.json() as any;
+    assert.equal(body.total, 1);
+    assert.equal(body.sessions[0].model, 'gpt-5.4');
+    assert.equal(body.sessions[0].modelSource, 'account');
+    assert.equal(body.sessions[0].reasoningEffort, 'high');
+    assert.equal(body.sessions[0].reasoningEffortSource, 'account');
   } finally {
     await server.stop();
   }
@@ -2100,6 +3193,14 @@ test('WeixinAdminServer exposes recent logs and JSON export for the panel', asyn
     baseUrl: 'https://ilink.example.com',
     userId: 'wxid-primary',
   });
+  accountStore.setContextToken('bot-primary', 'peer-secret', 'context-token-secret');
+  accountStore.saveSyncCursor('bot-primary', 'saved-sync-cursor');
+  const serviceEnvFile = path.join(stateDir, 'service.env');
+  const env = {
+    CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: serviceEnvFile,
+    CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'openai-default',
+    CODEX_COMPAT_API_KEY: 'model-api-key-secret',
+  };
   const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
   repositories.providerProfiles.save({
     id: 'openai-default',
@@ -2124,7 +3225,34 @@ test('WeixinAdminServer exposes recent logs and JSON export for the panel', asyn
     stateDir,
     port: 0,
     repositories,
+    env,
     codexHome: path.join(stateDir, 'missing-codex-home'),
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {},
+      status() {
+        return {
+          running: true,
+          lastPollSyncCursor: 'sync-cursor-secret',
+          lastError: 'provider-secret-error',
+          pendingDeliveryRetries: 2,
+          deliveryOutbox: {
+            pending: 2,
+            oldestCreatedAt: 1_000,
+            nextAttemptAt: 2_000,
+            content: 'private-outbox-message',
+            lastError: 'private-outbox-error',
+            externalScopeId: 'wx-private-outbox-scope',
+          },
+          weixin: {
+            running: true,
+            accountCount: 1,
+            activeAccountIds: ['secret-account-id'],
+          },
+        };
+      },
+    },
   });
 
   const binding = await server.start();
@@ -2136,14 +3264,74 @@ test('WeixinAdminServer exposes recent logs and JSON export for the panel', asyn
     assert.match(logsBody.text, /last stderr line/);
     assert.doesNotMatch(logsBody.text, /first stdout line/);
 
+    const stateResponse = await fetch(`${binding.url}/api/state`);
+    const stateText = await stateResponse.text();
+    assert.doesNotMatch(stateText, /private-outbox-message|private-outbox-error|wx-private-outbox-scope/u);
+    const stateBody = JSON.parse(stateText) as any;
+    assert.deepEqual(stateBody.bridge.deliveryOutbox, {
+      pending: 2,
+      oldestCreatedAt: 1_000,
+      nextAttemptAt: 2_000,
+    });
+
     const exportResponse = await fetch(`${binding.url}/api/export`);
     assert.equal(exportResponse.status, 200);
     assert.match(exportResponse.headers.get('content-disposition') ?? '', /codexbridge-weixin-backup-/);
     const exportBody = await exportResponse.json() as any;
+    assert.equal(exportBody.kind, 'full-backup');
+    assert.equal(exportBody.containsSecrets, true);
     assert.equal(exportBody.accounts[0].token, 'token-primary');
+    assert.equal(exportBody.accounts[0].context_tokens['peer-secret'], 'context-token-secret');
+    assert.equal(exportBody.accounts[0].sync_cursor, 'saved-sync-cursor');
+    assert.equal(exportBody.configuration.serviceEnv.CODEX_COMPAT_API_KEY, 'model-api-key-secret');
     assert.equal(exportBody.runtime.providerProfiles[0].id, 'openai-default');
     assert.equal(exportBody.runtime.bridgeSessions[0].title, 'Exported session');
     assert.match(exportBody.logs.text, /last stdout line/);
+    assert.doesNotMatch(
+      JSON.stringify(exportBody),
+      /private-outbox-message|deliveryOutbox|pendingDeliveryRetries/u,
+    );
+
+    const diagnosticResponse = await fetch(`${binding.url}/api/export/diagnostic`);
+    assert.equal(diagnosticResponse.status, 200);
+    assert.match(diagnosticResponse.headers.get('content-disposition') ?? '', /codexbridge-weixin-diagnostic-/);
+    const diagnosticText = await diagnosticResponse.text();
+    assert.doesNotMatch(
+      diagnosticText,
+      /token-primary|wxid-primary|ilink\.example\.com|last stdout line|sync-cursor-secret|provider-secret-error|secret-account-id|context-token-secret|saved-sync-cursor|model-api-key-secret/u,
+    );
+    const diagnosticBody = JSON.parse(diagnosticText) as any;
+    assert.equal(diagnosticBody.kind, 'diagnostic');
+    assert.equal(diagnosticBody.containsSecrets, false);
+    assert.equal(diagnosticBody.accounts.count, 1);
+    assert.equal(diagnosticBody.runtime.providerProfiles, 1);
+    assert.equal(diagnosticBody.runtime.bridgeSessions, 1);
+    assert.deepEqual(diagnosticBody.service.bridge.deliveryOutbox, {
+      pending: 2,
+      oldestCreatedAt: 1_000,
+      nextAttemptAt: 2_000,
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer sanitizes full backup failures when a runtime repository cannot be read', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime')) as any;
+  repositories.providerProfiles.list = () => {
+    throw new Error('repository read failed');
+  };
+  const server = new WeixinAdminServer({ accountStore, stateDir, repositories, port: 0 });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/export`);
+    const body = await response.json() as any;
+
+    assert.equal(response.status, 500);
+    assert.deepEqual(body, { error: 'internal server error' });
+    assert.doesNotMatch(JSON.stringify(body), /repository read failed/u);
   } finally {
     await server.stop();
   }
@@ -2201,19 +3389,41 @@ test('WeixinAdminServer tests the alert webhook and reports configuration', asyn
 test('WeixinAdminServer imports a backup into accounts and repositories', async () => {
   const stateDir = makeTempStateDir();
   const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  _resetContextTokenStoreForTest();
   accountStore.saveAccount({ accountId: 'bot-1', token: 't', baseUrl: 'https://x', userId: 'u1' });
+  setOfficialContextToken(accountStore.rootDir, 'bot-2', 'peer-2', 'stale-context');
+  setOfficialContextToken(accountStore.rootDir, 'bot-2', 'old-peer', 'old-context');
   const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime')) as any;
+  const serviceEnvFile = path.join(stateDir, 'service.env');
+  const env: Record<string, string> = {
+    CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: serviceEnvFile,
+    CODEX_COMPAT_API_KEY: 'old-key',
+  };
   const server = new WeixinAdminServer({
     accountStore,
     stateDir,
-    env: { WEIXIN_PRIMARY_ACCOUNT_ID: 'bot-1' },
+    env,
     port: 0,
     repositories,
   });
   const binding = await server.start();
   try {
     const backup = {
-      accounts: [{ accountId: 'bot-2', token: 'tok2', base_url: 'https://y', user_id: 'u2', display_name: 'Imported' }],
+      accounts: [{
+        accountId: 'bot-2',
+        token: 'tok2',
+        base_url: 'https://y',
+        user_id: 'u2',
+        display_name: 'Imported',
+        context_tokens: { 'peer-2': 'context-2' },
+        sync_cursor: 'sync-2',
+      }],
+      configuration: {
+        serviceEnv: {
+          CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'imported-provider',
+          CODEX_COMPAT_API_KEY: 'imported-key',
+        },
+      },
       runtime: {
         providerProfiles: [],
         bridgeSessions: [{ id: 's2', providerProfileId: 'p', codexThreadId: 'th2', cwd: '/c', createdAt: 1, updatedAt: 2 }],
@@ -2231,8 +3441,162 @@ test('WeixinAdminServer imports a backup into accounts and repositories', async 
     assert.equal(result.imported.bridgeSessions, 1);
     assert.equal((result.errors || []).length, 0);
     assert.equal(accountStore.loadAccount('bot-2')?.display_name, 'Imported');
+    assert.equal(accountStore.getContextToken('bot-2', 'peer-2'), 'context-2');
+    assert.equal(getOfficialContextToken(accountStore.rootDir, 'bot-2', 'peer-2'), 'context-2');
+    assert.equal(getOfficialContextToken(accountStore.rootDir, 'bot-2', 'old-peer'), null);
+    assert.equal(accountStore.loadSyncCursor('bot-2'), 'sync-2');
+    assert.equal(env.CODEX_COMPAT_API_KEY, 'imported-key');
+    assert.match(fs.readFileSync(serviceEnvFile, 'utf8'), /CODEX_COMPAT_API_KEY=imported-key/u);
     assert.ok(repositories.bridgeSessions.list().some((s: any) => s.id === 's2'));
   } finally {
+    _resetContextTokenStoreForTest();
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer validates the complete backup before importing any records', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  accountStore.saveAccount({ accountId: 'bot-1', token: 'original', baseUrl: 'https://x', userId: 'u1' });
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime')) as any;
+  const server = new WeixinAdminServer({ accountStore, stateDir, port: 0, repositories });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/import`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [
+          { accountId: 'bot-2', token: 'valid', base_url: 'https://y' },
+          { accountId: '../../outside', token: 'invalid', base_url: 'https://z' },
+        ],
+        runtime: {},
+      }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(accountStore.loadAccount('bot-2'), null);
+    assert.equal(fs.existsSync(path.join(stateDir, 'outside.json')), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer rejects non-http account Base URLs before importing any records', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const server = new WeixinAdminServer({ accountStore, stateDir, port: 0 });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/import`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [{ accountId: 'bot-file-url', token: 'token', base_url: 'file:///etc/passwd' }],
+        runtime: {},
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal(accountStore.loadAccount('bot-file-url'), null);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer rejects case-insensitive duplicate account ids before import', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const server = new WeixinAdminServer({ accountStore, stateDir, port: 0 });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/import`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [
+          { accountId: 'Bot-Duplicate', token: 'one', base_url: 'https://one.example' },
+          { accountId: 'bot-duplicate', token: 'two', base_url: 'https://two.example' },
+        ],
+        runtime: {},
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.deepEqual(accountStore.listAccounts(), []);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer rejects service environment values containing line breaks', async () => {
+  const stateDir = makeTempStateDir();
+  const serviceEnvFile = path.join(stateDir, 'service.env');
+  const env: Record<string, string> = { CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: serviceEnvFile };
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const server = new WeixinAdminServer({ accountStore, stateDir, env, port: 0 });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/import`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [],
+        configuration: {
+          serviceEnv: {
+            CODEX_COMPAT_API_KEY: 'key\nWEIXIN_PRIMARY_ACCOUNT_ID=injected',
+          },
+        },
+        runtime: {},
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    assert.equal(fs.existsSync(serviceEnvFile), false);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer rolls back a failed import and keeps a pre-import restore point', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  _resetContextTokenStoreForTest();
+  accountStore.saveAccount({ accountId: 'bot-1', token: 'original', baseUrl: 'https://x', userId: 'u1' });
+  setOfficialContextToken(accountStore.rootDir, 'bot-1', 'peer-1', 'old-context');
+  const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime')) as any;
+  repositories.bridgeSessions.save = () => {
+    throw new Error('simulated repository failure');
+  };
+  const server = new WeixinAdminServer({ accountStore, stateDir, port: 0, repositories });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/import`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        accounts: [
+          {
+            accountId: 'bot-1',
+            token: 'changed-token',
+            base_url: 'https://changed.example',
+            context_tokens: { 'peer-1': 'new-context' },
+          },
+          { accountId: 'bot-2', token: 'new-token', base_url: 'https://y' },
+        ],
+        runtime: {
+          bridgeSessions: [{ id: 's2', providerProfileId: 'p', codexThreadId: 'th2', cwd: '/c', createdAt: 1, updatedAt: 2 }],
+        },
+      }),
+    });
+    assert.equal(response.status, 409);
+    assert.equal(accountStore.loadAccount('bot-2'), null);
+    assert.equal(accountStore.loadAccount('bot-1')?.token, 'original');
+    assert.equal(getOfficialContextToken(accountStore.rootDir, 'bot-1', 'peer-1'), 'old-context');
+    const restorePoints = fs.readdirSync(path.join(stateDir, 'backups'))
+      .filter((file) => file.startsWith('pre-import-') && file.endsWith('.json'));
+    assert.equal(restorePoints.length, 1);
+  } finally {
+    _resetContextTokenStoreForTest();
     await server.stop();
   }
 });

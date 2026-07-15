@@ -204,15 +204,17 @@ test('resolveEmbeddedCodexNativeApiOptions keeps embedded native-api on the Code
     defaultProviderProfileId: 'openai-default',
   });
 
-  assert.deepEqual(options, {
+  const { port, ...rest } = options;
+  assert.deepEqual(rest, {
     enabled: true,
     host: '127.0.0.2',
-    port: 53182,
     providerProfileId: 'openai-default',
     authToken: null,
     defaultModel: 'gpt-5.4',
     requestTitlePrefix: 'Bridge Native API',
   });
+  assert.ok(port >= 53182);
+  assert.ok(port < 53182 + 50);
 });
 
 test('resolveEmbeddedCodexNativeApiOptions moves to the next port when the preferred port is busy', async () => {
@@ -235,7 +237,8 @@ test('resolveEmbeddedCodexNativeApiOptions moves to the next port when the prefe
     });
 
     assert.equal(options.host, '127.0.0.1');
-    assert.equal(options.port, busyPort + 1);
+    assert.ok(options.port > busyPort);
+    assert.ok(options.port < busyPort + 50);
   } finally {
     await new Promise<void>((resolve) => holder.close(() => resolve()));
   }

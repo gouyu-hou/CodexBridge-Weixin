@@ -51,8 +51,9 @@ test('package exports the core localhost runtime surface', () => {
 });
 
 test('service can bootstrap the default Codex provider and auth path automatically', () => {
+  const codexHome = path.join(os.tmpdir(), 'codex-native-api-home');
   const profile = loadDefaultCodexNativeProviderProfile({
-    CODEX_HOME: '/tmp/codex-native-api-home',
+    CODEX_HOME: codexHome,
     PATH: process.env.PATH ?? '',
   });
   assert.equal(profile.id, 'openai-default');
@@ -61,7 +62,7 @@ test('service can bootstrap the default Codex provider and auth path automatical
 
   const service = new CodexNativeApiService({
     env: {
-      CODEX_HOME: '/tmp/codex-native-api-home',
+      CODEX_HOME: codexHome,
       PATH: process.env.PATH ?? '',
     },
   });
@@ -69,7 +70,7 @@ test('service can bootstrap the default Codex provider and auth path automatical
     providerProfileId: 'openai-default',
     providerKind: 'openai-native',
     providerDisplayName: 'Codex OpenAI',
-    authPath: '/tmp/codex-native-api-home/auth.json',
+    authPath: path.join(codexHome, 'auth.json'),
   });
 });
 

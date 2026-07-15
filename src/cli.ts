@@ -20,6 +20,7 @@ import { CodexNativeApiService } from './providers/codex/native_api_service.js';
 import { OpenAINativeProviderPlugin } from './providers/openai_native/plugin.js';
 import { OpenAICompatibleProviderPlugin } from './providers/openai_compatible/plugin.js';
 import { WeixinBridgeRuntime } from './runtime/weixin_bridge_runtime.js';
+import { WeixinDeliveryOutboxStore } from './runtime/weixin_delivery_outbox_store.js';
 import { WeixinMetricsStore } from './runtime/weixin_metrics_store.js';
 import { postAlert } from './runtime/alert_webhook.js';
 import { createI18n } from './i18n/index.js';
@@ -233,6 +234,7 @@ async function runWeixinServe(args: string[]) {
   const serveLock = await acquireServeLock(path.join(stateDir, 'runtime', 'weixin-serve.lock'));
   const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
   const weixinMetricsStore = new WeixinMetricsStore(stateDir);
+  const weixinDeliveryOutboxStore = new WeixinDeliveryOutboxStore(stateDir);
   const codexProfiles = loadCodexProfilesFromEnv();
   const codexAuthManager = createWeixinServeCodexAuthManager(stateDir);
   let bridgeControlRef: { restart(): Promise<void> } | null = null;
@@ -289,6 +291,7 @@ async function runWeixinServe(args: string[]) {
       process.stderr.write(`[weixin] ${formatError(error)}\n`);
     }) as any,
     metricsStore: weixinMetricsStore,
+    deliveryOutboxStore: weixinDeliveryOutboxStore,
     onAlert: (async (payload: unknown) => {
       await postAlert(process.env.WEIXIN_ALERT_WEBHOOK_URL, payload as any, {
         minIntervalMs: parsePositiveIntEnv(process.env.WEIXIN_ALERT_MIN_INTERVAL_MS, 60_000),
@@ -397,6 +400,12 @@ async function runWeixinServe(args: string[]) {
     resetMetrics() {
       return bridgeRuntime.resetMetrics();
     },
+    async retryPendingDeliveries() {
+      const before = bridgeRuntime.getStatus().deliveryOutbox;
+      await bridgeRuntime.flushDeliveryRetryQueue({ force: true });
+      const after = bridgeRuntime.getStatus().deliveryOutbox;
+      return { before, after };
+    },
   };
   bridgeControlRef = bridgeControl;
   const adminOptions = resolveWeixinAdminServerOptions({ env: process.env });
@@ -417,6 +426,8 @@ async function runWeixinServe(args: string[]) {
         },
       },
       repositories,
+      providerModelCatalog: runtime.services.providerModelCatalog,
+      providerUsage: runtime.services.providerUsage,
       codexHome: process.env.CODEX_HOME,
     })
     : null;

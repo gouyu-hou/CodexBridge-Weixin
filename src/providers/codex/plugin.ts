@@ -72,7 +72,7 @@ const CHATGPT_UNSUPPORTED_CODEX_MODELS = new Set([
   'gpt-5.2',
 ]);
 
-const CHATGPT_PREFERRED_CODEX_MODEL = 'gpt-5.5';
+const CHATGPT_PREFERRED_CODEX_MODELS = ['gpt-5.6-sol', 'gpt-5.5'] as const;
 const CHATGPT_AUTOMATION_PREFERRED_CODEX_MODEL = 'gpt-5.4-mini';
 
 export class CodexProviderPlugin {
@@ -823,12 +823,17 @@ export class CodexProviderPlugin {
     } catch {
       return models;
     }
-    const preferredIndex = models.findIndex((model) => {
-      const normalizedModel = typeof model?.model === 'string' ? model.model.trim() : '';
-      const normalizedId = typeof model?.id === 'string' ? model.id.trim() : '';
-      return normalizedModel === CHATGPT_PREFERRED_CODEX_MODEL
-        || normalizedId === CHATGPT_PREFERRED_CODEX_MODEL;
-    });
+    let preferredIndex = -1;
+    for (const preferredModel of CHATGPT_PREFERRED_CODEX_MODELS) {
+      preferredIndex = models.findIndex((model) => {
+        const normalizedModel = typeof model?.model === 'string' ? model.model.trim() : '';
+        const normalizedId = typeof model?.id === 'string' ? model.id.trim() : '';
+        return normalizedModel === preferredModel || normalizedId === preferredModel;
+      });
+      if (preferredIndex >= 0) {
+        break;
+      }
+    }
     if (preferredIndex <= 0) {
       return models;
     }

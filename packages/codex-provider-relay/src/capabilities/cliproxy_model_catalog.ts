@@ -27,6 +27,7 @@ export interface CliproxyModelCatalogEntry {
   ownedBy: string;
   displayName: string;
   description?: string;
+  defaultReasoningEffort?: string | null;
   maxOutputTokens?: number;
   supportedParameters?: string[];
   webSearch?: boolean;
@@ -61,6 +62,18 @@ const CODEX_MODELS: CliproxyModelCatalogEntry[] = [
   model('codex-free', 'gpt-5.4-mini', 'openai', 'GPT 5.4 Mini', ['low', 'medium', 'high', 'xhigh']),
   model('codex-free', 'gpt-5.5', 'openai', 'GPT 5.5', ['low', 'medium', 'high', 'xhigh'], {
     description: 'Frontier model for complex coding, research, and real-world work.',
+  }),
+  model('codex-free', 'gpt-5.6-sol', 'openai', 'GPT 5.6 Sol', ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], {
+    description: 'Latest frontier agentic coding model.',
+    defaultReasoningEffort: 'low',
+  }),
+  model('codex-free', 'gpt-5.6-terra', 'openai', 'GPT 5.6 Terra', ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'], {
+    description: 'Balanced agentic coding model for everyday work.',
+    defaultReasoningEffort: 'medium',
+  }),
+  model('codex-free', 'gpt-5.6-luna', 'openai', 'GPT 5.6 Luna', ['low', 'medium', 'high', 'xhigh', 'max'], {
+    description: 'Fast and affordable agentic coding model.',
+    defaultReasoningEffort: 'medium',
   }),
   model('codex-plus', 'gpt-5.3-codex-spark', 'openai', 'GPT 5.3 Codex Spark', ['low', 'medium', 'high', 'xhigh']),
 ];
@@ -372,6 +385,10 @@ function defaultReasoningEffortForEntry(
   entry: CliproxyModelCatalogEntry,
   levels: string[],
 ): string | null {
+  const configured = String(entry.defaultReasoningEffort ?? '').trim().toLowerCase();
+  if (configured && levels.includes(configured)) {
+    return configured;
+  }
   return entry.category.startsWith('codex-') && levels.includes('medium') ? 'medium' : null;
 }
 

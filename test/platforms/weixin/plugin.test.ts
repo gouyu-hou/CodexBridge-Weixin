@@ -838,6 +838,8 @@ test('WeixinPlatformPlugin sendText returns a structured failure when iLink send
   const rootDir = makeTempAccountsDir();
   const accountStore = new WeixinAccountStore({ rootDir });
   const plugin = makePlugin({
+    sleepImpl: async () => {},
+    chunkIntervalMs: 0,
     accountStore,
     config: {
       enabled: true,

@@ -1,24 +1,18 @@
-import fs from 'node:fs';
 import path from 'node:path';
+import { readJsonFileSafely, writeJsonFileAtomically } from '../../../store/file_json/json_file_io.js';
 
 export function getSyncBufFilePath(accountsDir: string, accountId: string): string {
   return path.join(accountsDir, `${accountId}.sync.json`);
 }
 
 export function loadGetUpdatesBuf(filePath: string): string | undefined {
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const data = JSON.parse(raw) as { get_updates_buf?: string };
-    if (typeof data.get_updates_buf === 'string') {
-      return data.get_updates_buf;
-    }
-  } catch {
-    // file missing or invalid; keep compatibility with tolerant official behavior
+  const data = readJsonFileSafely<{ get_updates_buf?: string } | null>(filePath, { fallback: null });
+  if (typeof data?.get_updates_buf === 'string') {
+    return data.get_updates_buf;
   }
   return undefined;
 }
 
 export function saveGetUpdatesBuf(filePath: string, getUpdatesBuf: string): void {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify({ get_updates_buf: getUpdatesBuf }, null, 2), 'utf8');
+  writeJsonFileAtomically(filePath, { get_updates_buf: getUpdatesBuf });
 }

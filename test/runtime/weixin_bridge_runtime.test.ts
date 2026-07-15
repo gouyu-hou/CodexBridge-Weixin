@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { WeixinBridgeRuntime } from '../../src/runtime/weixin_bridge_runtime.js';
+import {
+  WeixinDeliveryOutboxStore,
+  type WeixinPendingTextDelivery,
+} from '../../src/runtime/weixin_delivery_outbox_store.js';
 import { WeixinMetricsStore } from '../../src/runtime/weixin_metrics_store.js';
 import { postAlert, resetAlertDebounceForTests } from '../../src/runtime/alert_webhook.js';
 import { createI18n } from '../../src/i18n/index.js';
@@ -50,6 +54,15 @@ interface RuntimeHarnessOptions {
   maxConcurrentTurns?: number;
   eventDispatchConcurrency?: number;
   pollEvents?: any[];
+  deliveryOutboxStore?: {
+    read(): WeixinPendingTextDelivery[];
+    write(entries: WeixinPendingTextDelivery[]): void;
+  } | null;
+  onError?: (error: unknown) => Promise<void> | void;
+  onAlert?: (payload: Record<string, unknown>) => Promise<void> | void;
+  deliveryOutboxAlertPendingThreshold?: number;
+  deliveryOutboxAlertAgeMs?: number;
+  deliveryOutboxAlertMinIntervalMs?: number;
 }
 
 function makeRuntime({
@@ -71,6 +84,12 @@ function makeRuntime({
   maxConcurrentTurns,
   eventDispatchConcurrency,
   pollEvents = null,
+  deliveryOutboxStore = null,
+  onError = async () => {},
+  onAlert = async (_payload: Record<string, unknown>) => {},
+  deliveryOutboxAlertPendingThreshold,
+  deliveryOutboxAlertAgeMs,
+  deliveryOutboxAlertMinIntervalMs,
 }: RuntimeHarnessOptions) {
   return new WeixinBridgeRuntime({
     platformPlugin: {
@@ -127,6 +146,12 @@ function makeRuntime({
     internalThreadCleanupMs,
     maxConcurrentTurns,
     eventDispatchConcurrency,
+    deliveryOutboxStore,
+    onError,
+    onAlert,
+    deliveryOutboxAlertPendingThreshold,
+    deliveryOutboxAlertAgeMs,
+    deliveryOutboxAlertMinIntervalMs,
   });
 }
 
@@ -2187,6 +2212,714 @@ test('WeixinBridgeRuntime retries queued final text on recovery commands', async
   ]);
   assert.deepEqual(restartActions, ['restart']);
   assert.equal(runtime.getStatus().pendingDeliveryRetries, 0);
+});
+
+test('WeixinBridgeRuntime persists only the failed continuation and restores it after restart', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-rt-outbox-restart-'));
+  const deliveryOutboxStore = new WeixinDeliveryOutboxStore(stateDir);
+  const runtimeA = makeRuntime({
+    deliveryOutboxStore,
+    deliverProgressPreviews: false,
+    sendText: async () => ({
+      success: false,
+      deliveredCount: 1,
+      deliveredText: 'already delivered prefix',
+      failedIndex: 1,
+      failedText: 'undelivered continuation',
+      error: 'temporary failure',
+      errorCode: null,
+    }),
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('already delivered prefix undelivered continuation');
+      },
+    },
+  });
+
+  await runtimeA.runOnce();
+
+  assert.equal(runtimeA.getStatus().pendingDeliveryRetries, 1);
+  assert.deepEqual(deliveryOutboxStore.read().map((entry) => entry.content), ['undelivered continuation']);
+
+  const sent: string[] = [];
+  const runtimeB = makeRuntime({
+    deliveryOutboxStore: new WeixinDeliveryOutboxStore(stateDir),
+    pollEvents: [],
+    sendText: async ({ content }) => {
+      sent.push(content);
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  assert.equal(runtimeB.getStatus().pendingDeliveryRetries, 1);
+  await runtimeB.flushDeliveryRetryQueue({ force: true });
+
+  assert.deepEqual(sent, ['undelivered continuation']);
+  assert.deepEqual(deliveryOutboxStore.read(), []);
+});
+
+test('WeixinBridgeRuntime persists retry metadata after a restored delivery fails', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-rt-outbox-failure-'));
+  const deliveryOutboxStore = new WeixinDeliveryOutboxStore(stateDir);
+  const now = Date.now();
+  deliveryOutboxStore.write([{
+    id: 'pending-1',
+    externalScopeId: 'wxid_1',
+    content: 'retry prefix retry remainder',
+    source: 'final_answer',
+    createdAt: now,
+    nextAttemptAt: now - 1,
+    attemptCount: 2,
+    lastError: 'first failure',
+    lastErrorCode: null,
+  }, {
+    id: 'pending-tail-duplicate',
+    externalScopeId: 'wxid_1',
+    content: 'retry remainder',
+    source: 'final_answer',
+    createdAt: now,
+    nextAttemptAt: now - 1,
+    attemptCount: 0,
+    lastError: 'earlier duplicate',
+    lastErrorCode: null,
+  }]);
+  let sendAttempts = 0;
+  const runtime = makeRuntime({
+    deliveryOutboxStore,
+    pollEvents: [],
+    sendText: async () => {
+      sendAttempts += 1;
+      return {
+        success: false,
+        deliveredCount: 1,
+        deliveredText: 'retry prefix',
+        failedIndex: 1,
+        failedText: 'retry remainder',
+        error: 'second failure',
+        errorCode: -2,
+      };
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  await runtime.flushDeliveryRetryQueue({ force: true });
+
+  const [entry] = deliveryOutboxStore.read();
+  assert.equal(sendAttempts, 1);
+  assert.equal(deliveryOutboxStore.read().length, 1);
+  assert.equal(entry?.attemptCount, 3);
+  assert.equal(entry?.lastError, 'second failure');
+  assert.equal(entry?.lastErrorCode, -2);
+  assert.equal(entry?.content, 'retry remainder');
+  assert.ok((entry?.nextAttemptAt ?? 0) > now);
+});
+
+test('WeixinBridgeRuntime persists duplicate enqueue updates as one entry', () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-rt-outbox-duplicate-'));
+  const deliveryOutboxStore = new WeixinDeliveryOutboxStore(stateDir);
+  const runtime = makeRuntime({
+    deliveryOutboxStore,
+    pollEvents: [],
+    sendText: async () => {},
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  runtime.enqueueTextDeliveryRetry({
+    externalScopeId: 'wxid_1',
+    content: 'same continuation',
+    source: 'final_answer',
+    delivery: { error: 'first failure', errorCode: null },
+  });
+  runtime.enqueueTextDeliveryRetry({
+    externalScopeId: 'wxid_1',
+    content: 'same continuation',
+    source: 'final_answer',
+    delivery: { error: 'latest failure', errorCode: -2 },
+  });
+
+  const entries = deliveryOutboxStore.read();
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.lastError, 'latest failure');
+  assert.equal(entries[0]?.lastErrorCode, -2);
+});
+
+test('WeixinBridgeRuntime startup flush respects a future next-attempt time', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-rt-outbox-startup-'));
+  const deliveryOutboxStore = new WeixinDeliveryOutboxStore(stateDir);
+  const now = Date.now();
+  deliveryOutboxStore.write([{
+    id: 'future-1',
+    externalScopeId: 'wxid_1',
+    content: 'not yet',
+    source: 'final_answer',
+    createdAt: now,
+    nextAttemptAt: now + 60_000,
+    attemptCount: 0,
+    lastError: 'temporary failure',
+    lastErrorCode: null,
+  }]);
+  let sendAttempts = 0;
+  const runtime = makeRuntime({
+    deliveryOutboxStore,
+    pollEvents: [],
+    sendText: async () => {
+      sendAttempts += 1;
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  await runtime.startInBackground();
+  await sleep(20);
+  await runtime.stop();
+
+  assert.equal(sendAttempts, 0);
+  assert.equal(deliveryOutboxStore.read().length, 1);
+});
+
+test('WeixinBridgeRuntime queues a forced flush behind an overlapping normal scan', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-rt-outbox-force-'));
+  const deliveryOutboxStore = new WeixinDeliveryOutboxStore(stateDir);
+  const now = Date.now();
+  deliveryOutboxStore.write([{
+    id: 'forced-1',
+    externalScopeId: 'wxid_1',
+    content: 'force this retry',
+    source: 'final_answer',
+    createdAt: now,
+    nextAttemptAt: now + 60_000,
+    attemptCount: 0,
+    lastError: 'temporary failure',
+    lastErrorCode: null,
+  }]);
+  const sent: string[] = [];
+  const runtime = makeRuntime({
+    deliveryOutboxStore,
+    pollEvents: [],
+    sendText: async ({ content }) => {
+      sent.push(content);
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  const normalFlush = runtime.flushDeliveryRetryQueue();
+  const forcedFlush = runtime.flushDeliveryRetryQueue({ externalScopeId: 'wxid_1', force: true });
+  await Promise.all([normalFlush, forcedFlush]);
+
+  assert.deepEqual(sent, ['force this retry']);
+  assert.deepEqual(deliveryOutboxStore.read(), []);
+});
+
+test('WeixinBridgeRuntime does not discard distinct restored entries that share an id', async () => {
+  const now = Date.now();
+  const persisted: WeixinPendingTextDelivery[][] = [];
+  const sent: string[] = [];
+  const runtime = makeRuntime({
+    deliveryOutboxStore: {
+      read: () => [
+        {
+          id: 'duplicate-id',
+          externalScopeId: 'wxid_1',
+          content: 'first distinct continuation',
+          source: 'final_answer',
+          createdAt: now,
+          nextAttemptAt: now - 1,
+          attemptCount: 0,
+          lastError: 'temporary failure',
+          lastErrorCode: null,
+        },
+        {
+          id: 'duplicate-id',
+          externalScopeId: 'wxid_1',
+          content: 'second distinct continuation',
+          source: 'final_answer',
+          createdAt: now,
+          nextAttemptAt: now - 1,
+          attemptCount: 0,
+          lastError: 'temporary failure',
+          lastErrorCode: null,
+        },
+      ],
+      write: (entries) => {
+        persisted.push(entries.map((entry) => ({ ...entry })));
+      },
+    },
+    pollEvents: [],
+    sendText: async ({ content }) => {
+      sent.push(content);
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  await runtime.flushDeliveryRetryQueue({ force: true });
+
+  assert.deepEqual(sent, ['first distinct continuation', 'second distinct continuation']);
+  assert.deepEqual(persisted.at(-1), []);
+});
+
+test('WeixinBridgeRuntime detaches an in-flight outbox pump during a forced restart', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-rt-outbox-force-restart-'));
+  const deliveryOutboxStore = new WeixinDeliveryOutboxStore(stateDir);
+  const now = Date.now();
+  deliveryOutboxStore.write([{
+    id: 'restart-1',
+    externalScopeId: 'wxid_1',
+    content: 'survive forced restart',
+    source: 'final_answer',
+    createdAt: now,
+    nextAttemptAt: now - 1,
+    attemptCount: 0,
+    lastError: 'temporary failure',
+    lastErrorCode: null,
+  }]);
+  let sendAttempts = 0;
+  let releaseFirstSend: (() => void) | null = null;
+  let markFirstSendStarted: (() => void) | null = null;
+  const firstSendStarted = new Promise<void>((resolve) => {
+    markFirstSendStarted = resolve;
+  });
+  const runtime = makeRuntime({
+    deliveryOutboxStore,
+    pollEvents: [],
+    sendText: async () => {
+      sendAttempts += 1;
+      if (sendAttempts === 1) {
+        markFirstSendStarted?.();
+        await new Promise<void>((resolve) => {
+          releaseFirstSend = resolve;
+        });
+      }
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  const staleFlush = runtime.flushDeliveryRetryQueue({ force: true });
+  await firstSendStarted;
+  try {
+    await runtime.restart({ force: true });
+    await sleep(20);
+    assert.equal(sendAttempts, 2);
+    assert.deepEqual(deliveryOutboxStore.read(), []);
+  } finally {
+    releaseFirstSend?.();
+    await staleFlush;
+    await runtime.stop();
+  }
+});
+
+test('WeixinBridgeRuntime stop waits for an in-flight outbox delivery to persist', async () => {
+  const now = Date.now();
+  let finishSend: (() => void) | null = null;
+  let markSendStarted: (() => void) | null = null;
+  const sendStarted = new Promise<void>((resolve) => {
+    markSendStarted = resolve;
+  });
+  const writes: WeixinPendingTextDelivery[][] = [];
+  const runtime = makeRuntime({
+    deliveryOutboxStore: {
+      read: () => [{
+        id: 'in-flight-1',
+        externalScopeId: 'wxid_1',
+        content: 'in flight',
+        source: 'final_answer',
+        createdAt: now,
+        nextAttemptAt: now - 1,
+        attemptCount: 0,
+        lastError: 'temporary failure',
+        lastErrorCode: null,
+      }],
+      write: (entries) => {
+        writes.push(entries.map((entry) => ({ ...entry })));
+      },
+    },
+    pollEvents: [],
+    sendText: async () => {
+      markSendStarted?.();
+      await new Promise<void>((resolve) => {
+        finishSend = resolve;
+      });
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  const flush = runtime.flushDeliveryRetryQueue({ force: true });
+  await sendStarted;
+  let stopped = false;
+  const stop = runtime.stop().then(() => {
+    stopped = true;
+  });
+  await sleep(20);
+
+  assert.equal(stopped, false);
+  finishSend?.();
+  await Promise.all([flush, stop]);
+  assert.deepEqual(writes.at(-1), []);
+});
+
+test('WeixinBridgeRuntime keeps queued delivery in memory when persistence fails', async () => {
+  const errors: string[] = [];
+  const runtime = makeRuntime({
+    deliveryOutboxStore: {
+      read: () => [],
+      write: () => {
+        throw new Error('outbox disk unavailable');
+      },
+    },
+    onError: (error) => {
+      errors.push(error instanceof Error ? error.message : String(error));
+    },
+    deliverProgressPreviews: false,
+    sendText: async ({ content }) => ({
+      success: false,
+      deliveredCount: 0,
+      deliveredText: '',
+      failedIndex: 0,
+      failedText: content,
+      error: 'send failed',
+      errorCode: null,
+    }),
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('queued despite disk failure');
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  assert.equal(runtime.getStatus().pendingDeliveryRetries, 1);
+  assert.ok(errors.includes('outbox disk unavailable'));
+});
+
+test('WeixinBridgeRuntime caps queued delivery errors before logging or persistence', () => {
+  const runtime = makeRuntime({
+    deliveryOutboxStore: {
+      read: () => [],
+      write: () => {},
+    },
+    pollEvents: [],
+    sendText: async () => {},
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  runtime.enqueueTextDeliveryRetry({
+    externalScopeId: 'wxid_1',
+    content: 'pending continuation',
+    delivery: { error: 'sensitive-error'.repeat(100), errorCode: null },
+  });
+
+  assert.equal(runtime.deliveryRetryQueue[0]?.lastError.length, 500);
+});
+
+test('WeixinBridgeRuntime reports an outbox read failure after initializing empty state', () => {
+  const errors: string[] = [];
+  let writes = 0;
+
+  const runtime = makeRuntime({
+    deliveryOutboxStore: {
+      read: () => {
+        throw new Error('outbox read unavailable');
+      },
+      write: () => {
+        writes += 1;
+      },
+    },
+    onError: (error) => {
+      errors.push(error instanceof Error ? error.message : String(error));
+    },
+    pollEvents: [],
+    sendText: async () => {},
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  assert.equal(runtime.getStatus().pendingDeliveryRetries, 0);
+  assert.equal(runtime.getStatus().lastError, 'outbox read unavailable');
+  assert.deepEqual(errors, ['outbox read unavailable']);
+  assert.equal(writes, 0);
+});
+
+test('WeixinBridgeRuntime prunes expired restored entries during startup normalization', () => {
+  const now = Date.now();
+  const writes: WeixinPendingTextDelivery[][] = [];
+  const runtime = makeRuntime({
+    deliveryOutboxStore: {
+      read: () => [
+        {
+          id: 'expired',
+          externalScopeId: 'wxid_1',
+          content: 'expired continuation',
+          source: 'final_answer',
+          createdAt: now - WeixinBridgeRuntime.DELIVERY_RETRY_RETENTION_MS - 1,
+          nextAttemptAt: now - 1,
+          attemptCount: 0,
+          lastError: 'old failure',
+          lastErrorCode: null,
+        },
+        {
+          id: 'retained',
+          externalScopeId: 'wxid_1',
+          content: 'retained continuation',
+          source: 'final_answer',
+          createdAt: now,
+          nextAttemptAt: now + 1_000,
+          attemptCount: 0,
+          lastError: 'recent failure'.repeat(100),
+          lastErrorCode: null,
+        },
+      ],
+      write: (entries) => {
+        writes.push(entries.map((entry) => ({ ...entry })));
+      },
+    },
+    pollEvents: [],
+    sendText: async () => {},
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  assert.equal(runtime.getStatus().pendingDeliveryRetries, 1);
+  assert.deepEqual(writes.at(-1)?.map((entry) => entry.id), ['retained']);
+  assert.equal(runtime.deliveryRetryQueue[0]?.lastError.length, 500);
+  assert.equal(writes.at(-1)?.[0]?.lastError.length, 500);
+});
+
+test('WeixinBridgeRuntime exposes only aggregate delivery outbox status', () => {
+  const now = Date.now();
+  const secretEntry: WeixinPendingTextDelivery = {
+    id: 'private-id',
+    externalScopeId: 'wx-secret-scope',
+    content: 'private queued message',
+    source: 'final_answer',
+    createdAt: now,
+    nextAttemptAt: now + 1_000,
+    attemptCount: 3,
+    lastError: 'private send error',
+    lastErrorCode: -2,
+  };
+  const runtime = makeRuntime({
+    deliveryOutboxStore: {
+      read: () => [secretEntry],
+      write: () => {},
+    },
+    pollEvents: [],
+    sendText: async () => {},
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  const summary = runtime.getStatus().deliveryOutbox;
+  assert.deepEqual(summary, {
+    pending: 1,
+    oldestCreatedAt: now,
+    nextAttemptAt: now + 1_000,
+  });
+  const serialized = JSON.stringify(summary);
+  assert.doesNotMatch(serialized, /private|wx-secret|send error|final_answer/);
+});
+
+test('WeixinBridgeRuntime alerts once when delivery outbox count reaches the threshold', () => {
+  const alerts: Record<string, unknown>[] = [];
+  const runtime = makeRuntime({
+    deliveryOutboxAlertPendingThreshold: 1,
+    deliveryOutboxAlertAgeMs: 60 * 60 * 1_000,
+    deliveryOutboxAlertMinIntervalMs: 15 * 60 * 1_000,
+    onAlert: (payload) => { alerts.push(payload); },
+    pollEvents: [],
+    sendText: async () => {},
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  runtime.enqueueTextDeliveryRetry({
+    externalScopeId: 'wx-private-scope',
+    content: 'private queued message',
+    source: 'final_answer',
+    delivery: { error: 'private send error', errorCode: -2 },
+  });
+  runtime.enqueueTextDeliveryRetry({
+    externalScopeId: 'wx-private-scope-2',
+    content: 'second private queued message',
+    source: 'final_answer',
+    delivery: { error: 'second private send error', errorCode: -2 },
+  });
+
+  assert.equal(alerts.length, 1);
+  assert.deepEqual(alerts[0], {
+    type: 'delivery_outbox_backlog',
+    stage: 'delivery',
+    message: 'Pending WeChat delivery retries require attention',
+    at: alerts[0]?.at,
+    pendingDeliveryRetries: 1,
+  });
+  assert.doesNotMatch(
+    JSON.stringify(alerts),
+    /private queued|private-scope|send error|final_answer/u,
+  );
+});
+
+test('WeixinBridgeRuntime alerts when a restored delivery exceeds the age threshold', () => {
+  const alerts: Record<string, unknown>[] = [];
+  const now = Date.now();
+  makeRuntime({
+    deliveryOutboxStore: {
+      read: () => [{
+        id: 'aged-entry',
+        externalScopeId: 'wx-aged-private-scope',
+        content: 'aged private message',
+        source: 'final_answer',
+        createdAt: now - 10 * 60 * 1_000,
+        nextAttemptAt: now + 1_000,
+        attemptCount: 1,
+        lastError: 'aged private error',
+        lastErrorCode: -2,
+      }],
+      write: () => {},
+    },
+    deliveryOutboxAlertPendingThreshold: 50,
+    deliveryOutboxAlertAgeMs: 5 * 60 * 1_000,
+    onAlert: (payload) => { alerts.push(payload); },
+    pollEvents: [],
+    sendText: async () => {},
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0]?.type, 'delivery_outbox_backlog');
+  assert.equal(alerts[0]?.pendingDeliveryRetries, 1);
+  assert.doesNotMatch(JSON.stringify(alerts), /aged private|aged-entry|final_answer/u);
+});
+
+test('WeixinBridgeRuntime checks outbox age after a flush skips future retries', async () => {
+  const alerts: Record<string, unknown>[] = [];
+  const now = Date.now();
+  const runtime = makeRuntime({
+    deliveryOutboxStore: {
+      read: () => [{
+        id: 'pending-entry',
+        externalScopeId: 'wx-private-scope',
+        content: 'private pending message',
+        source: 'final_answer',
+        createdAt: now,
+        nextAttemptAt: now + 60 * 60 * 1_000,
+        attemptCount: 0,
+        lastError: 'private pending error',
+        lastErrorCode: -2,
+      }],
+      write: () => {},
+    },
+    deliveryOutboxAlertPendingThreshold: 50,
+    deliveryOutboxAlertAgeMs: 5 * 60 * 1_000,
+    onAlert: (payload) => { alerts.push(payload); },
+    pollEvents: [],
+    sendText: async () => {},
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+  runtime.deliveryRetryQueue[0]!.createdAt = now - 10 * 60 * 1_000;
+
+  await runtime.flushDeliveryRetryQueue();
+
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0]?.type, 'delivery_outbox_backlog');
+  assert.equal(alerts[0]?.pendingDeliveryRetries, 1);
+  assert.ok(Number(alerts[0]?.oldestPendingAgeMs) >= 5 * 60 * 1_000);
+  assert.doesNotMatch(JSON.stringify(alerts), /private|wx-|final_answer/u);
+});
+
+test('WeixinBridgeRuntime keeps delivery outbox logs aggregate-only', async () => {
+  const runtime = makeRuntime({
+    pollEvents: [],
+    sendText: async () => ({
+      success: false,
+      deliveredCount: 0,
+      deliveredText: '',
+      failedIndex: 0,
+      failedText: 'private queued message',
+      error: 'api-key=private send error',
+      errorCode: -2,
+    }),
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+  let stderr = '';
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: unknown) => {
+    stderr += String(chunk ?? '');
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    runtime.enqueueTextDeliveryRetry({
+      externalScopeId: 'wx-private-scope',
+      content: 'private queued message',
+      source: 'final_answer',
+      delivery: { error: 'api-key=private initial error', errorCode: -2 },
+    });
+    await runtime.flushDeliveryRetryQueue({ force: true });
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+
+  assert.match(stderr, /text_delivery_retry_queued/u);
+  assert.match(stderr, /text_delivery_retry_failed/u);
+  assert.doesNotMatch(stderr, /wx-private|private queued|api-key|private (?:initial|send) error/u);
 });
 
 

@@ -364,11 +364,12 @@ export function resolveDaemonLayout(
     };
   }
 
-  const resolvedHomeDir = path.resolve(homeDir || resolveHomeDir(env, platform));
-  const configRoot = path.resolve(env.XDG_CONFIG_HOME || path.join(resolvedHomeDir, '.config'));
-  const configDir = path.join(configRoot, DAEMON_CONFIG_DIR_NAME);
-  const stateDir = path.join(resolvedHomeDir, DAEMON_STATE_DIR_NAME);
-  const logDir = path.join(stateDir, 'logs');
+  const posixPath = path.posix;
+  const resolvedHomeDir = posixPath.resolve(homeDir || resolveHomeDir(env, platform));
+  const configRoot = posixPath.resolve(env.XDG_CONFIG_HOME || posixPath.join(resolvedHomeDir, '.config'));
+  const configDir = posixPath.join(configRoot, DAEMON_CONFIG_DIR_NAME);
+  const stateDir = posixPath.join(resolvedHomeDir, DAEMON_STATE_DIR_NAME);
+  const logDir = posixPath.join(stateDir, 'logs');
   if (platform === 'darwin') {
     return {
       platform,
@@ -376,11 +377,11 @@ export function resolveDaemonLayout(
       configDir,
       stateDir,
       logDir,
-      envFile: path.join(configDir, DAEMON_SERVICE_ENV_NAME),
-      stdoutLog: path.join(logDir, DAEMON_STDOUT_LOG_NAME),
-      stderrLog: path.join(logDir, DAEMON_STDERR_LOG_NAME),
+      envFile: posixPath.join(configDir, DAEMON_SERVICE_ENV_NAME),
+      stdoutLog: posixPath.join(logDir, DAEMON_STDOUT_LOG_NAME),
+      stderrLog: posixPath.join(logDir, DAEMON_STDERR_LOG_NAME),
       launchdLabel: LAUNCHD_LABEL,
-      launchdPlistPath: path.join(resolvedHomeDir, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`),
+      launchdPlistPath: posixPath.join(resolvedHomeDir, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`),
       systemdServiceName: null,
       systemdUnitPath: null,
       windowsTaskName: null,
@@ -393,13 +394,13 @@ export function resolveDaemonLayout(
     configDir,
     stateDir,
     logDir,
-    envFile: path.join(configDir, DAEMON_SERVICE_ENV_NAME),
-    stdoutLog: path.join(logDir, DAEMON_STDOUT_LOG_NAME),
-    stderrLog: path.join(logDir, DAEMON_STDERR_LOG_NAME),
+    envFile: posixPath.join(configDir, DAEMON_SERVICE_ENV_NAME),
+    stdoutLog: posixPath.join(logDir, DAEMON_STDOUT_LOG_NAME),
+    stderrLog: posixPath.join(logDir, DAEMON_STDERR_LOG_NAME),
     launchdLabel: null,
     launchdPlistPath: null,
     systemdServiceName: SYSTEMD_SERVICE_NAME,
-    systemdUnitPath: path.join(configRoot, 'systemd', 'user', SYSTEMD_SERVICE_NAME),
+    systemdUnitPath: posixPath.join(configRoot, 'systemd', 'user', SYSTEMD_SERVICE_NAME),
     windowsTaskName: null,
   };
 }

@@ -1,6 +1,6 @@
 {
   "name": "codexbridge",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "productName": "CodexBridge Weixin Admin",
   "private": true,
   "type": "module",
@@ -18,6 +18,7 @@
     "mission-control:typecheck": "tsc -p packages/mission-control/tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:js": "tsc -p tsconfig.checkjs.json",
+    "verify:release": "npm run typecheck && npm run typecheck:js && npm run codex-gateway:check-boundary && npm run codex-gateway:typecheck && npm run codex-provider-relay:check-boundary && npm run codex-provider-relay:typecheck && npm run codex-native-api:check-boundary && npm run codex-native-api:typecheck && npm run mission-control:check-boundary && npm run mission-control:typecheck && npm run test && npm run codex-gateway:test && npm run codex-provider-relay:test && npm run codex-native-api:test && npm run mission-control:test && npm run build && npm run codex-gateway:build && npm run codex-provider-relay:build && npm run codex-native-api:build && npm run mission-control:build && git diff --check",
     "codex-gateway:build": "tsc -p packages/codex-gateway/tsconfig.json",
     "codex-gateway:check-boundary": "node scripts/check-codex-gateway-boundary.mjs",
     "codex-gateway:test": "tsx --test packages/codex-gateway/test/*.test.ts",
@@ -61,7 +62,7 @@
   },
   "dependencies": {
     "@openai/agents": "^0.8.5",
-    "@openai/codex": "^0.142.4",
+    "@openai/codex": "^0.144.4",
     "electron-updater": "^6.8.9",
     "ffmpeg-static": "^5.3.0",
     "ffprobe-static": "^3.1.0",

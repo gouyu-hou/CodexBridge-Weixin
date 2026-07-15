@@ -127,7 +127,7 @@ Base URL：https://api.deepseek.com
 供应商名称：OpenAI Compatible
 API key：你的 API key
 Base URL：你的接口平台提供的接口地址
-模型：gpt-5.5、gpt-5.2-codex 或其他 Codex 兼容模型
+模型：gpt-5.6-sol、gpt-5.5、gpt-5.2-codex 或其他 Codex 兼容模型
 ```
 
 如果使用 Z Token，可以在后台选择支持 Codex 的模型，然后把对应的模型名填到这里。真正生效的是 API key、Base URL 和模型名称。
@@ -180,11 +180,16 @@ Base URL：你的接口平台提供的接口地址
 - 查看运行日志和最近错误
 - 清理日志、复制日志
 - 配置 API key、Base URL、模型和供应商
+- 查看 Provider 套餐、Credits 和额度窗口，支持自动加载与手动刷新
+- 查看消息待补发摘要，并在需要时立即触发补发
 - 导出和备份配置与历史数据
 - 检查软件更新
 - 运行一键诊断
 
 如果遇到 502、503、429、初始化超时、端口冲突、朋友扫码无法连接等问题，优先打开管理面板里的诊断功能查看原因。
+
+用量接口和待补发接口只向管理面板返回聚合后的运维信息，不返回账号标识、
+消息正文、会话范围或原始错误内容。
 
 ## 多人使用说明
 
@@ -243,6 +248,8 @@ CodexBridgeData
 ## 自动更新
 
 软件支持通过 GitHub Release 检查更新。自动更新依赖 Release 里的三个文件：
+
+完整的固定发布步骤请查看：[CodexBridge Weixin 固定发布流程](./docs/RELEASE_PROCESS.md)。
 
 ```text
 CodexBridge-Weixin-Admin-Setup-x.x.x.exe

@@ -1,14 +1,42 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  buildCliproxyModelCatalogEntries,
+  buildCliproxyModelIds,
   buildOpenAICompatibleModelCatalog,
   buildOpenAICompatibleExternalModelCatalog,
+  findCliproxyModelCatalogEntry,
   getOpenAICompatibleProviderPreset,
   mergeOpenAICompatibleProviderCapabilities,
   OPENAI_COMPATIBLE_PROFILE_PRESET_REGISTRATIONS,
   resolveOpenAICompatibleProviderCapabilitiesForModel,
   resolveReasoningEffortForProvider,
 } from '../src/index.js';
+
+test('Codex compatibility catalog includes GPT-5.6 variant reasoning metadata', () => {
+  const modelIds = buildCliproxyModelIds(['codex-free']);
+  assert.ok(modelIds.includes('gpt-5.6-sol'));
+  assert.ok(modelIds.includes('gpt-5.6-terra'));
+  assert.ok(modelIds.includes('gpt-5.6-luna'));
+  assert.deepEqual(findCliproxyModelCatalogEntry('gpt-5.6-sol')?.thinking?.levels, [
+    'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
+  ]);
+  assert.deepEqual(findCliproxyModelCatalogEntry('gpt-5.6-terra')?.thinking?.levels, [
+    'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
+  ]);
+  assert.deepEqual(findCliproxyModelCatalogEntry('gpt-5.6-luna')?.thinking?.levels, [
+    'low', 'medium', 'high', 'xhigh', 'max',
+  ]);
+  const catalog = buildCliproxyModelCatalogEntries({
+    categories: ['codex-free'],
+    defaultModel: 'gpt-5.6-sol',
+    displayName: 'Codex',
+    capabilities: null,
+  });
+  assert.equal(catalog.find((model) => model.id === 'gpt-5.6-sol')?.defaultReasoningEffort, 'low');
+  assert.equal(catalog.find((model) => model.id === 'gpt-5.6-terra')?.defaultReasoningEffort, 'medium');
+  assert.equal(catalog.find((model) => model.id === 'gpt-5.6-luna')?.defaultReasoningEffort, 'medium');
+});
 
 test('capability presets are exported from the package boundary', () => {
   const preset = getOpenAICompatibleProviderPreset('minimax');

@@ -8,6 +8,7 @@ import { formatPlatformScopeKey } from './contracts.js';
 import { isAgentCommandEnabled } from './command_availability.js';
 import { parseSlashCommand } from './command_parser.js';
 import { NotFoundError } from './errors.js';
+import { ProviderUsageService } from './provider_usage_service.js';
 import {
   buildLegacyReadOnlyCustomSettingsUpdate,
   buildPermissionsSettingsUpdate,
@@ -925,6 +926,7 @@ export class BridgeCoordinator {
   activeTurns: any;
   providerProfiles: any;
   providerRegistry: any;
+  providerUsage: any;
   pluginAliases: any;
   defaultProviderProfileId: any;
   defaultCwd: any;
@@ -963,6 +965,7 @@ export class BridgeCoordinator {
     activeTurns = null,
     providerProfiles,
     providerRegistry,
+    providerUsage = null,
     pluginAliases = null,
     defaultProviderProfileId,
     defaultCwd = null,
@@ -984,6 +987,12 @@ export class BridgeCoordinator {
     this.activeTurns = activeTurns;
     this.providerProfiles = providerProfiles;
     this.providerRegistry = providerRegistry;
+    this.providerUsage = providerUsage ?? new ProviderUsageService({
+      providerProfiles: typeof providerProfiles?.getById === 'function'
+        ? providerProfiles
+        : { getById: (id: string) => providerProfiles?.get?.(id) ?? null },
+      providerRegistry,
+    });
     this.pluginAliases = pluginAliases;
     this.defaultProviderProfileId = defaultProviderProfileId;
     this.defaultCwd = normalizeCwd(defaultCwd);
@@ -11344,14 +11353,9 @@ export class BridgeCoordinator {
   }
 
   async resolveProviderUsage(providerProfile) {
-    const providerPlugin = this.providerRegistry.getProvider(providerProfile.providerKind);
-    if (typeof providerPlugin?.getUsage !== 'function') {
-      return null;
-    }
     try {
-      return await providerPlugin.getUsage({
-        providerProfile,
-      });
+      const snapshot = await this.providerUsage.getUsage(providerProfile.id, { forceRefresh: true });
+      return snapshot.report;
     } catch {
       return null;
     }

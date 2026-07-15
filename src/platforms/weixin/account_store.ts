@@ -6,6 +6,7 @@ import {
   loadGetUpdatesBuf,
   saveGetUpdatesBuf,
 } from './official/sync_buf.js';
+import { readJsonFileSafely, writeJsonFileAtomically } from '../../store/file_json/json_file_io.js';
 
 export interface SavedWeixinAccount {
   token: string;
@@ -29,6 +30,8 @@ export interface SavedWeixinAccount {
 }
 
 type ContextTokenMap = Record<string, string>;
+const WEIXIN_ACCOUNT_ID_PATTERN = /^[A-Za-z0-9@._-]{1,160}$/u;
+
 export class WeixinAccountStore {
   constructor({ rootDir = defaultWeixinAccountsDir() } = {}) {
     this.rootDir = rootDir;
@@ -44,11 +47,22 @@ export class WeixinAccountStore {
       .filter((entry) => !entry.name.endsWith('.context-tokens.json'))
       .filter((entry) => !entry.name.endsWith('.sync.json'))
       .map((entry) => entry.name.slice(0, -'.json'.length))
+      .filter((accountId) => isValidWeixinAccountId(accountId))
       .sort();
   }
 
   saveAccount({ accountId, token, baseUrl, userId = '' }: { accountId: string; token: string; baseUrl: string; userId?: string }) {
-    const existing = this.loadAccount(accountId) ?? {};
+    const normalizedAccountId = assertValidWeixinAccountId(accountId);
+    const conflictingAccountId = this.listAccounts().find((existingAccountId) => (
+      existingAccountId !== normalizedAccountId
+      && existingAccountId.toLowerCase() === normalizedAccountId.toLowerCase()
+    ));
+    if (conflictingAccountId) {
+      throw new Error(
+        `Weixin account id ${normalizedAccountId} conflicts with existing Weixin account id ${conflictingAccountId}`,
+      );
+    }
+    const existing = this.loadAccount(normalizedAccountId) ?? {};
     const payload: SavedWeixinAccount = {
       ...existing,
       token,
@@ -56,7 +70,7 @@ export class WeixinAccountStore {
       user_id: userId,
       saved_at: new Date().toISOString(),
     };
-    this.writeJson(this.accountFile(accountId), payload);
+    this.writeJson(this.accountFile(normalizedAccountId), payload);
     return payload;
   }
 
@@ -149,32 +163,50 @@ export class WeixinAccountStore {
   }
 
   accountFile(accountId: string) {
-    return path.join(this.rootDir, `${accountId}.json`);
+    return this.resolveAccountPath(accountId, '.json');
   }
 
   contextTokensFile(accountId: string) {
-    return path.join(this.rootDir, `${accountId}.context-tokens.json`);
+    return this.resolveAccountPath(accountId, '.context-tokens.json');
   }
 
   syncFile(accountId: string) {
-    return getSyncBufFilePath(this.rootDir, accountId);
+    const normalizedAccountId = assertValidWeixinAccountId(accountId);
+    return getSyncBufFilePath(this.rootDir, normalizedAccountId);
+  }
+
+  private resolveAccountPath(accountId: string, suffix: string) {
+    const normalizedAccountId = assertValidWeixinAccountId(accountId);
+    const rootDir = path.resolve(this.rootDir);
+    const filePath = path.resolve(rootDir, `${normalizedAccountId}${suffix}`);
+    if (path.dirname(filePath) !== rootDir) {
+      throw new Error(`invalid Weixin account id: ${accountId}`);
+    }
+    return filePath;
   }
 
   readJson<T>(filePath: string): T | null {
-    if (!fs.existsSync(filePath)) {
-      return null;
-    }
-    try {
-      return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-    } catch {
-      return null;
-    }
+    return readJsonFileSafely<T | null>(filePath, { fallback: null });
   }
 
   writeJson(filePath: string, value: unknown) {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    writeJsonFileAtomically(filePath, value);
   }
+}
+
+export function isValidWeixinAccountId(value: unknown): boolean {
+  const accountId = String(value ?? '').trim();
+  return WEIXIN_ACCOUNT_ID_PATTERN.test(accountId)
+    && accountId !== '.'
+    && accountId !== '..';
+}
+
+export function assertValidWeixinAccountId(value: unknown): string {
+  const accountId = String(value ?? '').trim();
+  if (!isValidWeixinAccountId(accountId)) {
+    throw new Error(`invalid Weixin account id: ${accountId || '<empty>'}`);
+  }
+  return accountId;
 }
 
 function normalizeAccountRole(value: unknown): string {
