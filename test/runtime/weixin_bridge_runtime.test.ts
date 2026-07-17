@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { ActiveTurnRecoveryService } from '../../src/core/active_turn_recovery_service.js';
+import { ActiveTurnRegistry } from '../../src/core/active_turn_registry.js';
 import { WeixinBridgeRuntime } from '../../src/runtime/weixin_bridge_runtime.js';
 import {
   WeixinDeliveryOutboxStore,
@@ -10,6 +12,9 @@ import {
 } from '../../src/runtime/weixin_delivery_outbox_store.js';
 import { WeixinMetricsStore } from '../../src/runtime/weixin_metrics_store.js';
 import { postAlert, resetAlertDebounceForTests } from '../../src/runtime/alert_webhook.js';
+import { PluginRegistry } from '../../src/runtime/plugin_registry.js';
+import { FileJsonActiveTurnCheckpointRepository } from '../../src/store/file_json/file_json_active_turn_checkpoint_repository.js';
+import { InMemoryProviderProfileRepository } from '../../src/store/in_memory/in_memory_provider_profile_repository.js';
 import { createI18n } from '../../src/i18n/index.js';
 
 async function withEnvOverride<T>(
@@ -63,6 +68,9 @@ interface RuntimeHarnessOptions {
   deliveryOutboxAlertPendingThreshold?: number;
   deliveryOutboxAlertAgeMs?: number;
   deliveryOutboxAlertMinIntervalMs?: number;
+  activeTurns?: any;
+  activeTurnRecovery?: any;
+  platformStart?: () => Promise<void> | void;
 }
 
 function makeRuntime({
@@ -90,10 +98,15 @@ function makeRuntime({
   deliveryOutboxAlertPendingThreshold,
   deliveryOutboxAlertAgeMs,
   deliveryOutboxAlertMinIntervalMs,
+  activeTurns = null,
+  activeTurnRecovery = null,
+  platformStart = async () => {},
 }: RuntimeHarnessOptions) {
   return new WeixinBridgeRuntime({
     platformPlugin: {
-      async start() {},
+      async start() {
+        await platformStart();
+      },
       async stop() {},
       async pollOnce() {
         return {
@@ -152,8 +165,418 @@ function makeRuntime({
     deliveryOutboxAlertPendingThreshold,
     deliveryOutboxAlertAgeMs,
     deliveryOutboxAlertMinIntervalMs,
+    activeTurns,
+    activeTurnRecovery,
   });
 }
+
+test('WeixinBridgeRuntime reconciles and delivers completed turns after platform startup', async () => {
+  const sequence: string[] = [];
+  const sent: string[] = [];
+  const completed: string[] = [];
+  let reconciliationCalls = 0;
+  const runtime = makeRuntime({
+    pollEvents: [],
+    platformStart: () => {
+      sequence.push('platform-started');
+    },
+    activeTurns: {
+      completeDurableTurn(_scopeRef: unknown, checkpointId: string) {
+        completed.push(checkpointId);
+        return true;
+      },
+    },
+    activeTurnRecovery: {
+      async reconcileAll() {
+        sequence.push('reconciled');
+        reconciliationCalls += 1;
+        return reconciliationCalls === 1
+          ? [{
+            kind: 'completed',
+            checkpoint: {
+              id: 'checkpoint-recovered',
+              platform: 'weixin',
+              externalScopeId: 'wx-recovered',
+              finalDeliveryKey: 'openai-default:thread-1:turn-1:final',
+            },
+            outputText: 'recovered final answer',
+            turnId: 'turn-1',
+          }]
+          : [];
+      },
+      getStatus() {
+        return { total: 1 };
+      },
+    },
+    sendText: async ({ content }) => {
+      sent.push(content);
+      return {
+        success: true,
+        deliveredCount: 1,
+        deliveredText: content,
+        failedIndex: null,
+        failedText: '',
+        error: '',
+        errorCode: null,
+      };
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  await runtime.startInBackground();
+  await waitForCondition(() => completed.length === 1);
+  await runtime.stop();
+
+  assert.deepEqual(sequence.slice(0, 2), ['platform-started', 'reconciled']);
+  assert.deepEqual(sent, ['recovered final answer']);
+  assert.deepEqual(completed, ['checkpoint-recovered']);
+});
+
+test('WeixinBridgeRuntime ignores in-flight recovery outcomes that finish after stop', async () => {
+  let resolveReconciliation: ((value: any[]) => void) | null = null;
+  let markReconciliationStarted: (() => void) | null = null;
+  const reconciliationStarted = new Promise<void>((resolve) => {
+    markReconciliationStarted = resolve;
+  });
+  const reconciliation = new Promise<any[]>((resolve) => {
+    resolveReconciliation = resolve;
+  });
+  const sent: string[] = [];
+  const completed: string[] = [];
+  const runtime = makeRuntime({
+    pollEvents: [],
+    activeTurns: {
+      completeDurableTurn(_scopeRef: unknown, checkpointId: string) {
+        completed.push(checkpointId);
+        return true;
+      },
+    },
+    activeTurnRecovery: {
+      reconcileAll() {
+        markReconciliationStarted?.();
+        return reconciliation;
+      },
+      getStatus() {
+        return { total: 1 };
+      },
+    },
+    sendText: async ({ content }) => {
+      sent.push(content);
+      return {
+        success: true,
+        deliveredCount: 1,
+        deliveredText: content,
+        failedIndex: null,
+        failedText: '',
+        error: '',
+        errorCode: null,
+      };
+    },
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  await runtime.startInBackground();
+  await reconciliationStarted;
+  await runtime.stop();
+  resolveReconciliation?.([{
+    kind: 'completed',
+    checkpoint: {
+      id: 'checkpoint-after-stop',
+      platform: 'weixin',
+      externalScopeId: 'wx-after-stop',
+      finalDeliveryKey: 'openai-default:thread-1:turn-1:final',
+    },
+    outputText: 'must not send after stop',
+    turnId: 'turn-1',
+  }]);
+  await sleep(20);
+
+  assert.deepEqual(sent, []);
+  assert.deepEqual(completed, []);
+});
+
+test('WeixinBridgeRuntime completes a durable turn after final delivery succeeds', async () => {
+  const completed: unknown[] = [];
+  const runtime = makeRuntime({
+    activeTurns: {
+      completeDurableTurn(scopeRef: unknown, checkpointId: string) {
+        completed.push({ scopeRef, checkpointId });
+        return true;
+      },
+    },
+    sendText: async ({ content }) => ({
+      success: true,
+      deliveredCount: 1,
+      deliveredText: content,
+      failedIndex: null,
+      failedText: '',
+      error: '',
+      errorCode: null,
+    }),
+    coordinator: {
+      async handleInboundEvent() {
+        return {
+          ...completeResponse('durable final answer'),
+          meta: {
+            ...completeResponse('').meta,
+            activeTurnDelivery: {
+              checkpointId: 'checkpoint-1',
+              deliveryKey: 'openai-default:thread-1:turn-1:final',
+            },
+          },
+        };
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  assert.deepEqual(completed, [{
+    scopeRef: { platform: 'weixin', externalScopeId: 'wxid_1' },
+    checkpointId: 'checkpoint-1',
+  }]);
+});
+
+test('WeixinBridgeRuntime links failed durable final delivery to a stable outbox id', async () => {
+  const linked: unknown[] = [];
+  const runtime = makeRuntime({
+    activeTurns: {
+      linkOutboxDelivery(scopeRef: unknown, checkpointId: string, outboxEntryId: string) {
+        linked.push({ scopeRef, checkpointId, outboxEntryId });
+        return true;
+      },
+    },
+    sendText: async ({ content }) => ({
+      success: false,
+      deliveredCount: 0,
+      deliveredText: '',
+      failedIndex: 0,
+      failedText: content,
+      error: 'temporary delivery failure',
+      errorCode: null,
+    }),
+    coordinator: {
+      async handleInboundEvent() {
+        return {
+          ...completeResponse('durable final answer'),
+          meta: {
+            ...completeResponse('').meta,
+            activeTurnDelivery: {
+              checkpointId: 'checkpoint-1',
+              deliveryKey: 'openai-default:thread-1:turn-1:final',
+            },
+          },
+        };
+      },
+    },
+  });
+
+  await runtime.runOnce();
+
+  assert.equal(runtime.deliveryRetryQueue.length, 1);
+  assert.equal(runtime.deliveryRetryQueue[0]?.id, 'openai-default:thread-1:turn-1:final');
+  assert.deepEqual(linked, [{
+    scopeRef: { platform: 'weixin', externalScopeId: 'wxid_1' },
+    checkpointId: 'checkpoint-1',
+    outboxEntryId: 'openai-default:thread-1:turn-1:final',
+  }]);
+});
+
+test('WeixinBridgeRuntime clears the linked checkpoint after an outbox retry succeeds', async () => {
+  const completedOutboxIds: string[] = [];
+  const now = Date.now();
+  const runtime = makeRuntime({
+    activeTurns: {
+      completeOutboxDelivery(outboxEntryId: string) {
+        completedOutboxIds.push(outboxEntryId);
+        return true;
+      },
+    },
+    deliveryOutboxStore: {
+      read: () => [{
+        id: 'stable-final',
+        externalScopeId: 'wxid_1',
+        content: 'pending durable final',
+        source: 'final_answer',
+        createdAt: now,
+        nextAttemptAt: now,
+        attemptCount: 0,
+        lastError: '',
+        lastErrorCode: null,
+      }],
+      write: () => {},
+    },
+    sendText: async ({ content }) => ({
+      success: true,
+      deliveredCount: 1,
+      deliveredText: content,
+      failedIndex: null,
+      failedText: '',
+      error: '',
+      errorCode: null,
+    }),
+    coordinator: {
+      async handleInboundEvent() {
+        return completeResponse('unused');
+      },
+    },
+  });
+
+  await runtime.flushDeliveryRetryQueue({ force: true });
+
+  assert.deepEqual(completedOutboxIds, ['stable-final']);
+  assert.equal(runtime.deliveryRetryQueue.length, 0);
+});
+
+test('WeixinBridgeRuntime completes recovered delivery across two restarts without replaying the provider turn', async () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-rt-turn-recovery-'));
+  const checkpointPath = path.join(stateDir, 'active_turn_checkpoints.json');
+  const scopeRef = { platform: 'weixin', externalScopeId: 'wx-recovery-e2e' };
+  const deliveryKey = 'openai-default:thread-recovery:turn-recovery:final';
+  const outbox = new WeixinDeliveryOutboxStore(stateDir);
+
+  const checkpointsA = new FileJsonActiveTurnCheckpointRepository(checkpointPath);
+  const activeTurnsA = new ActiveTurnRegistry({
+    checkpoints: checkpointsA,
+    createId: () => 'checkpoint-recovery-e2e',
+  });
+  activeTurnsA.beginScopeTurn(scopeRef, {
+    bridgeSessionId: 'session-recovery',
+    providerProfileId: 'openai-default',
+    threadId: 'thread-recovery',
+    turnId: 'turn-recovery',
+  }, {
+    requestFingerprint: 'sha256:recovery-e2e',
+    requestSummary: 'recover this turn',
+  });
+  activeTurnsA.updateScopeTurn(scopeRef, { recoveryPhase: 'running' });
+
+  const provider = {
+    kind: 'recovery-e2e-provider',
+    readCalls: 0,
+    startCalls: 0,
+    async readThread() {
+      this.readCalls += 1;
+      return {
+        threadId: 'thread-recovery',
+        cwd: stateDir,
+        title: 'Recovered turn',
+        turns: [{
+          id: 'turn-recovery',
+          status: 'completed',
+          error: null,
+          items: [{
+            type: 'agentMessage',
+            role: 'assistant',
+            phase: 'final_answer',
+            text: 'recovered final answer',
+          }],
+        }],
+      };
+    },
+    async startTurn() {
+      this.startCalls += 1;
+      throw new Error('recovery must not replay the provider turn');
+    },
+  };
+
+  const createRecoveryRuntime = (
+    sendText: RuntimeHarnessOptions['sendText'],
+  ) => {
+    const checkpoints = new FileJsonActiveTurnCheckpointRepository(checkpointPath);
+    const activeTurns = new ActiveTurnRegistry({ checkpoints });
+    const providerProfiles = new InMemoryProviderProfileRepository();
+    providerProfiles.save({
+      id: 'openai-default',
+      providerKind: provider.kind,
+      displayName: 'Recovery E2E Provider',
+      config: {},
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const providerRegistry = new PluginRegistry();
+    providerRegistry.registerProvider(provider);
+    const activeTurnRecovery = new ActiveTurnRecoveryService({
+      checkpoints,
+      activeTurns,
+      providerProfiles,
+      providerRegistry,
+    });
+    activeTurnRecovery.restoreLocks();
+    const runtime = makeRuntime({
+      pollEvents: [],
+      deliveryOutboxStore: outbox,
+      activeTurns,
+      activeTurnRecovery,
+      sendText,
+      coordinator: {
+        async handleInboundEvent() {
+          return completeResponse('unused');
+        },
+      },
+    });
+    return { runtime, checkpoints, activeTurns };
+  };
+
+  let failedDeliveryAttempts = 0;
+  const runtimeB = createRecoveryRuntime(async ({ content }) => {
+    failedDeliveryAttempts += 1;
+    return {
+      success: false,
+      deliveredCount: 0,
+      deliveredText: '',
+      failedIndex: 0,
+      failedText: content,
+      error: 'temporary delivery failure',
+      errorCode: null,
+    };
+  });
+  assert.equal(runtimeB.activeTurns.resolveScopeTurn(scopeRef)?.recoveryPhase, 'running');
+  await runtimeB.runtime.startInBackground();
+  await waitForCondition(() => (
+    outbox.read().length === 1
+    && runtimeB.checkpoints.getByScope(scopeRef.platform, scopeRef.externalScopeId)?.outboxEntryId === deliveryKey
+  ));
+  await runtimeB.runtime.stop();
+
+  assert.ok(failedDeliveryAttempts > 0);
+  assert.equal(outbox.read().length, 1);
+  assert.equal(outbox.read()[0]?.id, deliveryKey);
+  assert.equal(runtimeB.checkpoints.list().length, 1);
+
+  const deliveredAfterRestart: string[] = [];
+  const runtimeC = createRecoveryRuntime(async ({ content }) => {
+    deliveredAfterRestart.push(content);
+    return {
+      success: true,
+      deliveredCount: 1,
+      deliveredText: content,
+      failedIndex: null,
+      failedText: '',
+      error: '',
+      errorCode: null,
+    };
+  });
+  await runtimeC.runtime.startInBackground();
+  await runtimeC.runtime.flushDeliveryRetryQueue({ force: true });
+  await waitForCondition(() => (
+    outbox.read().length === 0 && runtimeC.checkpoints.list().length === 0
+  ));
+  await runtimeC.runtime.stop();
+
+  assert.deepEqual(deliveredAfterRestart, ['recovered final answer']);
+  assert.equal(provider.readCalls, 1);
+  assert.equal(provider.startCalls, 0);
+  assert.equal(runtimeC.activeTurns.resolveScopeTurn(scopeRef), null);
+});
 
 function completeResponse(text: string) {
   return {
@@ -171,6 +594,20 @@ function completeResponse(text: string) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForCondition(
+  predicate: () => unknown,
+  { timeoutMs = 1000, intervalMs = 10 } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+    await sleep(intervalMs);
+  }
+  throw new Error('Timed out waiting for condition');
 }
 
 test('WeixinBridgeRuntime forwards poll events into the bridge coordinator and sends the response', async () => {

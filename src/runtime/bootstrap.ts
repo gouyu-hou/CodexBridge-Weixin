@@ -4,6 +4,7 @@ import {
   type MissionRepository,
 } from '../../packages/mission-control/src/index.js';
 import { ActiveTurnRegistry } from '../core/active_turn_registry.js';
+import { ActiveTurnRecoveryService } from '../core/active_turn_recovery_service.js';
 import { AgentJobService } from '../core/agent_job_service.js';
 import { AssistantRecordService } from '../core/assistant_record_service.js';
 import { AutomationJobService } from '../core/automation_job_service.js';
@@ -14,6 +15,7 @@ import { ProviderUsageService } from '../core/provider_usage_service.js';
 import { WeiboHotSearchService } from '../services/weibo_hot_search.js';
 import { SessionRouter } from '../core/session_router.js';
 import { InMemoryAgentJobRepository } from '../store/in_memory/in_memory_agent_job_repository.js';
+import { InMemoryActiveTurnCheckpointRepository } from '../store/in_memory/in_memory_active_turn_checkpoint_repository.js';
 import { InMemoryAssistantRecordRepository } from '../store/in_memory/in_memory_assistant_record_repository.js';
 import { InMemoryAutomationJobRepository } from '../store/in_memory/in_memory_automation_job_repository.js';
 import { InMemoryBridgeSessionRepository } from '../store/in_memory/in_memory_bridge_session_repository.js';
@@ -29,6 +31,7 @@ import type { CodexNativeApiSideTaskRouter } from '../providers/codex/native_api
 import type { ProviderProfile } from '../types/provider.js';
 
 interface RuntimeRepositories {
+  activeTurnCheckpoints?: any;
   providerProfiles?: any;
   bridgeSessions?: any;
   platformBindings?: any;
@@ -87,6 +90,7 @@ export function createCodexBridgeRuntime({
   }
 
   const providerProfilesRepository = repositories.providerProfiles ?? new InMemoryProviderProfileRepository();
+  const activeTurnCheckpointsRepository = repositories.activeTurnCheckpoints ?? new InMemoryActiveTurnCheckpointRepository();
   const bridgeSessionsRepository = repositories.bridgeSessions ?? new InMemoryBridgeSessionRepository();
   const platformBindingsRepository = repositories.platformBindings ?? new InMemoryPlatformBindingRepository();
   const pluginAliasesRepository = repositories.pluginAliases ?? new InMemoryPluginAliasRepository();
@@ -140,7 +144,19 @@ export function createCodexBridgeRuntime({
     attachmentRoot: assistantAttachmentRoot
       ?? path.join(defaultCwd ?? process.cwd(), '.codexbridge', 'assistant', 'attachments'),
   });
-  const activeTurns = new ActiveTurnRegistry({ locale });
+  const activeTurns = new ActiveTurnRegistry({
+    locale,
+    checkpoints: activeTurnCheckpointsRepository,
+  });
+  const activeTurnRecovery = new ActiveTurnRecoveryService({
+    checkpoints: activeTurnCheckpointsRepository,
+    activeTurns,
+    providerProfiles: providerProfilesRepository,
+    providerRegistry: registry,
+    bridgeSessions: bridgeSessionsRepository,
+    platformBindings: platformBindingsRepository,
+  });
+  activeTurnRecovery.restoreLocks();
   const providerModelCatalog = new ProviderModelCatalogService({
     providerProfiles: providerProfilesRepository,
     providerRegistry: registry,
@@ -183,6 +199,7 @@ export function createCodexBridgeRuntime({
       locale,
     },
     repositories: {
+      activeTurnCheckpoints: activeTurnCheckpointsRepository,
       providerProfiles: providerProfilesRepository,
       bridgeSessions: bridgeSessionsRepository,
       platformBindings: platformBindingsRepository,
@@ -196,6 +213,7 @@ export function createCodexBridgeRuntime({
     },
     services: {
       activeTurns,
+      activeTurnRecovery,
       providerModelCatalog,
       providerUsage,
       sessionRouter,

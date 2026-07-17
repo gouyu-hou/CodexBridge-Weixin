@@ -53,17 +53,26 @@ function normalizeEntries(value: unknown, now: number): WeixinPendingTextDeliver
   if (!Array.isArray(value)) {
     return [];
   }
-  const byDelivery = new Map<string, { entry: WeixinPendingTextDelivery; order: number }>();
+  const deduplicated: Array<{ entry: WeixinPendingTextDelivery; order: number }> = [];
   for (const [order, candidate] of value.entries()) {
     const entry = normalizeEntry(candidate, now);
     if (!entry) {
       continue;
     }
-    const key = JSON.stringify([entry.externalScopeId, entry.content, entry.source]);
-    byDelivery.set(key, { entry, order });
+    const duplicateIndex = deduplicated.findIndex(({ entry: current }) => (
+      current.id === entry.id
+      || (
+        current.externalScopeId === entry.externalScopeId
+        && current.content === entry.content
+        && current.source === entry.source
+      )
+    ));
+    if (duplicateIndex >= 0) {
+      deduplicated.splice(duplicateIndex, 1);
+    }
+    deduplicated.push({ entry, order });
   }
 
-  const deduplicated = [...byDelivery.values()];
   if (deduplicated.length <= MAX_ENTRIES) {
     return deduplicated
       .sort((left, right) => left.order - right.order)

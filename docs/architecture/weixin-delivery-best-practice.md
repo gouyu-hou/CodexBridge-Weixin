@@ -136,6 +136,22 @@ Hermes 不能直接照抄的点：
 - 不中断整个 bridge 进程
 - 允许后续消息继续处理
 
+### 10. Long-running turns recover from durable checkpoints
+
+长任务在 Provider 调用前写入持久化检查点，并把当前微信 scope 作为独占锁保存。进程重启后，runtime 在接收新消息前恢复这些锁，再通过 Provider 的线程读取接口对账：
+
+- Provider 状态是恢复判断的唯一权威来源。
+- 自动恢复只读取已有 thread/turn，绝不调用 `startTurn` 或 `resumeThread` 重放请求。
+- 重启前尚未处理的审批全部失效，并向用户发送有限、不含敏感上下文的通知。
+- Provider 状态缺失、冲突或无法唯一绑定时进入 `uncertain`，释放本地锁并保留终态证据。
+- Provider 已完成时，最终文本使用稳定 delivery key 进入微信投递；失败 continuation 绑定到持久化 outbox，后续重启只重试该 outbox 条目。
+- 活跃恢复窗口为 24 小时；`interrupted`、`uncertain`、`approval_expired` 等终态再保留 24 小时后清理。
+- 管理端只暴露按 phase 聚合的数量、最老年龄、最近对账时间和有限错误类别，不暴露 scope、prompt、输出或凭据。
+
+本地检查点和稳定 outbox ID 可以避免进程内及重启后的重复入队，但微信远端发送仍是明确的 at-least-once 语义：如果远端已经成功、进程却在本地删除 outbox 前崩溃，下一次启动可能重复发送一次。微信接口没有可用于提交确认的幂等键，因此这里不能承诺 exactly-once。
+
+自动对账失败后不会隐式重放用户请求。用户可以查看 `/status`，再显式发送 `/retry` 或新请求进行人工恢复；其中 `/retry` 是用户主动选择的重新执行，不属于自动恢复路径。
+
 ## Implementation Order
 
 1. 先替换 Weixin 文本分块逻辑，借鉴 Hermes 的结构感知切块。
@@ -162,3 +178,5 @@ Hermes 不能直接照抄的点：
 4. preview 过程中收到 final 时，final 会按时序接管，并按 2048 字节上限发送。
 5. 单轮发送失败不会导致微信 bridge 进程退出。
 6. 运行时日志能明确看出：成功前缀、失败 chunk、补发 continuation。
+7. 进程重启会恢复长任务 scope 锁，并以 Provider 状态完成对账，不会自动重放请求。
+8. 恢复后的 final 投递失败会进入稳定 outbox，并可在再次重启后完成清理。

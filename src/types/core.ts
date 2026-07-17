@@ -9,6 +9,40 @@ export interface PlatformScopeRef {
   externalScopeId: string;
 }
 
+export type ActiveTurnRecoveryPhase =
+  | 'starting'
+  | 'running'
+  | 'reconciling'
+  | 'approval_expired'
+  | 'completed_pending_delivery'
+  | 'interrupted'
+  | 'uncertain';
+
+export interface ActiveTurnCheckpoint {
+  version: 1;
+  id: string;
+  platform: string;
+  externalScopeId: string;
+  bridgeSessionId: string | null;
+  providerProfileId: string | null;
+  threadId: string | null;
+  turnId: string | null;
+  requestFingerprint: string;
+  requestSummary: string;
+  phase: ActiveTurnRecoveryPhase;
+  previousPhase: ActiveTurnRecoveryPhase | null;
+  approvalPending: boolean;
+  finalDeliveryKey: string | null;
+  outboxEntryId: string | null;
+  reconciliationAttemptCount: number;
+  lastErrorCategory: string | null;
+  createdAt: number;
+  updatedAt: number;
+  lastReconciledAt: number | null;
+  noticeDeliveredAt: number | null;
+  expiresAt: number;
+}
+
 export interface BridgeSession {
   id: string;
   providerProfileId: string;

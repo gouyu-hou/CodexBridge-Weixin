@@ -2,10 +2,17 @@ const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const {
+  LIGHTWEIGHT_MANIFEST_NAME,
+  createSignedLightweightManifest,
+} = require('./lightweight-update-security.cjs');
 
 const rootDir = path.resolve(__dirname, '..', '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 const version = String(packageJson.version || '0.0.0');
+const baseAppVersion = String(
+  process.env.CODEXBRIDGE_LIGHTWEIGHT_BASE_APP_VERSION || version,
+).trim();
 const outputRoot = path.join(rootDir, 'release', 'lightweight');
 const packageName = `CodexBridge-Lightweight-${version}`;
 const packageDir = path.join(outputRoot, packageName);
@@ -42,6 +49,26 @@ main().catch((error) => {
 });
 
 async function main() {
+  const signingPrivateKeyFileValue = String(
+    process.env.CODEXBRIDGE_LIGHTWEIGHT_SIGNING_PRIVATE_KEY_FILE || '',
+  ).trim();
+  if (!signingPrivateKeyFileValue) {
+    throw new Error(
+      'CODEXBRIDGE_LIGHTWEIGHT_SIGNING_PRIVATE_KEY_FILE is required to build a lightweight update.',
+    );
+  }
+  let signingPrivateKeyFile;
+  let signingPrivateKey;
+  try {
+    signingPrivateKeyFile = await fsp.realpath(path.resolve(signingPrivateKeyFileValue));
+    if (isPathInside(rootDir, signingPrivateKeyFile)) {
+      throw new Error('signing key is inside the repository');
+    }
+    signingPrivateKey = await fsp.readFile(signingPrivateKeyFile, 'utf8');
+  } catch {
+    throw new Error('Unable to read the configured lightweight update signing key.');
+  }
+
   await fsp.rm(packageDir, { recursive: true, force: true });
   await fsp.rm(zipPath, { force: true });
   await fsp.mkdir(packageDir, { recursive: true });
@@ -54,18 +81,21 @@ async function main() {
     await copyEntry(source, path.join(packageDir, relativePath));
   }
 
-  const manifest = {
-    kind: 'codexbridge-lightweight-update',
+  const manifestPath = path.join(packageDir, LIGHTWEIGHT_MANIFEST_NAME);
+  await fsp.rm(manifestPath, { force: true });
+  const manifest = await createSignedLightweightManifest({
+    rootDir: packageDir,
+    privateKey: signingPrivateKey,
     version,
     builtAt: new Date().toISOString(),
-    baseAppVersion: version,
+    baseAppVersion,
     entry: 'src/cli.ts',
     requires: {
       node: packageJson.engines?.node || '>=24',
     },
-  };
+  });
   await fsp.writeFile(
-    path.join(packageDir, 'codexbridge-lightweight.json'),
+    manifestPath,
     `${JSON.stringify(manifest, null, 2)}\n`,
     'utf8',
   );
@@ -78,7 +108,10 @@ async function main() {
 }
 
 async function copyEntry(source, target) {
-  const stat = await fsp.stat(source);
+  const stat = await fsp.lstat(source);
+  if (stat.isSymbolicLink()) {
+    throw new Error('Lightweight package source must not contain symbolic links.');
+  }
   if (stat.isDirectory()) {
     await fsp.mkdir(target, { recursive: true });
     const entries = await fsp.readdir(source, { withFileTypes: true });
@@ -98,6 +131,12 @@ async function copyEntry(source, target) {
   }
 }
 
+function isPathInside(parentPath, candidatePath) {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
+  return relative === ''
+    || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
 function shouldIgnore(relativePath) {
   const parts = relativePath.split(path.sep).filter(Boolean);
   if (parts.some((part) => ignoredSegments.has(part))) {
@@ -111,9 +150,17 @@ async function createZip(sourceDir, targetZip) {
   if (process.platform === 'win32') {
     const command = [
       '$ErrorActionPreference = "Stop"',
-      `$source = Join-Path ${quotePowerShell(sourceDir)} '*'`,
-      `Compress-Archive -Path $source -DestinationPath ${quotePowerShell(targetZip)} -Force`,
-    ].join('; ');
+      'Add-Type -AssemblyName System.IO.Compression',
+      'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+      `$sourceRoot = [System.IO.Path]::GetFullPath(${quotePowerShell(sourceDir)})`,
+      `$archive = [System.IO.Compression.ZipFile]::Open(${quotePowerShell(targetZip)}, [System.IO.Compression.ZipArchiveMode]::Create)`,
+      'try {',
+      '  Get-ChildItem -LiteralPath $sourceRoot -Recurse -File -Force | ForEach-Object {',
+      '    $relative = $_.FullName.Substring($sourceRoot.Length).TrimStart([char]92, [char]47).Replace([char]92, [char]47)',
+      '    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $relative, [System.IO.Compression.CompressionLevel]::Optimal) | Out-Null',
+      '  }',
+      '} finally { $archive.Dispose() }',
+    ].join('\n');
     const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
       cwd: rootDir,
       encoding: 'utf8',

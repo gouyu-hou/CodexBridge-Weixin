@@ -20,6 +20,8 @@ import {
   transitionMission,
 } from '../../packages/mission-control/src/index.js';
 import { createCodexBridgeRuntime } from '../../src/runtime/bootstrap.js';
+import { InMemoryActiveTurnCheckpointRepository } from '../../src/store/in_memory/in_memory_active_turn_checkpoint_repository.js';
+import type { ActiveTurnCheckpoint } from '../../src/types/core.js';
 
 function normalizeCommandSkillInput(value: unknown) {
   return String(value ?? '').replace(/\\/g, '/');
@@ -731,6 +733,7 @@ function makeRuntime({
   codexGoalManager = null,
   codexNativeSideTaskRouter = null,
   weiboHotSearch = null,
+  repositories = {},
 } = {}) {
   const openai = new FakeProviderPlugin('openai-native', { replyPrefix: 'openai' });
   const compatible = new FakeProviderPlugin('openai-compatible', { replyPrefix: 'compatible' });
@@ -751,8 +754,60 @@ function makeRuntime({
     codexGoalManager,
     codexNativeSideTaskRouter,
     weiboHotSearch,
+    repositories,
   });
   return { runtime, openai, compatible, minimax: compatible };
+}
+
+test('conversation turns persist a delivery checkpoint before provider start', async () => {
+  const checkpoints = new InMemoryActiveTurnCheckpointRepository();
+  const { runtime, openai } = makeRuntime({
+    repositories: { activeTurnCheckpoints: checkpoints },
+  });
+  const originalStartTurn = openai.startTurn.bind(openai);
+  let checkpointSeenBeforeStart: ActiveTurnCheckpoint | null = null;
+  openai.startTurn = async (params) => {
+    checkpointSeenBeforeStart = checkpoints.getByScope('weixin', 'wx-durable-turn');
+    return originalStartTurn(params);
+  };
+
+  const response = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-durable-turn',
+    text: 'persist me',
+  });
+
+  assert.equal(checkpointSeenBeforeStart?.phase, 'starting');
+  assert.equal(checkpointSeenBeforeStart?.requestFingerprint.length, 64);
+  assert.equal(checkpointSeenBeforeStart?.requestSummary, 'persist me');
+  const handoff = response.meta?.activeTurnDelivery;
+  assert.equal(handoff?.checkpointId, checkpointSeenBeforeStart?.id);
+  assert.match(handoff?.deliveryKey ?? '', /openai-default:.*:final/u);
+  assert.equal(checkpoints.getByScope('weixin', 'wx-durable-turn')?.phase, 'completed_pending_delivery');
+  assert.equal(runtime.services.activeTurns.resolveScopeTurn({
+    platform: 'weixin',
+    externalScopeId: 'wx-durable-turn',
+  }), null);
+});
+
+test('conversation turns do not call the provider when the initial checkpoint cannot be written', async () => {
+  const checkpoints = new ThrowingActiveTurnCheckpointRepository();
+  const { runtime, openai } = makeRuntime({
+    repositories: { activeTurnCheckpoints: checkpoints },
+  });
+
+  await assert.rejects(() => runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-checkpoint-failure',
+    text: 'must not start',
+  }), /checkpoint unavailable/u);
+  assert.equal(openai.startTurnCalls.length, 0);
+});
+
+class ThrowingActiveTurnCheckpointRepository extends InMemoryActiveTurnCheckpointRepository {
+  save(_checkpoint: ActiveTurnCheckpoint): ActiveTurnCheckpoint {
+    throw new Error('checkpoint unavailable');
+  }
 }
 
 function makeFakeCodexExperimentalFeaturesManager(initialFeatures = []) {
@@ -2335,6 +2390,49 @@ test('stale active turns are reconciled before starting a new conversation turn'
 
   assert.match(result.messages[0]?.text ?? '', /openai: hello again/);
   assert.equal(runtime.services.activeTurns.resolveScopeTurn(scopeRef), null);
+});
+
+test('durable stale terminal turns retain their checkpoint until recovery delivery settles', async () => {
+  const checkpoints = new InMemoryActiveTurnCheckpointRepository();
+  const { runtime, openai } = makeRuntime({
+    repositories: { activeTurnCheckpoints: checkpoints },
+  });
+  const initial = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-user-durable-stale-terminal',
+    text: 'initial',
+  });
+  const scopeRef = {
+    platform: 'weixin',
+    externalScopeId: 'wx-user-durable-stale-terminal',
+  };
+  checkpoints.deleteByScope(scopeRef.platform, scopeRef.externalScopeId);
+  const staleTurnId = `${initial.session.codexThreadId}-turn-durable-stale`;
+  runtime.services.activeTurns.beginScopeTurn(scopeRef, {
+    bridgeSessionId: initial.session.bridgeSessionId,
+    providerProfileId: initial.session.providerProfileId,
+    threadId: initial.session.codexThreadId,
+    turnId: staleTurnId,
+  });
+  const thread = openai.threads.get(initial.session.codexThreadId);
+  assert.ok(thread);
+  thread.turns = [{
+    id: staleTurnId,
+    status: 'completed',
+    error: null,
+    items: [{ type: 'agentMessage', role: 'assistant', phase: 'final_answer', text: 'stale final' }],
+  }];
+  const startTurnCount = openai.startTurnCalls.length;
+
+  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+    ...scopeRef,
+    text: 'must wait for recovery',
+  });
+
+  assert.equal(openai.startTurnCalls.length, startTurnCount);
+  assert.equal(runtime.services.activeTurns.resolveScopeTurn(scopeRef)?.recoveryPhase, 'completed_pending_delivery');
+  assert.equal(checkpoints.getByScope(scopeRef.platform, scopeRef.externalScopeId)?.phase, 'completed_pending_delivery');
+  assert.match(result.messages[0]?.text ?? '', /进行中|active/u);
 });
 
 test('completed provider results release the local active turn even when thread status remains running', async () => {
@@ -6022,6 +6120,10 @@ test('/stop clears the local active turn when Codex interrupt RPC times out', as
 
   assert.match(stop.messages.map((message) => message.text ?? '').join('\n'), /turn\/interrupt/);
   assert.equal(runtime.services.activeTurns.resolveScopeTurn(scopeRef), null);
+  assert.equal(runtime.repositories.activeTurnCheckpoints.getByScope(
+    scopeRef.platform,
+    scopeRef.externalScopeId,
+  )?.phase, 'interrupted');
 
   const next = await runtime.services.bridgeCoordinator.handleInboundEvent({
     ...scopeRef,

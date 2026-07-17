@@ -8,6 +8,20 @@ const https = require('node:https');
 const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
+const {
+  LIGHTWEIGHT_MANIFEST_NAME,
+  LIGHTWEIGHT_MAX_ARCHIVE_ENTRIES,
+  LIGHTWEIGHT_MAX_DOWNLOAD_BYTES,
+  LIGHTWEIGHT_MAX_FILE_BYTES,
+  LIGHTWEIGHT_MAX_PACKAGE_BYTES,
+  LIGHTWEIGHT_MAX_REDIRECTS,
+  assertLightweightManifestCompatibility,
+  assertSafeArchiveEntries,
+  assertTrustedLightweightUpdateUrl,
+  parseTrustedLightweightUpdatePublicKeys,
+  verifyLightweightPackage,
+} = require('./lightweight-update-security.cjs');
+const { LightweightUpdateHistoryStore } = require('./lightweight-update-history.cjs');
 
 let autoUpdater = null;
 try {
@@ -27,7 +41,9 @@ const lightweightCurrentDir = path.join(lightweightUpdatesDir, 'current');
 const lightweightBackupDir = path.join(lightweightUpdatesDir, 'backup');
 const lightweightFailedDir = path.join(lightweightUpdatesDir, 'failed');
 const lightweightDownloadsDir = path.join(lightweightUpdatesDir, 'downloads');
-const LIGHTWEIGHT_MANIFEST_NAME = 'codexbridge-lightweight.json';
+const lightweightHistory = new LightweightUpdateHistoryStore(
+  path.join(lightweightUpdatesDir, 'history.json'),
+);
 const serviceLogsDir = path.join(stateDir, 'logs');
 const serviceStdoutLog = path.join(serviceLogsDir, 'weixin-bridge.out.log');
 const serviceStderrLog = path.join(serviceLogsDir, 'weixin-bridge.err.log');
@@ -36,6 +52,7 @@ const forceSetup = Boolean(args.forceSetup);
 const stopOnClose = args.stopOnClose !== '0' && args.noStopOnClose !== true;
 const DEFAULT_ADMIN_PORT = 43183;
 const DEFAULT_NATIVE_API_PORT = 43182;
+const LIGHTWEIGHT_TRUST_FALLBACK_MESSAGE = '轻量更新未配置可信公钥，请使用完整安装包更新。';
 const FIRST_RUN_PROVIDER_PRESETS = {
   default: {
     label: 'Z Token - Codex',
@@ -218,6 +235,7 @@ let updateHandlersInstalled = false;
 let autoUpdateCheckStarted = false;
 let updatePromptedVersion = '';
 let lightweightUpdateBusy = false;
+let activeRuntimeRootDir = ROOT_DIR;
 let serviceRecoveryTimer = null;
 let serviceFlowRunning = false;
 let serviceFlowQueued = false;
@@ -258,6 +276,7 @@ const lightweightUpdateState = {
   usingLightweight: false,
   canRollback: false,
   error: null,
+  historyError: null,
   lastActionAt: null,
 };
 
@@ -300,6 +319,11 @@ if (!singleInstanceLock) {
 
 async function run() {
   await fsp.mkdir(serviceLogsDir, { recursive: true });
+  try {
+    await lightweightHistory.load();
+  } catch (error) {
+    lightweightUpdateState.historyError = error?.message || String(error);
+  }
   installSetupIpcHandlers();
   installUpdateIpcHandlers();
   configureAutoUpdater();
@@ -344,6 +368,7 @@ async function startBridgeFlowInternal(serviceEnv) {
     await loadStatusPage('Starting CodexBridge', 'Checking the local service...');
   }
 
+  await ensureActiveLightweightRootVerified();
   const state = await startOrAttachService(serviceEnv);
   if (!state?.bridge?.running) {
     await loadStatusPage('Starting WeChat bridge', 'Preparing the bridge runtime...');
@@ -545,8 +570,14 @@ function installUpdateIpcHandlers() {
     return { canceled: false, path: result.filePaths[0] };
   });
   ipcMain.handle('codexbridge:lightweight-update:rollback', async () => {
+    await stopService('manual-lightweight-rollback').catch(() => {});
     await rollbackLightweightCurrent(`manual-rollback-${Date.now()}`);
+    clearServiceRecoveryTimer();
     patchLightweightUpdateState({ error: null });
+    const serviceEnv = await buildServiceEnv();
+    await assignAvailableServicePorts(serviceEnv);
+    adminUrl = args.adminUrl || resolveAdminUrl(serviceEnv);
+    await startBridgeFlow(serviceEnv);
     return getLightweightUpdateStatus();
   });
 }
@@ -790,6 +821,8 @@ function getLightweightUpdateStatus() {
     canRollback: fs.existsSync(lightweightCurrentDir),
     canCheck: !lightweightUpdateBusy && !lightweightUpdateState.checking && !lightweightUpdateState.downloading,
     canDownloadInstall: !lightweightUpdateBusy && lightweightUpdateState.available && Boolean(lightweightUpdateState.downloadUrl),
+    historyCount: lightweightHistory.list().length,
+    history: lightweightHistory.list().slice(-20),
   };
   Object.assign(lightweightUpdateState, status);
   return status;
@@ -801,16 +834,111 @@ function patchLightweightUpdateState(patch) {
   });
 }
 
-async function installLightweightUpdateFromPath(sourcePath) {
+async function recordLightweightHistory(record) {
+  try {
+    const entry = await lightweightHistory.append(record);
+    lightweightUpdateState.historyError = null;
+    return entry;
+  } catch (error) {
+    lightweightUpdateState.historyError = error?.message || String(error);
+    return null;
+  }
+}
+
+function resolveLightweightUpdatePublicKey() {
+  const configuredKeys = String(
+    process.env.CODEXBRIDGE_LIGHTWEIGHT_UPDATE_PUBLIC_KEYS || '',
+  ).trim();
+  if (configuredKeys) {
+    return parseConfiguredLightweightUpdateKeys(configuredKeys);
+  }
+
+  const inlineKey = String(process.env.CODEXBRIDGE_LIGHTWEIGHT_UPDATE_PUBLIC_KEY || '').trim();
+  if (inlineKey) {
+    const normalizedKey = inlineKey.includes('\\n') && !inlineKey.includes('\n')
+      ? inlineKey.replace(/\\n/gu, '\n')
+      : inlineKey;
+    return parseConfiguredLightweightUpdateKeys(normalizedKey);
+  }
+
+  const configuredFile = String(
+    process.env.CODEXBRIDGE_LIGHTWEIGHT_UPDATE_PUBLIC_KEY_FILE || '',
+  ).trim();
+  if (configuredFile) {
+    let configuredKey;
+    try {
+      configuredKey = fs.readFileSync(path.resolve(configuredFile), 'utf8');
+    } catch {
+      throw new Error('无法读取已配置的轻量更新公钥文件。');
+    }
+    return parseConfiguredLightweightUpdateKeys(configuredKey);
+  }
+
+  const shippedKeyRingFile = path.join(
+    ROOT_DIR,
+    'assets', 'update', 'lightweight-public-keys.json',
+  );
+  if (fs.existsSync(shippedKeyRingFile)) {
+    let shippedKeyRing;
+    try {
+      shippedKeyRing = fs.readFileSync(shippedKeyRingFile, 'utf8');
+    } catch {
+      throw new Error('无法读取应用内置的轻量更新公钥环。');
+    }
+    return parseConfiguredLightweightUpdateKeys(shippedKeyRing);
+  }
+
+  const shippedKeyFile = path.join(
+    ROOT_DIR,
+    'assets', 'update', 'lightweight-public-key.pem',
+  );
+  if (!fs.existsSync(shippedKeyFile)) {
+    return null;
+  }
+  let shippedKey;
+  try {
+    shippedKey = fs.readFileSync(shippedKeyFile, 'utf8');
+  } catch {
+    throw new Error('无法读取应用内置的轻量更新公钥。');
+  }
+  return parseConfiguredLightweightUpdateKeys(shippedKey);
+}
+
+function parseConfiguredLightweightUpdateKeys(value) {
+  const raw = String(value || '').trim();
+  const normalized = raw.includes('\\n') && !raw.includes('\n')
+    ? raw.replace(/\\n/gu, '\n')
+    : raw;
+  if (!normalized) {
+    throw new Error('Trusted lightweight update key ring is empty.');
+  }
+  if (normalized.startsWith('{') || normalized.startsWith('[')) {
+    try {
+      return parseTrustedLightweightUpdatePublicKeys(JSON.parse(normalized));
+    } catch {
+      throw new Error('Trusted lightweight update key ring is invalid.');
+    }
+  }
+  return parseTrustedLightweightUpdatePublicKeys(normalized);
+}
+
+async function installLightweightUpdateFromPath(sourcePath, options = {}) {
   if (!sourcePath) {
     throw new Error('请选择轻量更新包目录或 zip 文件。');
   }
   if (lightweightUpdateBusy) {
     throw new Error('轻量更新正在处理中，请稍后再试。');
   }
+  const publicKey = options.publicKey || resolveLightweightUpdatePublicKey();
+  if (!publicKey) {
+    throw new Error(LIGHTWEIGHT_TRUST_FALLBACK_MESSAGE);
+  }
   lightweightUpdateBusy = true;
   patchLightweightUpdateState({ busy: true, error: null });
   const stagingDir = path.join(lightweightDownloadsDir, `staging-${Date.now()}`);
+  let stage = 'prepare';
+  let manifest = null;
+  const previousVersion = getLightweightUpdateStatus().currentVersion || app.getVersion();
   try {
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => {});
     await fsp.mkdir(stagingDir, { recursive: true });
@@ -823,8 +951,38 @@ async function installLightweightUpdateFromPath(sourcePath) {
       throw new Error('轻量更新包只支持目录或 .zip 文件。');
     }
     const packageRoot = findLightweightPackageRoot(stagingDir);
-    const manifest = validateLightweightPackageRoot(packageRoot);
-    await activateLightweightPackage(packageRoot, manifest);
+    stage = 'verify';
+    manifest = await verifyLightweightPackage(packageRoot, publicKey);
+    await recordLightweightHistory({
+      action: 'verify',
+      result: 'success',
+      stage,
+      source: options.source || 'manual',
+      version: manifest.version,
+      fromVersion: previousVersion,
+      keyId: manifest.signature.keyId,
+    });
+    const expectedVersion = normalizeString(options.expectedVersion) || undefined;
+    stage = 'compatibility';
+    assertLightweightManifestCompatibility(manifest, {
+      builtInVersion: app.getVersion(),
+      currentVersion: getLightweightUpdateStatus().currentVersion || app.getVersion(),
+      expectedVersion,
+      nodeVersion: process.versions.node,
+      requireNewer: Boolean(expectedVersion),
+    });
+    validateLightweightRuntimeFiles(packageRoot);
+    stage = 'activate';
+    await activateLightweightPackage(packageRoot, manifest, publicKey);
+    await recordLightweightHistory({
+      action: 'install',
+      result: 'success',
+      stage,
+      source: options.source || 'manual',
+      version: manifest.version,
+      fromVersion: previousVersion,
+      keyId: manifest.signature.keyId,
+    });
     patchLightweightUpdateState({
       currentVersion: manifest.version || null,
       currentRoot: lightweightCurrentDir,
@@ -833,6 +991,17 @@ async function installLightweightUpdateFromPath(sourcePath) {
       error: null,
     });
   } catch (error) {
+    await recordLightweightHistory({
+      action: 'failure',
+      result: 'failure',
+      stage,
+      source: options.source || 'manual',
+      version: manifest?.version || null,
+      fromVersion: previousVersion,
+      keyId: manifest?.signature?.keyId || null,
+      errorCode: error?.code || null,
+      errorMessage: error?.message || String(error),
+    });
     patchLightweightUpdateState({ error: error?.message || String(error) });
     throw error;
   } finally {
@@ -854,6 +1023,18 @@ async function checkLightweightUpdate() {
     progress: null,
   });
   try {
+    const publicKey = resolveLightweightUpdatePublicKey();
+    if (!publicKey) {
+      patchLightweightUpdateState({
+        supported: false,
+        checking: false,
+        available: false,
+        downloadUrl: null,
+        error: LIGHTWEIGHT_TRUST_FALLBACK_MESSAGE,
+      });
+      return;
+    }
+    patchLightweightUpdateState({ supported: true });
     const release = await fetchJson('https://api.github.com/repos/gouyu-hou/CodexBridge-Weixin/releases/latest');
     const assets = Array.isArray(release.assets) ? release.assets : [];
     const asset = assets.find((item) => {
@@ -870,14 +1051,20 @@ async function checkLightweightUpdate() {
       });
       return;
     }
-    const latestVersion = extractLightweightVersion(asset.name) || normalizeString(release.tag_name || release.name);
+    const downloadUrl = assertTrustedLightweightUpdateUrl(
+      normalizeString(asset.browser_download_url),
+    ).toString();
+    const latestVersion = extractLightweightVersion(asset.name);
+    if (!latestVersion) {
+      throw new Error('轻量更新附件版本号无效。');
+    }
     const currentVersion = getLightweightUpdateStatus().currentVersion || app.getVersion();
     const available = isVersionNewer(latestVersion, currentVersion);
     patchLightweightUpdateState({
       checking: false,
       available,
       latestVersion,
-      downloadUrl: normalizeString(asset.browser_download_url),
+      downloadUrl,
       downloadPath: null,
       error: available ? null : '当前轻量代码已经是最新。',
     });
@@ -901,6 +1088,11 @@ async function downloadAndInstallLightweightUpdate() {
   if (!downloadUrl) {
     throw new Error('还没有可下载的轻量更新包，请先检查更新。');
   }
+  const trustedDownloadUrl = assertTrustedLightweightUpdateUrl(downloadUrl).toString();
+  const publicKey = resolveLightweightUpdatePublicKey();
+  if (!publicKey) {
+    throw new Error(LIGHTWEIGHT_TRUST_FALLBACK_MESSAGE);
+  }
   lightweightUpdateBusy = true;
   patchLightweightUpdateState({
     busy: true,
@@ -910,13 +1102,17 @@ async function downloadAndInstallLightweightUpdate() {
   });
   try {
     await fsp.mkdir(lightweightDownloadsDir, { recursive: true });
-    const fileName = sanitizeFileName(path.basename(new URL(downloadUrl).pathname) || `CodexBridge-Lightweight-${Date.now()}.zip`);
+    const fileName = sanitizeFileName(path.basename(new URL(trustedDownloadUrl).pathname) || `CodexBridge-Lightweight-${Date.now()}.zip`);
     const targetPath = path.join(lightweightDownloadsDir, fileName);
-    await downloadFile(downloadUrl, targetPath);
+    await downloadFile(trustedDownloadUrl, targetPath);
     patchLightweightUpdateState({ downloadPath: targetPath });
     lightweightUpdateBusy = false;
     patchLightweightUpdateState({ busy: false, downloading: false });
-    await installLightweightUpdateFromPath(targetPath);
+    await installLightweightUpdateFromPath(targetPath, {
+      publicKey,
+      expectedVersion: lightweightUpdateState.latestVersion,
+      source: 'remote',
+    });
     patchLightweightUpdateState({
       available: false,
       downloadPath: targetPath,
@@ -935,7 +1131,7 @@ async function downloadAndInstallLightweightUpdate() {
 }
 
 function extractLightweightVersion(name) {
-  const match = String(name || '').match(/^CodexBridge-Lightweight-(.+)\.zip$/iu);
+  const match = String(name || '').match(/^CodexBridge-Lightweight-(\d+\.\d+\.\d+)\.zip$/iu);
   return normalizeString(match?.[1]);
 }
 
@@ -971,6 +1167,7 @@ async function fetchJson(url) {
 
 async function downloadFile(url, targetPath) {
   const response = await requestBuffer(url, {
+    maxBytes: LIGHTWEIGHT_MAX_DOWNLOAD_BYTES,
     headers: {
       accept: 'application/octet-stream',
       'user-agent': 'CodexBridge-Weixin-Admin',
@@ -988,9 +1185,11 @@ function requestText(url, options = {}) {
 
 function requestBuffer(url, options = {}, redirectCount = 0) {
   return new Promise((resolve, reject) => {
-    const parsed = new URL(url);
-    const client = parsed.protocol === 'https:' ? https : http;
-    const request = client.request({
+    const parsed = assertTrustedLightweightUpdateUrl(url);
+    const maxBytes = Number.isSafeInteger(options.maxBytes) && options.maxBytes > 0
+      ? options.maxBytes
+      : LIGHTWEIGHT_MAX_DOWNLOAD_BYTES;
+    const request = https.request({
       protocol: parsed.protocol,
       hostname: parsed.hostname,
       port: parsed.port || undefined,
@@ -1003,11 +1202,13 @@ function requestBuffer(url, options = {}, redirectCount = 0) {
       const location = response.headers.location;
       if (status >= 300 && status < 400 && location) {
         response.resume();
-        if (redirectCount >= 5) {
+        if (redirectCount >= LIGHTWEIGHT_MAX_REDIRECTS) {
           reject(new Error('下载重定向次数过多。'));
           return;
         }
-        const nextUrl = new URL(location, url).toString();
+        const nextUrl = assertTrustedLightweightUpdateUrl(
+          new URL(location, parsed).toString(),
+        ).toString();
         requestBuffer(nextUrl, options, redirectCount + 1).then(resolve, reject);
         return;
       }
@@ -1019,9 +1220,19 @@ function requestBuffer(url, options = {}, redirectCount = 0) {
       const chunks = [];
       let transferred = 0;
       const total = Number(response.headers['content-length']) || null;
+      if (total !== null && total > maxBytes) {
+        const error = new Error('轻量更新下载超过 64 MiB 限制。');
+        response.destroy(error);
+        reject(error);
+        return;
+      }
       response.on('data', (chunk) => {
-        chunks.push(chunk);
         transferred += chunk.length;
+        if (transferred > maxBytes) {
+          response.destroy(new Error('轻量更新下载超过 64 MiB 限制。'));
+          return;
+        }
+        chunks.push(chunk);
         if (options.onProgress) {
           options.onProgress({
             transferred,
@@ -1031,6 +1242,7 @@ function requestBuffer(url, options = {}, redirectCount = 0) {
         }
       });
       response.on('end', () => resolve(Buffer.concat(chunks)));
+      response.on('error', reject);
     });
     request.on('timeout', () => {
       request.destroy(new Error('request timed out'));
@@ -1055,11 +1267,7 @@ function findLightweightPackageRoot(rootDir) {
   return rootDir;
 }
 
-function validateLightweightPackageRoot(rootDir) {
-  const manifest = readLightweightManifest(rootDir);
-  if (!manifest || manifest.kind !== 'codexbridge-lightweight-update') {
-    throw new Error(`轻量更新包缺少 ${LIGHTWEIGHT_MANIFEST_NAME}。`);
-  }
+function validateLightweightRuntimeFiles(rootDir) {
   if (!fs.existsSync(path.join(rootDir, 'src', 'cli.ts'))) {
     throw new Error('轻量更新包缺少 src/cli.ts。');
   }
@@ -1069,15 +1277,15 @@ function validateLightweightPackageRoot(rootDir) {
   if (!fs.existsSync(path.join(rootDir, 'package.json'))) {
     throw new Error('轻量更新包缺少 package.json。');
   }
-  return manifest;
 }
 
-async function activateLightweightPackage(packageRoot, manifest) {
+async function activateLightweightPackage(packageRoot, manifest, publicKey) {
   await fsp.mkdir(lightweightUpdatesDir, { recursive: true });
   const nextDir = path.join(lightweightUpdatesDir, `next-${Date.now()}`);
   await fsp.rm(nextDir, { recursive: true, force: true }).catch(() => {});
   await copyDirectory(packageRoot, nextDir);
-  validateLightweightPackageRoot(nextDir);
+  await verifyLightweightPackage(nextDir, publicKey);
+  validateLightweightRuntimeFiles(nextDir);
 
   const previousBackup = path.join(lightweightBackupDir, 'previous');
   await fsp.mkdir(lightweightBackupDir, { recursive: true });
@@ -1093,10 +1301,12 @@ async function activateLightweightPackage(packageRoot, manifest) {
         installedAt: new Date().toISOString(),
         version: manifest.version || null,
         baseVersion: app.getVersion(),
+        keyId: manifest.signature?.keyId || null,
       }, null, 2)}\n`,
       'utf8',
     );
     await linkLightweightDependencies(lightweightCurrentDir);
+    activeRuntimeRootDir = lightweightCurrentDir;
   } catch (error) {
     await fsp.rm(lightweightCurrentDir, { recursive: true, force: true }).catch(() => {});
     if (fs.existsSync(previousBackup)) {
@@ -1133,26 +1343,126 @@ async function copyDirectory(sourceDir, targetDir) {
 }
 
 async function extractZipArchive(zipPath, targetDir) {
+  const entries = inspectZipArchiveEntries(zipPath);
+  assertSafeArchiveEntries(entries);
+  if (process.platform !== 'win32') {
+    throw new Error('当前系统不支持安全解压轻量更新包，请改用已解压目录。');
+  }
+
+  const command = [
+    '$ErrorActionPreference = "Stop"',
+    'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+    `$archive = [System.IO.Compression.ZipFile]::OpenRead(${quotePowerShell(zipPath)})`,
+    `$targetRoot = [System.IO.Path]::GetFullPath(${quotePowerShell(targetDir)}).TrimEnd([char]92, [char]47)`,
+    '$targetPrefix = $targetRoot + [System.IO.Path]::DirectorySeparatorChar',
+    `$maxEntries = [int64]${LIGHTWEIGHT_MAX_ARCHIVE_ENTRIES}`,
+    `$maxFileBytes = [int64]${LIGHTWEIGHT_MAX_FILE_BYTES}`,
+    `$maxPackageBytes = [int64]${LIGHTWEIGHT_MAX_PACKAGE_BYTES}`,
+    '$buffer = New-Object byte[] 65536',
+    '$totalBytes = [int64]0',
+    'try {',
+    '  if ($archive.Entries.Count -gt $maxEntries) { throw "archive entry limit exceeded" }',
+    '  foreach ($entry in $archive.Entries) {',
+    '    $relative = $entry.FullName.Replace([char]47, [System.IO.Path]::DirectorySeparatorChar)',
+    '    $destination = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($targetRoot, $relative))',
+    '    if (-not $destination.StartsWith($targetPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "archive path escaped target" }',
+    '    if ($entry.FullName.EndsWith("/")) {',
+    '      [System.IO.Directory]::CreateDirectory($destination) | Out-Null',
+    '      continue',
+    '    }',
+    '    if ([int64]$entry.Length -gt $maxFileBytes) { throw "archive file limit exceeded" }',
+    '    [System.IO.Directory]::CreateDirectory([System.IO.Path]::GetDirectoryName($destination)) | Out-Null',
+    '    $input = $entry.Open()',
+    '    $output = New-Object System.IO.FileStream($destination, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)',
+    '    $fileBytes = [int64]0',
+    '    try {',
+    '      while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {',
+    '        $fileBytes += $read',
+    '        $totalBytes += $read',
+    '        if ($fileBytes -gt $maxFileBytes) { throw "archive file limit exceeded" }',
+    '        if ($totalBytes -gt $maxPackageBytes) { throw "archive package limit exceeded" }',
+    '        $output.Write($buffer, 0, $read)',
+    '      }',
+    '    } finally {',
+    '      $output.Dispose()',
+    '      $input.Dispose()',
+    '    }',
+    '    if ($fileBytes -ne [int64]$entry.Length) { throw "archive file size metadata mismatch" }',
+    '  }',
+    '} finally { $archive.Dispose() }',
+  ].join('\n');
+  const result = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
+    {
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 60_000,
+      windowsHide: true,
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error('安全解压轻量更新包失败。');
+  }
+}
+
+function inspectZipArchiveEntries(zipPath) {
   if (process.platform === 'win32') {
     const command = [
       '$ErrorActionPreference = "Stop"',
-      `Expand-Archive -LiteralPath ${quotePowerShell(zipPath)} -DestinationPath ${quotePowerShell(targetDir)} -Force`,
-    ].join('; ');
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
-      encoding: 'utf8',
-      windowsHide: true,
-    });
+      'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+      `$archive = [System.IO.Compression.ZipFile]::OpenRead(${quotePowerShell(zipPath)})`,
+      'try {',
+      `  if ($archive.Entries.Count -gt ${LIGHTWEIGHT_MAX_ARCHIVE_ENTRIES}) { throw "archive entry limit exceeded" }`,
+      '  $entries = @($archive.Entries | ForEach-Object {',
+      '    $unixMode = ($_.ExternalAttributes -shr 16) -band 0xF000',
+      '    [pscustomobject]@{',
+      '      path = $_.FullName',
+      '      size = [int64]$_.Length',
+      '      isDirectory = $_.FullName.EndsWith("/")',
+      '      isSymbolicLink = ($unixMode -eq 0xA000)',
+      '    }',
+      '  })',
+      '  ConvertTo-Json -InputObject $entries -Compress',
+      '} finally { $archive.Dispose() }',
+    ].join('\n');
+    const result = spawnSync(
+      'powershell.exe',
+      ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
+      { encoding: 'utf8', windowsHide: true },
+    );
     if (result.status !== 0) {
-      throw new Error(result.stderr || result.stdout || '解压轻量更新包失败。');
+      throw new Error('无法安全检查轻量更新压缩包。');
     }
-    return;
+    try {
+      const parsed = JSON.parse(String(result.stdout || '[]').replace(/^\uFEFF/u, '').trim() || '[]');
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      throw new Error('轻量更新压缩包目录无效。');
+    }
   }
-  const result = spawnSync('unzip', ['-q', zipPath, '-d', targetDir], {
-    encoding: 'utf8',
-  });
+
+  const result = spawnSync('zipinfo', ['-l', zipPath], { encoding: 'utf8' });
   if (result.status !== 0) {
-    throw new Error(result.stderr || result.stdout || '解压轻量更新包失败。');
+    throw new Error('当前系统无法安全检查轻量更新压缩包。');
   }
+  const entries = [];
+  for (const line of String(result.stdout || '').split(/\r?\n/u)) {
+    const match = line.match(/^([dl-][rwxstST-]{9})\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/u);
+    if (!match) {
+      continue;
+    }
+    entries.push({
+      path: match[3],
+      size: Number(match[2]),
+      isDirectory: match[1].startsWith('d') || match[3].endsWith('/'),
+      isSymbolicLink: match[1].startsWith('l'),
+    });
+  }
+  if (entries.length === 0) {
+    throw new Error('轻量更新压缩包为空或目录格式无法识别。');
+  }
+  return entries;
 }
 
 function quotePowerShell(value) {
@@ -1315,6 +1625,11 @@ async function startOrAttachService(serviceEnv) {
     return await waitForAdminState(adminUrl, 90_000);
   } catch (error) {
     if (resolveActiveRootDir() !== ROOT_DIR) {
+      await stopService('lightweight-startup-failed').catch(() => {});
+      if (process.platform === 'win32') {
+        await stopExistingProjectNodeServices();
+      }
+      clearServiceRecoveryTimer();
       await rollbackLightweightCurrent(`startup-failed-${Date.now()}`);
       await loadStatusPage('Recovering CodexBridge', 'The lightweight code update failed to start. Rolling back to the built-in version...');
       serviceExited = false;
@@ -1442,10 +1757,93 @@ function startService(env) {
 }
 
 function resolveActiveRootDir() {
-  if (isValidLightweightRoot(lightweightCurrentDir)) {
-    return lightweightCurrentDir;
+  return activeRuntimeRootDir;
+}
+
+async function ensureActiveLightweightRootVerified() {
+  activeRuntimeRootDir = ROOT_DIR;
+  if (!fs.existsSync(lightweightCurrentDir)) {
+    return;
   }
-  return ROOT_DIR;
+
+  let publicKey;
+  try {
+    publicKey = resolveLightweightUpdatePublicKey();
+  } catch (error) {
+    patchLightweightUpdateState({ supported: false, error: error?.message || String(error) });
+    await stopService('lightweight-trust-invalid').catch(() => {});
+    if (process.platform === 'win32') {
+      await stopExistingProjectNodeServices();
+    }
+    clearServiceRecoveryTimer();
+    return;
+  }
+  if (!publicKey) {
+    patchLightweightUpdateState({ supported: false, error: LIGHTWEIGHT_TRUST_FALLBACK_MESSAGE });
+    await stopService('lightweight-trust-missing').catch(() => {});
+    if (process.platform === 'win32') {
+      await stopExistingProjectNodeServices();
+    }
+    clearServiceRecoveryTimer();
+    return;
+  }
+
+  try {
+    const manifest = await verifyLightweightPackage(lightweightCurrentDir, publicKey, {
+      allowInstalledFiles: true,
+      nodeModulesTarget: path.join(ROOT_DIR, 'node_modules'),
+    });
+    assertLightweightManifestCompatibility(manifest, {
+      builtInVersion: app.getVersion(),
+      currentVersion: app.getVersion(),
+      nodeVersion: process.versions.node,
+    });
+    validateLightweightRuntimeFiles(lightweightCurrentDir);
+    await recordLightweightHistory({
+      action: 'verify',
+      result: 'success',
+      stage: 'startup',
+      source: 'startup',
+      version: manifest.version,
+      fromVersion: app.getVersion(),
+      keyId: manifest.signature.keyId,
+    });
+    await stopService('lightweight-runtime-revalidation').catch(() => {});
+    if (process.platform === 'win32') {
+      await stopExistingProjectNodeServices();
+    }
+    clearServiceRecoveryTimer();
+    activeRuntimeRootDir = lightweightCurrentDir;
+    patchLightweightUpdateState({
+      supported: true,
+      currentVersion: manifest.version || null,
+      currentRoot: lightweightCurrentDir,
+      usingLightweight: true,
+      error: null,
+    });
+  } catch (error) {
+    const failedManifest = readLightweightManifest(lightweightCurrentDir);
+    await recordLightweightHistory({
+      action: 'failure',
+      result: 'failure',
+      stage: 'startup',
+      source: 'startup',
+      version: failedManifest?.version || null,
+      fromVersion: app.getVersion(),
+      keyId: failedManifest?.signature?.keyId || null,
+      errorCode: error?.code || null,
+      errorMessage: error?.message || String(error),
+    });
+    patchLightweightUpdateState({
+      error: `已安装的轻量更新验证失败，已回退到内置版本：${error?.message || String(error)}`,
+    });
+    await stopService('lightweight-verification-failed').catch(() => {});
+    if (process.platform === 'win32') {
+      await stopExistingProjectNodeServices();
+    }
+    clearServiceRecoveryTimer();
+    await rollbackLightweightCurrent(`verification-failed-${Date.now()}`);
+  }
 }
 
 function isValidLightweightRoot(rootDir) {
@@ -1453,7 +1851,12 @@ function isValidLightweightRoot(rootDir) {
     return false;
   }
   const manifest = readLightweightManifest(rootDir);
-  if (!manifest || manifest.kind !== 'codexbridge-lightweight-update') {
+  if (
+    !manifest
+    || manifest.schemaVersion !== 2
+    || manifest.kind !== 'codexbridge-lightweight-update'
+    || manifest.signature?.algorithm !== 'ed25519'
+  ) {
     return false;
   }
   return fs.existsSync(path.join(rootDir, 'src', 'cli.ts'))
@@ -1475,16 +1878,51 @@ function buildNodePath(activeRootDir, baseRootDir, inheritedNodePath) {
 }
 
 async function rollbackLightweightCurrent(reason) {
+  activeRuntimeRootDir = ROOT_DIR;
+  const currentManifest = readLightweightManifest(lightweightCurrentDir);
+  const source = String(reason || '').startsWith('manual-') ? 'manual' : 'automatic';
   if (!fs.existsSync(lightweightCurrentDir)) {
+    await recordLightweightHistory({
+      action: 'rollback',
+      result: 'skipped',
+      stage: 'rollback',
+      source,
+      version: currentManifest?.version || null,
+      keyId: currentManifest?.signature?.keyId || null,
+      errorCode: 'no-active-update',
+    });
     return false;
   }
   await fsp.mkdir(lightweightFailedDir, { recursive: true });
   const failedTarget = path.join(lightweightFailedDir, sanitizeFileName(reason || `failed-${Date.now()}`));
   await fsp.rm(failedTarget, { recursive: true, force: true }).catch(() => {});
-  await fsp.rename(lightweightCurrentDir, failedTarget).catch(async () => {
-    await fsp.rm(lightweightCurrentDir, { recursive: true, force: true }).catch(() => {});
-  });
-  return true;
+  try {
+    await fsp.rename(lightweightCurrentDir, failedTarget).catch(async () => {
+      await fsp.rm(lightweightCurrentDir, { recursive: true, force: true }).catch(() => {});
+    });
+    await recordLightweightHistory({
+      action: 'rollback',
+      result: 'success',
+      stage: 'rollback',
+      source,
+      version: currentManifest?.version || null,
+      keyId: currentManifest?.signature?.keyId || null,
+      errorCode: reason || null,
+    });
+    return true;
+  } catch (error) {
+    await recordLightweightHistory({
+      action: 'rollback',
+      result: 'failure',
+      stage: 'rollback',
+      source,
+      version: currentManifest?.version || null,
+      keyId: currentManifest?.signature?.keyId || null,
+      errorCode: error?.code || null,
+      errorMessage: error?.message || String(error),
+    });
+    throw error;
+  }
 }
 
 function sanitizeFileName(value) {

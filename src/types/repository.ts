@@ -1,4 +1,4 @@
-import type { AgentJob, AssistantRecord, AutomationJob, BridgeSession, PluginAlias, SessionSettings, ThreadMetadata } from './core.js';
+import type { ActiveTurnCheckpoint, AgentJob, AssistantRecord, AutomationJob, BridgeSession, PluginAlias, SessionSettings, ThreadMetadata } from './core.js';
 import type { ProviderProfile } from './provider.js';
 
 export interface PlatformBinding {
@@ -20,6 +20,13 @@ export interface BridgeSessionRepository {
   save(session: BridgeSession): BridgeSession;
   delete(id: string): void;
   list(): BridgeSession[];
+}
+
+export interface ActiveTurnCheckpointRepository {
+  getByScope(platform: string, externalScopeId: string): ActiveTurnCheckpoint | null;
+  list(): ActiveTurnCheckpoint[];
+  save(checkpoint: ActiveTurnCheckpoint): ActiveTurnCheckpoint;
+  deleteByScope(platform: string, externalScopeId: string, expectedId?: string | null): boolean;
 }
 
 export interface PlatformBindingRepository {

@@ -99,7 +99,8 @@ affect the product as a whole, not just one package.
 
 ### P0: WeChat runtime reliability
 
-- [ ] Keep improving native approval, interrupted-turn, reconnect, and retry handling around long-running tasks
+- [x] Recover interrupted long-running turns from durable checkpoints without automatic Provider replay, and expire pre-restart approvals safely
+- [ ] Keep improving native approval, reconnect, and explicit retry handling around long-running tasks
 - [ ] Stabilize WeChat preview/final delivery around send-budget limits, `ret:-2`, and long-reply recovery
 - [ ] Ensure plugin/auth/unavailable-capability failures always surface as clear chat-visible guidance instead of silent stalls
 - [ ] Keep parser/helper/internal bridge threads hidden from normal thread browsing and automatically cleaned up

@@ -287,6 +287,8 @@ async function runWeixinServe(args: string[]) {
     automationJobs: runtime.services.automationJobs,
     agentJobs: runtime.services.agentJobs,
     assistantRecords: runtime.services.assistantRecords,
+    activeTurns: runtime.services.activeTurns,
+    activeTurnRecovery: runtime.services.activeTurnRecovery,
     onError: (async (error: unknown) => {
       process.stderr.write(`[weixin] ${formatError(error)}\n`);
     }) as any,

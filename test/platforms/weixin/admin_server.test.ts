@@ -3245,6 +3245,20 @@ test('WeixinAdminServer exposes recent logs and JSON export for the panel', asyn
             lastError: 'private-outbox-error',
             externalScopeId: 'wx-private-outbox-scope',
           },
+          turnRecovery: {
+            total: 2,
+            running: 1,
+            reconciling: 0,
+            uncertain: 1,
+            completedPendingDelivery: 0,
+            interrupted: 0,
+            approvalExpired: 0,
+            oldestAgeMs: 5_000,
+            lastReconciledAt: 4_000,
+            lastErrorCategory: 'provider_unavailable',
+            externalScopeId: 'wx-private-recovery-scope',
+            prompt: 'private recovery prompt',
+          },
           weixin: {
             running: true,
             accountCount: 1,
@@ -3266,12 +3280,24 @@ test('WeixinAdminServer exposes recent logs and JSON export for the panel', asyn
 
     const stateResponse = await fetch(`${binding.url}/api/state`);
     const stateText = await stateResponse.text();
-    assert.doesNotMatch(stateText, /private-outbox-message|private-outbox-error|wx-private-outbox-scope/u);
+    assert.doesNotMatch(stateText, /private-outbox-message|private-outbox-error|wx-private-outbox-scope|wx-private-recovery-scope|private recovery prompt/u);
     const stateBody = JSON.parse(stateText) as any;
     assert.deepEqual(stateBody.bridge.deliveryOutbox, {
       pending: 2,
       oldestCreatedAt: 1_000,
       nextAttemptAt: 2_000,
+    });
+    assert.deepEqual(stateBody.bridge.turnRecovery, {
+      total: 2,
+      running: 1,
+      reconciling: 0,
+      uncertain: 1,
+      completedPendingDelivery: 0,
+      interrupted: 0,
+      approvalExpired: 0,
+      oldestAgeMs: 5_000,
+      lastReconciledAt: 4_000,
+      lastErrorCategory: 'provider_unavailable',
     });
 
     const exportResponse = await fetch(`${binding.url}/api/export`);
@@ -3298,7 +3324,7 @@ test('WeixinAdminServer exposes recent logs and JSON export for the panel', asyn
     const diagnosticText = await diagnosticResponse.text();
     assert.doesNotMatch(
       diagnosticText,
-      /token-primary|wxid-primary|ilink\.example\.com|last stdout line|sync-cursor-secret|provider-secret-error|secret-account-id|context-token-secret|saved-sync-cursor|model-api-key-secret/u,
+      /token-primary|wxid-primary|ilink\.example\.com|last stdout line|sync-cursor-secret|provider-secret-error|secret-account-id|context-token-secret|saved-sync-cursor|model-api-key-secret|wx-private-recovery-scope|private recovery prompt/u,
     );
     const diagnosticBody = JSON.parse(diagnosticText) as any;
     assert.equal(diagnosticBody.kind, 'diagnostic');

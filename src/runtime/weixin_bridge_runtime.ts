@@ -5,6 +5,7 @@ import { WeixinPoller } from '../platforms/weixin/poller.js';
 import { createI18n, type Translator } from '../i18n/index.js';
 import type { WeixinPendingTextDelivery } from './weixin_delivery_outbox_store.js';
 import type { MissionHostNotification } from '../../packages/mission-control/src/index.js';
+import type { ActiveTurnRecoveryOutcome } from '../core/active_turn_recovery_service.js';
 import type {
   InboundTextEvent,
   PlatformMediaDeliveryResult,
@@ -81,7 +82,31 @@ interface RuntimeResponse {
       error?: string | null;
       errorCode?: number | null;
     } | null;
+    activeTurnDelivery?: {
+      checkpointId?: string | null;
+      deliveryKey?: string | null;
+    } | null;
   } | null;
+}
+
+interface ActiveTurnsLike {
+  completeDurableTurn?(
+    scopeRef: { platform: string; externalScopeId: string },
+    checkpointId: string,
+  ): boolean;
+  linkOutboxDelivery?(
+    scopeRef: { platform: string; externalScopeId: string },
+    checkpointId: string,
+    outboxEntryId: string,
+  ): boolean;
+  completeOutboxDelivery?(outboxEntryId: string): boolean;
+}
+
+interface ActiveTurnRecoveryLike {
+  reconcileAll(): Promise<ActiveTurnRecoveryOutcome[]>;
+  acknowledgeNotice?(checkpointId: string): boolean;
+  releaseNotice?(checkpointId: string): boolean;
+  getStatus?(): Record<string, unknown>;
 }
 
 interface PlatformPluginLike {
@@ -179,6 +204,8 @@ interface WeixinBridgeRuntimeOptions {
   automationJobs?: any;
   agentJobs?: any;
   assistantRecords?: any;
+  activeTurns?: ActiveTurnsLike | null;
+  activeTurnRecovery?: ActiveTurnRecoveryLike | null;
   onError?: (error: unknown) => Promise<void> | void;
   previewSoftTargetBytes?: number;
   previewHardLimitBytes?: number;
@@ -240,6 +267,16 @@ export class WeixinBridgeRuntime {
   automationJobs: any;
   agentJobs: any;
   assistantRecords: any;
+
+  activeTurns: ActiveTurnsLike | null;
+
+  activeTurnRecovery: ActiveTurnRecoveryLike | null;
+
+  activeTurnRecoveryTimer: ReturnType<typeof setTimeout> | null;
+
+  activeTurnRecoveryInFlight: Promise<void> | null;
+
+  activeTurnRecoveryGeneration: number;
 
   onError: (error: unknown) => Promise<void> | void;
 
@@ -408,6 +445,8 @@ export class WeixinBridgeRuntime {
     automationJobs = null,
     agentJobs = null,
     assistantRecords = null,
+    activeTurns = null,
+    activeTurnRecovery = null,
     onError = (_error: unknown): Promise<void> | void => {},
     previewSoftTargetBytes = 2048,
     previewHardLimitBytes = 2048,
@@ -444,6 +483,11 @@ export class WeixinBridgeRuntime {
     this.automationJobs = automationJobs;
     this.agentJobs = agentJobs;
     this.assistantRecords = assistantRecords;
+    this.activeTurns = activeTurns;
+    this.activeTurnRecovery = activeTurnRecovery;
+    this.activeTurnRecoveryTimer = null;
+    this.activeTurnRecoveryInFlight = null;
+    this.activeTurnRecoveryGeneration = 0;
     this.onError = onError;
     this.previewSoftTargetBytes = previewSoftTargetBytes;
     this.previewHardLimitBytes = previewHardLimitBytes;
@@ -584,6 +628,7 @@ export class WeixinBridgeRuntime {
     this.clearAutoRestartTimer();
     this.startHealthMonitor();
     await this.platformPlugin.start();
+    this.startActiveTurnRecovery();
     void this.flushDeliveryRetryQueue().catch((error) => {
       this.reportDeliveryOutboxError(error);
     });
@@ -651,6 +696,7 @@ export class WeixinBridgeRuntime {
     this.poller = null;
     this.stopAutomationScheduler();
     this.stopInternalThreadCleanupScheduler();
+    this.stopActiveTurnRecovery();
     if (waitForIdle) {
       await pollerRunPromise?.catch(() => {});
       await this.flushAllPendingInboundMerges();
@@ -731,6 +777,7 @@ export class WeixinBridgeRuntime {
       activeTurns: this.turnLimiter.activeCount,
       queuedTurns: this.turnLimiter.queuedCount,
       eventDispatchConcurrency: this.eventDispatchConcurrency,
+      turnRecovery: this.activeTurnRecovery?.getStatus?.() ?? null,
     };
   }
 
@@ -1593,9 +1640,10 @@ export class WeixinBridgeRuntime {
       const hasCompleteMediaOnlyFinal = !hasComparableFinalText
         && artifactMessages.length > 0
         && (codexTurnMeta?.outputState ?? 'complete') === 'complete';
+      let finalDelivery: FinalDelivery | null = null;
       if (hasCompleteMediaOnlyFinal) {
         await this.stopPreviewStreaming(streamState);
-        const finalDelivery: FinalDelivery = {
+        finalDelivery = {
           source: codexTurnMeta?.finalSource ?? 'thread_items_media',
           mode: 'media_only_complete',
           finalText: '',
@@ -1625,7 +1673,13 @@ export class WeixinBridgeRuntime {
           deliveryContent: finalDelivery.sentContent,
         });
       } else if (hasComparableFinalText || codexTurnMeta) {
-        const finalDelivery = await this.ensureFinalDelivered(event, streamState, response, codexTurnMeta);
+        finalDelivery = await this.ensureFinalDelivered(
+          event,
+          streamState,
+          response,
+          codexTurnMeta,
+          response.meta?.activeTurnDelivery ?? null,
+        );
         response.meta = {
           ...(response.meta ?? {}),
           runtimeDelivery: {
@@ -1651,6 +1705,9 @@ export class WeixinBridgeRuntime {
       }
       if (artifactMessages.length > 0) {
         await this.deliverArtifactMessages(event, artifactMessages);
+      }
+      if (finalDelivery) {
+        this.settleActiveTurnDelivery(event, response, finalDelivery);
       }
       if (!options.deferPostResponseAction) {
         await this.runPostResponseAction(response, event);
@@ -1824,6 +1881,11 @@ export class WeixinBridgeRuntime {
         ? U | null
         : null
       : null,
+    activeTurnDelivery: RuntimeResponse['meta'] extends infer T
+      ? T extends { activeTurnDelivery?: infer U | null }
+        ? U | null
+        : null
+      : null = null,
   ): Promise<FinalDelivery> {
     await this.stopPreviewStreaming(streamState);
 
@@ -1850,6 +1912,7 @@ export class WeixinBridgeRuntime {
       });
       if (!failureDelivery.success && !this.isAutomationEvent(event)) {
         this.enqueueTextDeliveryRetry({
+          id: activeTurnDelivery?.deliveryKey ?? null,
           externalScopeId: event.externalScopeId,
           content: failureDelivery.failedText || failureMessage,
           delivery: failureDelivery,
@@ -2043,6 +2106,7 @@ export class WeixinBridgeRuntime {
     }
     if (!this.isAutomationEvent(event)) {
       this.enqueueTextDeliveryRetry({
+        id: activeTurnDelivery?.deliveryKey ?? null,
         externalScopeId: event.externalScopeId,
         content: lastFailedDelivery?.failedText || lastAttemptedContent,
         delivery: lastFailedDelivery,
@@ -2076,6 +2140,30 @@ export class WeixinBridgeRuntime {
       });
     }
     return this.i18n.t('runtime.error.codex', { error: normalized });
+  }
+
+  settleActiveTurnDelivery(
+    event: InboundTextEvent,
+    response: RuntimeResponse,
+    finalDelivery: FinalDelivery,
+  ): void {
+    const handoff = response.meta?.activeTurnDelivery ?? null;
+    const checkpointId = String(handoff?.checkpointId ?? '').trim();
+    const deliveryKey = String(handoff?.deliveryKey ?? '').trim();
+    if (!checkpointId || !deliveryKey || !this.activeTurns) {
+      return;
+    }
+    const scopeRef = {
+      platform: event.platform,
+      externalScopeId: event.externalScopeId,
+    };
+    if (finalDelivery.delivered) {
+      this.activeTurns.completeDurableTurn?.(scopeRef, checkpointId);
+      return;
+    }
+    if (this.deliveryRetryQueue.some((entry) => entry.id === deliveryKey)) {
+      this.activeTurns.linkOutboxDelivery?.(scopeRef, checkpointId, deliveryKey);
+    }
   }
 
   async safeSendTyping(externalScopeId: string, status: 'start' | 'stop'): Promise<void> {
@@ -2336,11 +2424,13 @@ export class WeixinBridgeRuntime {
   }
 
   enqueueTextDeliveryRetry({
+    id = null,
     externalScopeId,
     content,
     delivery = null,
     source = 'text',
   }: {
+    id?: string | null;
     externalScopeId: string;
     content: string;
     delivery?: { error?: string | null; errorCode?: number | null } | null;
@@ -2356,10 +2446,14 @@ export class WeixinBridgeRuntime {
       return;
     }
     const now = Date.now();
+    const stableId = String(id ?? '').trim().slice(0, 160);
     const existing = this.deliveryRetryQueue.find((entry) => (
-      entry.externalScopeId === scopeId
-      && entry.content === normalizedContent
-      && entry.source === source
+      (stableId && entry.id === stableId)
+      || (
+        entry.externalScopeId === scopeId
+        && entry.content === normalizedContent
+        && entry.source === source
+      )
     ));
     if (existing) {
       existing.lastError = this.normalizeDeliveryRetryError(delivery?.error ?? existing.lastError);
@@ -2370,7 +2464,7 @@ export class WeixinBridgeRuntime {
       return;
     }
     this.deliveryRetryQueue.push({
-      id: `${now}-${Math.random().toString(36).slice(2)}`,
+      id: stableId || `${now}-${Math.random().toString(36).slice(2)}`,
       externalScopeId: scopeId,
       content: normalizedContent,
       source,
@@ -2494,6 +2588,7 @@ export class WeixinBridgeRuntime {
         // At-least-once: a crash after remote success and before this write can retry once.
         this.deliveryRetryQueue = this.deliveryRetryQueue.filter((candidate) => candidate !== entry);
         this.persistDeliveryRetryQueue();
+        this.activeTurns?.completeOutboxDelivery?.(entry.id);
         debugRuntime('text_delivery_retry_succeeded', {
           source: entry.source,
           queueLength: this.deliveryRetryQueue.length,
@@ -2928,6 +3023,177 @@ export class WeixinBridgeRuntime {
     }
     clearInterval(this.internalThreadCleanupTimer);
     this.internalThreadCleanupTimer = null;
+  }
+
+  startActiveTurnRecovery(delayMs = 0): void {
+    if (!this.activeTurnRecovery || this.stopRequested) {
+      return;
+    }
+    const generation = this.activeTurnRecoveryGeneration;
+    if (delayMs > 0) {
+      if (this.activeTurnRecoveryTimer) {
+        return;
+      }
+      this.activeTurnRecoveryTimer = setTimeout(() => {
+        this.activeTurnRecoveryTimer = null;
+        if (!this.isCurrentActiveTurnRecoveryGeneration(generation)) {
+          return;
+        }
+        this.startActiveTurnRecovery();
+      }, delayMs);
+      return;
+    }
+    if (this.activeTurnRecoveryInFlight) {
+      return;
+    }
+    const task = this.activeTurnRecovery.reconcileAll()
+      .then(async (outcomes) => {
+        if (!this.isCurrentActiveTurnRecoveryGeneration(generation)) {
+          this.releaseActiveTurnRecoveryNotices(outcomes);
+          return;
+        }
+        let nextDelayMs: number | null = null;
+        for (const outcome of outcomes) {
+          if (!this.isCurrentActiveTurnRecoveryGeneration(generation)) {
+            this.releaseActiveTurnRecoveryNotices(outcomes);
+            return;
+          }
+          await this.handleActiveTurnRecoveryOutcome(outcome, generation);
+          const candidateDelay = outcome.kind === 'retry'
+            ? outcome.delayMs
+            : outcome.kind === 'running'
+              ? 5_000
+              : null;
+          if (candidateDelay !== null) {
+            nextDelayMs = nextDelayMs === null
+              ? candidateDelay
+              : Math.min(nextDelayMs, candidateDelay);
+          }
+        }
+        if (nextDelayMs !== null && this.isCurrentActiveTurnRecoveryGeneration(generation)) {
+          this.startActiveTurnRecovery(nextDelayMs);
+        }
+      })
+      .catch(async (error) => {
+        if (!this.isCurrentActiveTurnRecoveryGeneration(generation)) {
+          return;
+        }
+        this.recordRuntimeError(error, 'runtime');
+        await this.onError(error);
+        this.startActiveTurnRecovery(5_000);
+      })
+      .finally(() => {
+        if (this.activeTurnRecoveryInFlight === task) {
+          this.activeTurnRecoveryInFlight = null;
+        }
+      });
+    this.activeTurnRecoveryInFlight = task;
+  }
+
+  stopActiveTurnRecovery(): void {
+    this.activeTurnRecoveryGeneration += 1;
+    if (this.activeTurnRecoveryTimer) {
+      clearTimeout(this.activeTurnRecoveryTimer);
+      this.activeTurnRecoveryTimer = null;
+    }
+    void this.activeTurnRecoveryInFlight?.catch(() => {});
+    this.activeTurnRecoveryInFlight = null;
+  }
+
+  isCurrentActiveTurnRecoveryGeneration(generation: number): boolean {
+    return generation === this.activeTurnRecoveryGeneration && !this.stopRequested;
+  }
+
+  async handleActiveTurnRecoveryOutcome(
+    outcome: ActiveTurnRecoveryOutcome,
+    generation = this.activeTurnRecoveryGeneration,
+  ): Promise<void> {
+    if (!this.isCurrentActiveTurnRecoveryGeneration(generation)) {
+      if (outcome.kind === 'notice') {
+        this.activeTurnRecovery?.releaseNotice?.(outcome.checkpoint.id);
+      }
+      return;
+    }
+    if (outcome.kind === 'completed') {
+      await this.deliverRecoveredTurn(outcome, generation);
+      return;
+    }
+    if (outcome.kind !== 'notice') {
+      return;
+    }
+    const messageKey = outcome.noticeKind === 'approval_expired'
+      ? 'runtime.recovery.approvalExpired'
+      : outcome.noticeKind === 'interrupted'
+        ? 'runtime.recovery.interrupted'
+        : 'runtime.recovery.uncertain';
+    try {
+      const delivery = await this.sendTextWithRetry({
+        externalScopeId: outcome.checkpoint.externalScopeId,
+        content: this.i18n.t(messageKey),
+      });
+      if (!this.isCurrentActiveTurnRecoveryGeneration(generation)) {
+        this.activeTurnRecovery?.releaseNotice?.(outcome.checkpoint.id);
+        return;
+      }
+      if (delivery.success) {
+        this.activeTurnRecovery?.acknowledgeNotice?.(outcome.checkpoint.id);
+      } else {
+        this.activeTurnRecovery?.releaseNotice?.(outcome.checkpoint.id);
+        this.startActiveTurnRecovery(5_000);
+      }
+    } catch (error) {
+      this.activeTurnRecovery?.releaseNotice?.(outcome.checkpoint.id);
+      throw error;
+    }
+  }
+
+  async deliverRecoveredTurn(
+    outcome: Extract<ActiveTurnRecoveryOutcome, { kind: 'completed' }>,
+    generation = this.activeTurnRecoveryGeneration,
+  ): Promise<void> {
+    if (!this.isCurrentActiveTurnRecoveryGeneration(generation)) {
+      return;
+    }
+    const event: InboundTextEvent = {
+      platform: outcome.checkpoint.platform,
+      externalScopeId: outcome.checkpoint.externalScopeId,
+      text: '',
+    };
+    const response: RuntimeResponse = {
+      type: 'message',
+      messages: [{ text: outcome.outputText }],
+      meta: {
+        codexTurn: {
+          outputState: 'complete',
+          previewText: '',
+          finalSource: 'thread_items',
+          errorMessage: '',
+        },
+        activeTurnDelivery: {
+          checkpointId: outcome.checkpoint.id,
+          deliveryKey: outcome.checkpoint.finalDeliveryKey,
+        },
+      },
+    };
+    const finalDelivery = await this.ensureFinalDelivered(
+      event,
+      createStreamState(),
+      response,
+      response.meta?.codexTurn ?? null,
+      response.meta?.activeTurnDelivery ?? null,
+    );
+    if (!this.isCurrentActiveTurnRecoveryGeneration(generation)) {
+      return;
+    }
+    this.settleActiveTurnDelivery(event, response, finalDelivery);
+  }
+
+  private releaseActiveTurnRecoveryNotices(outcomes: ActiveTurnRecoveryOutcome[]): void {
+    for (const outcome of outcomes) {
+      if (outcome.kind === 'notice') {
+        this.activeTurnRecovery?.releaseNotice?.(outcome.checkpoint.id);
+      }
+    }
   }
 
   async runInternalThreadCleanup(): Promise<void> {

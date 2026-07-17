@@ -93,6 +93,103 @@ function makeProviderProfile(id: string, providerKind: string, displayName: stri
   };
 }
 
+function makeActiveTurnCheckpoint(overrides: Record<string, unknown> = {}) {
+  const now = Date.now();
+  return {
+    version: 1,
+    id: 'checkpoint-a',
+    platform: 'weixin',
+    externalScopeId: 'wx-a',
+    bridgeSessionId: 'session-a',
+    providerProfileId: 'openai-default',
+    threadId: 'thread-a',
+    turnId: 'turn-a',
+    requestFingerprint: 'sha256:test',
+    requestSummary: 'test request',
+    phase: 'running',
+    previousPhase: null,
+    approvalPending: false,
+    finalDeliveryKey: null,
+    outboxEntryId: null,
+    reconciliationAttemptCount: 0,
+    lastErrorCategory: null,
+    createdAt: now,
+    updatedAt: now,
+    lastReconciledAt: null,
+    noticeDeliveredAt: null,
+    expiresAt: now + 24 * 60 * 60 * 1000,
+    ...overrides,
+  };
+}
+
+test('file-backed active turn checkpoints survive reload and guard stale deletion', () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-active-turn-checkpoints-'));
+  const repositoriesA = createFileJsonRepositories(stateDir) as any;
+  const input = makeActiveTurnCheckpoint();
+
+  repositoriesA.activeTurnCheckpoints.save(input);
+  input.requestSummary = 'mutated after save';
+
+  const repositoriesB = createFileJsonRepositories(stateDir) as any;
+  const restored = repositoriesB.activeTurnCheckpoints.getByScope('weixin', 'wx-a');
+  assert.equal(restored?.id, 'checkpoint-a');
+  assert.equal(restored?.requestSummary, 'test request');
+  restored.requestSummary = 'mutated after read';
+  assert.equal(
+    repositoriesB.activeTurnCheckpoints.getByScope('weixin', 'wx-a')?.requestSummary,
+    'test request',
+  );
+  assert.equal(
+    repositoriesB.activeTurnCheckpoints.deleteByScope('weixin', 'wx-a', 'stale-id'),
+    false,
+  );
+  assert.equal(
+    repositoriesB.activeTurnCheckpoints.deleteByScope('weixin', 'wx-a', 'checkpoint-a'),
+    true,
+  );
+  assert.equal(repositoriesB.activeTurnCheckpoints.getByScope('weixin', 'wx-a'), null);
+});
+
+test('file-backed active turn checkpoints reject malformed records independently', () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-active-turn-normalize-'));
+  const filePath = path.join(stateDir, 'active_turn_checkpoints.json');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify({
+    version: 1,
+    records: [
+      null,
+      makeActiveTurnCheckpoint({ id: '' }),
+      makeActiveTurnCheckpoint({ externalScopeId: '' }),
+      makeActiveTurnCheckpoint({ id: 'unknown-phase', phase: 'queued' }),
+      makeActiveTurnCheckpoint({ id: 'older', updatedAt: 1 }),
+      makeActiveTurnCheckpoint({ id: 'newer', updatedAt: 2, requestSummary: 'newest' }),
+    ],
+  }, null, 2)}\n`, 'utf8');
+
+  const repositories = createFileJsonRepositories(stateDir) as any;
+  const records = repositories.activeTurnCheckpoints.list();
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.id, 'newer');
+  assert.equal(records[0]?.requestSummary, 'newest');
+});
+
+test('file-backed active turn checkpoints quarantine corrupt JSON and start empty', () => {
+  const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-active-turn-corrupt-'));
+  const filePath = path.join(stateDir, 'active_turn_checkpoints.json');
+  fs.mkdirSync(stateDir, { recursive: true });
+  fs.writeFileSync(filePath, '{ broken checkpoint json', 'utf8');
+
+  const repositories = createFileJsonRepositories(stateDir) as any;
+
+  assert.deepEqual(repositories.activeTurnCheckpoints.list(), []);
+  assert.deepEqual(JSON.parse(fs.readFileSync(filePath, 'utf8')), { version: 1, records: [] });
+  assert.equal(
+    fs.readdirSync(stateDir).some((entry) => entry.startsWith('active_turn_checkpoints.json.corrupt-')),
+    true,
+  );
+});
+
 test('runtime exposes a provider model catalog backed by registered providers', async () => {
   const providerProfile = makeProviderProfile('catalog-profile', 'catalog-provider', 'Catalog Provider');
   let calls = 0;

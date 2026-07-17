@@ -15,7 +15,7 @@ jobs:
           - ubuntu-latest
           - windows-latest
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -27,11 +27,28 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Install Web console dependencies
+        env:
+          CI: 'true'
+        run: pnpm --dir apps/web install --frozen-lockfile
 
-      - name: Run isolated test suite
-        run: npm test
+      - name: Run complete release gate
+        env:
+          CI: 'true'
+        run: npm run verify:release
+
+      - name: Build Windows package
+        if: runner.os == 'Windows'
+        run: npm run weixin:electron:dist
+
+      - name: Smoke-test packaged Windows application
+        if: runner.os == 'Windows'
+        run: node scripts/release/smoke_packaged.mjs

@@ -14,6 +14,8 @@ test('renderAdminHtml preserves token, CSP nonce, icons, and valid inline script
   assert.match(html, /id="provider-usage-refresh"/u);
   assert.match(html, /function loadProviderUsage/u);
   assert.match(html, /\/usage\/refresh/u);
+  assert.match(html, /id="metric-recovery"/u);
+  assert.match(html, /turnRecovery/u);
   assert.match(html, /暂不支持用量查询/u);
 
   const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gu)]

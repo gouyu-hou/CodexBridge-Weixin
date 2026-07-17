@@ -128,6 +128,18 @@ interface WeixinBridgeControl {
     activeTurns?: number;
     queuedTurns?: number;
     eventDispatchConcurrency?: number;
+    turnRecovery?: {
+      total?: number;
+      running?: number;
+      reconciling?: number;
+      uncertain?: number;
+      completedPendingDelivery?: number;
+      interrupted?: number;
+      approvalExpired?: number;
+      oldestAgeMs?: number | null;
+      lastReconciledAt?: number | null;
+      lastErrorCategory?: string | null;
+    } | null;
     weixin?: {
       running?: boolean;
       accountCount?: number;
@@ -4270,6 +4282,7 @@ function serializeDiagnosticBridgeStatus(status: ReturnType<WeixinBridgeControl[
     activeTurns: status.activeTurns,
     queuedTurns: status.queuedTurns,
     eventDispatchConcurrency: status.eventDispatchConcurrency,
+    turnRecovery: serializeTurnRecoveryStatus(status.turnRecovery),
     weixin: weixin
       ? {
           running: weixin.running,
@@ -4283,10 +4296,47 @@ function serializeDiagnosticBridgeStatus(status: ReturnType<WeixinBridgeControl[
 
 function serializeAdminBridgeStatus(status: ReturnType<WeixinBridgeControl['status']>) {
   const deliveryOutbox = serializeDeliveryOutboxSummary(status.deliveryOutbox);
+  const turnRecovery = serializeTurnRecoveryStatus(status.turnRecovery);
+  const {
+    deliveryOutbox: _deliveryOutbox,
+    turnRecovery: _turnRecovery,
+    ...safeStatus
+  } = status;
   return {
-    ...status,
+    ...safeStatus,
     ...(deliveryOutbox ? { deliveryOutbox } : {}),
+    ...(turnRecovery ? { turnRecovery } : {}),
   };
+}
+
+function serializeTurnRecoveryStatus(value: unknown) {
+  if (!isRecord(value)) {
+    return null;
+  }
+  return {
+    total: toNonNegativeInteger(value.total),
+    running: toNonNegativeInteger(value.running),
+    reconciling: toNonNegativeInteger(value.reconciling),
+    uncertain: toNonNegativeInteger(value.uncertain),
+    completedPendingDelivery: toNonNegativeInteger(value.completedPendingDelivery),
+    interrupted: toNonNegativeInteger(value.interrupted),
+    approvalExpired: toNonNegativeInteger(value.approvalExpired),
+    oldestAgeMs: toNullableNonNegativeInteger(value.oldestAgeMs),
+    lastReconciledAt: toNullableNonNegativeInteger(value.lastReconciledAt),
+    lastErrorCategory: normalizeEnvString(value.lastErrorCategory)?.slice(0, 80) ?? null,
+  };
+}
+
+function toNonNegativeInteger(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0;
+}
+
+function toNullableNonNegativeInteger(value: unknown): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return toNonNegativeInteger(value);
 }
 
 function serializeDeliveryOutboxSummary(value: unknown): DeliveryOutboxSummary | undefined {

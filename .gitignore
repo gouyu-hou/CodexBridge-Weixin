@@ -5,7 +5,7 @@
 node_modules/
 dist/
 build/
-release/
+/release/
 .next/
 coverage/
 *.tsbuildinfo

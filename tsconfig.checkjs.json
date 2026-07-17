@@ -5,6 +5,9 @@
     "noEmit": true
   },
   "include": [
+    "scripts/release/*.mjs",
+    "scripts/electron/lightweight-update-security.cjs",
+    "scripts/electron/lightweight-update-history.cjs",
     "src/core/contracts.js",
     "src/core/command_parser.js",
     "src/core/errors.js",

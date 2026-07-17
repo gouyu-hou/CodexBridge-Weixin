@@ -110,6 +110,26 @@ test('WeixinDeliveryOutboxStore collapses duplicates to the later retry state', 
   assert.equal(entries[0]?.attemptCount, 4);
 });
 
+test('WeixinDeliveryOutboxStore deduplicates stable ids even when retry content changes', () => {
+  const stateDir = makeStateDir();
+  const store = new WeixinDeliveryOutboxStore(stateDir);
+
+  store.write([
+    makeEntry({ id: 'stable-final', content: 'full final answer', attemptCount: 1 }),
+    makeEntry({ id: 'stable-final', content: 'remaining final answer', attemptCount: 2 }),
+  ]);
+
+  assert.deepEqual(store.read().map((entry) => ({
+    id: entry.id,
+    content: entry.content,
+    attemptCount: entry.attemptCount,
+  })), [{
+    id: 'stable-final',
+    content: 'remaining final answer',
+    attemptCount: 2,
+  }]);
+});
+
 test('WeixinDeliveryOutboxStore expires entries after 24 hours', () => {
   const stateDir = makeStateDir();
   const store = new WeixinDeliveryOutboxStore(stateDir);

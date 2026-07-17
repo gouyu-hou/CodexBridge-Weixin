@@ -1,4 +1,5 @@
 import type {
+  ActiveTurnCheckpointRepository,
   AgentJobRepository,
   AssistantRecordRepository,
   AutomationJobRepository,
@@ -13,6 +14,7 @@ import path from 'node:path';
 import type { MissionRepository } from '../../../packages/mission-control/src/index.js';
 import { JsonFileMissionRepository } from '../../../packages/mission-control/src/index.js';
 import { FileJsonAgentJobRepository } from './file_json_agent_job_repository.js';
+import { FileJsonActiveTurnCheckpointRepository } from './file_json_active_turn_checkpoint_repository.js';
 import { FileJsonAssistantRecordRepository } from './file_json_assistant_record_repository.js';
 import { FileJsonAutomationJobRepository } from './file_json_automation_job_repository.js';
 import { FileJsonBridgeSessionRepository } from './file_json_bridge_session_repository.js';
@@ -23,6 +25,7 @@ import { FileJsonSessionSettingsRepository } from './file_json_session_settings_
 import { FileJsonThreadMetadataRepository } from './file_json_thread_metadata_repository.js';
 
 export function createFileJsonRepositories(stateDir: string): {
+  activeTurnCheckpoints: ActiveTurnCheckpointRepository;
   providerProfiles: ProviderProfileRepository;
   bridgeSessions: BridgeSessionRepository;
   platformBindings: PlatformBindingRepository;
@@ -35,6 +38,7 @@ export function createFileJsonRepositories(stateDir: string): {
   missionControl: MissionRepository;
 } {
   return {
+    activeTurnCheckpoints: new FileJsonActiveTurnCheckpointRepository(path.join(stateDir, 'active_turn_checkpoints.json')),
     providerProfiles: new FileJsonProviderProfileRepository(path.join(stateDir, 'provider_profiles.json')),
     bridgeSessions: new FileJsonBridgeSessionRepository(path.join(stateDir, 'bridge_sessions.json')),
     platformBindings: new FileJsonPlatformBindingRepository(path.join(stateDir, 'platform_bindings.json')),

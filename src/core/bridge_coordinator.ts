@@ -5,7 +5,25 @@ import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { formatPlatformScopeKey } from './contracts.js';
+import { buildActiveTurnDeliveryKey } from './active_turn_delivery.js';
 import { isAgentCommandEnabled } from './command_availability.js';
+import {
+  COMMAND_CANONICAL_NAME_MAP,
+  COMMAND_HELP_ORDER,
+  HIDDEN_COMMAND_ALIASES,
+} from './command_catalog.js';
+import {
+  freezeCommandHelp,
+  renderCommandCatalog,
+  renderCommandHelp,
+  type CommandHelpSpec,
+} from './command_help_renderer.js';
+import {
+  buildPluginSearchTokens,
+  normalizePluginLookupToken,
+  scorePluginTokenAgainstField,
+  type PluginSearchSynonymGroups,
+} from './plugin_search_text.js';
 import { parseSlashCommand } from './command_parser.js';
 import { NotFoundError } from './errors.js';
 import { ProviderUsageService } from './provider_usage_service.js';
@@ -231,15 +249,6 @@ type ProgressHandler = ((progress: ProviderTurnProgress) => Promise<void> | void
 
 type RecoveryFailure = Error & {
   reasonCode?: string;
-};
-
-type CommandHelpSpec = {
-  name: string;
-  aliases: readonly string[];
-  summary: string;
-  usage: readonly string[];
-  examples: readonly string[];
-  notes: readonly string[];
 };
 
 type RetryableRequestSnapshot = {
@@ -1283,7 +1292,11 @@ export class BridgeCoordinator {
       });
       return explicitPluginIssueResponse;
     }
-    const localActiveTurn = this.activeTurns?.beginScopeTurn(scopeRef) ?? null;
+    const localActiveTurn = this.activeTurns?.beginScopeTurn(
+      scopeRef,
+      {},
+      buildActiveTurnRequestIdentity(effectiveEvent),
+    ) ?? null;
     let localTurnFinished = false;
     let session = null;
     try {
@@ -1353,6 +1366,17 @@ export class BridgeCoordinator {
         this.storeRetryableRequest(session.id, effectiveEvent);
       }
       const { result, session: nextSession } = await this.startTurnWithRecovery(scopeRef, session, effectiveEvent, options);
+      if (
+        result?.turnId
+        && this.activeTurns?.resolveScopeTurn(scopeRef) === localActiveTurn
+      ) {
+        this.activeTurns?.updateScopeTurn(scopeRef, {
+          turnId: result.turnId,
+          threadId: result.threadId ?? nextSession?.codexThreadId ?? session.codexThreadId,
+          previousRecoveryPhase: localActiveTurn?.recoveryPhase ?? null,
+          recoveryPhase: 'running',
+        });
+      }
       debugCoordinator('conversation_turn_result', {
         platform: scopeRef.platform,
         scopeId: scopeRef.externalScopeId,
@@ -1376,6 +1400,10 @@ export class BridgeCoordinator {
         },
       };
       localTurnFinished = isTurnResultLocallyFinished(result);
+      const durableHandoff = this.finalizeActiveTurnCheckpoint(scopeRef, localActiveTurn, result);
+      if (durableHandoff) {
+        response.meta.activeTurnDelivery = durableHandoff;
+      }
       return response;
     } catch (error) {
       const failure = classifyTurnFailure(error, this.currentI18n);
@@ -1401,6 +1429,7 @@ export class BridgeCoordinator {
         },
       };
       localTurnFinished = isTurnResultLocallyFinished(failure);
+      this.finalizeActiveTurnCheckpoint(scopeRef, localActiveTurn, failure);
       return response;
     } finally {
       await this.releaseActiveTurnIfStillRunning(scopeRef, {
@@ -1533,7 +1562,10 @@ export class BridgeCoordinator {
     const requested = normalizeHelpTarget(args[0]);
     if (!requested) {
       const showGoal = await this.isCodexGoalCommandAvailable();
-      return textResponse(renderCommandCatalog(this.currentI18n, { showGoal }), this.buildScopedSessionMeta(event));
+      return textResponse(
+        renderCommandCatalog(this.currentI18n, COMMAND_HELP_ORDER, getCommandHelpSpecs(this.currentI18n), { showGoal }),
+        this.buildScopedSessionMeta(event),
+      );
     }
     if (requested === 'goal' && !(await this.isCodexGoalCommandAvailable())) {
       return messageResponse([
@@ -11399,8 +11431,27 @@ export class BridgeCoordinator {
       const threadTurns = Array.isArray(thread?.turns) ? thread.turns : [];
       const turn = threadTurns.find((entry) => entry.id === activeTurn.turnId) ?? null;
       if (turn && isProviderTurnTerminal(turn.status)) {
-        this.activeTurns?.endScopeTurn(scopeRef);
-        return null;
+        if (!activeTurn.checkpointId) {
+          this.activeTurns?.endScopeTurn(scopeRef);
+          return null;
+        }
+        const normalizedStatus = String(turn.status ?? '').trim().toLowerCase();
+        if (['completed', 'complete', 'succeeded', 'success', 'finished'].includes(normalizedStatus)) {
+          this.activeTurns.markCompletedPendingDelivery(
+            scopeRef,
+            buildActiveTurnDeliveryKey(activeTurn.providerProfileId, activeTurn.threadId, activeTurn.turnId),
+          );
+        } else {
+          this.activeTurns.updateScopeTurn(scopeRef, {
+            previousRecoveryPhase: activeTurn.recoveryPhase,
+            recoveryPhase: 'interrupted',
+            lastErrorCategory: `turn_${normalizedStatus || 'failed'}`.slice(0, 80),
+            expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+          });
+          this.activeTurns.releaseScopeLock(scopeRef, activeTurn.checkpointId);
+          return null;
+        }
+        return this.activeTurns.resolveScopeTurn(scopeRef) ?? activeTurn;
       }
       if (!turn) {
         const pendingTurnIds = Array.isArray(activeTurn.pendingApprovals)
@@ -11479,6 +11530,41 @@ export class BridgeCoordinator {
       interruptRequested: Boolean(activeTurn.interruptRequested),
     });
     return cleared;
+  }
+
+  finalizeActiveTurnCheckpoint(scopeRef, activeTurn, result) {
+    if (!activeTurn?.checkpointId || !isTurnResultLocallyFinished(result)) {
+      return null;
+    }
+    if (this.activeTurns?.resolveScopeTurn(scopeRef) !== activeTurn) {
+      return null;
+    }
+    const outputState = String(result?.outputState ?? 'complete').trim().toLowerCase();
+    const turnId = String(result?.turnId ?? activeTurn.turnId ?? '').trim();
+    const threadId = String(result?.threadId ?? activeTurn.threadId ?? '').trim();
+    const providerProfileId = String(activeTurn.providerProfileId ?? '').trim();
+    if (['complete', 'completed', 'success', 'succeeded', 'finished'].includes(outputState)) {
+      const stableTurnPart = turnId || activeTurn.checkpointId;
+      const deliveryKey = buildActiveTurnDeliveryKey(providerProfileId, threadId, stableTurnPart);
+      this.activeTurns?.updateScopeTurn(scopeRef, {
+        turnId: turnId || activeTurn.turnId,
+        threadId: threadId || activeTurn.threadId,
+      });
+      this.activeTurns?.markCompletedPendingDelivery(scopeRef, deliveryKey);
+      this.activeTurns?.releaseScopeLock(scopeRef, activeTurn.checkpointId);
+      return {
+        checkpointId: activeTurn.checkpointId,
+        deliveryKey,
+      };
+    }
+    this.activeTurns?.updateScopeTurn(scopeRef, {
+      previousRecoveryPhase: activeTurn.recoveryPhase,
+      recoveryPhase: 'interrupted',
+      lastErrorCategory: `turn_${outputState || 'failed'}`.slice(0, 80),
+      expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+    });
+    this.activeTurns?.releaseScopeLock(scopeRef, activeTurn.checkpointId);
+    return null;
   }
 
   async resolveStatusModelValue(providerProfile, settings) {
@@ -11971,7 +12057,17 @@ export class BridgeCoordinator {
         turnId: active.turnId ?? null,
         interruptErrors,
       });
-      this.activeTurns?.endScopeTurn(scopeRef);
+      if (active.checkpointId) {
+        this.activeTurns?.updateScopeTurn(scopeRef, {
+          previousRecoveryPhase: active.recoveryPhase,
+          recoveryPhase: 'interrupted',
+          lastErrorCategory: 'interrupt_timeout',
+          expiresAt: this.now() + 24 * 60 * 60 * 1000,
+        });
+        this.activeTurns?.releaseScopeLock(scopeRef, active.checkpointId);
+      } else {
+        this.activeTurns?.endScopeTurn(scopeRef);
+      }
     }
 
     const settled = waitForSettleMs > 0
@@ -12100,6 +12196,8 @@ export class BridgeCoordinator {
               providerProfileId: session.providerProfileId,
               threadId: meta.threadId ?? session.codexThreadId,
               turnId: meta.turnId ?? null,
+              previousRecoveryPhase: 'starting',
+              recoveryPhase: 'running',
               artifactDelivery: pendingArtifactDelivery
                 ? {
                   ...pendingArtifactDelivery,
@@ -12697,6 +12795,32 @@ function toScopeRef(event) {
   return {
     platform: event.platform,
     externalScopeId: event.externalScopeId,
+  };
+}
+
+function buildActiveTurnRequestIdentity(event) {
+  const attachments = Array.isArray(event?.attachments)
+    ? event.attachments.map((attachment) => ({
+      kind: String(attachment?.kind ?? ''),
+      filename: String(attachment?.filename ?? attachment?.name ?? ''),
+      mimeType: String(attachment?.mimeType ?? ''),
+      sizeBytes: Number.isFinite(Number(attachment?.sizeBytes)) ? Number(attachment.sizeBytes) : null,
+      path: String(attachment?.path ?? ''),
+    }))
+    : [];
+  const normalizedText = String(event?.text ?? '').replace(/\s+/gu, ' ').trim();
+  const requestFingerprint = crypto
+    .createHash('sha256')
+    .update(JSON.stringify({
+      platform: String(event?.platform ?? ''),
+      externalScopeId: String(event?.externalScopeId ?? ''),
+      text: normalizedText,
+      attachments,
+    }))
+    .digest('hex');
+  return {
+    requestFingerprint,
+    requestSummary: normalizedText.slice(0, 160),
   };
 }
 
@@ -18240,60 +18364,6 @@ function resolveCommandHelpSpec(name, i18n: Translator) {
   return canonical ? specs[canonical] ?? null : null;
 }
 
-function renderCommandCatalog(i18n: Translator, {
-  showGoal = true,
-}: {
-  showGoal?: boolean;
-} = {}) {
-  const specs = getCommandHelpSpecs(i18n);
-  const lines = [
-    i18n.t('coordinator.help.catalogTitle'),
-    '',
-  ];
-  for (const commandName of COMMAND_HELP_ORDER) {
-    if (!showGoal && commandName === 'goal') {
-      continue;
-    }
-    const spec = specs[commandName];
-    const aliasLabel = spec.aliases.length > 0 ? ` (${spec.aliases.map((alias) => `/${alias}`).join(', ')})` : '';
-    lines.push(`/${spec.name}${aliasLabel} ${spec.summary}`);
-  }
-  lines.push(i18n.t('coordinator.help.localPulseLine'));
-  lines.push('');
-  lines.push(i18n.t('coordinator.help.helpLabel'));
-  lines.push(i18n.t('coordinator.help.exampleLabel'));
-  lines.push(i18n.t('coordinator.help.noteLabel'));
-  return lines.join('\n');
-}
-
-function renderCommandHelp(spec, i18n: Translator) {
-  const lines = [
-    i18n.t('coordinator.help.commandLabel', { name: spec.name }),
-    i18n.t('coordinator.help.summaryLabel', { summary: spec.summary }),
-  ];
-  if (spec.aliases.length > 0) {
-    lines.push(i18n.t('coordinator.help.aliasesLabel', { aliases: spec.aliases.map((alias) => `/${alias}`).join(' ') }));
-  }
-  lines.push('');
-  lines.push(i18n.t('coordinator.help.usageLabel'));
-  for (const usage of spec.usage) {
-    lines.push(usage);
-  }
-  lines.push('');
-  lines.push(i18n.t('coordinator.help.examplesLabel'));
-  for (const example of spec.examples) {
-    lines.push(example);
-  }
-  if (spec.notes.length > 0) {
-    lines.push('');
-    lines.push(i18n.t('coordinator.help.notesLabel'));
-    for (const note of spec.notes) {
-      lines.push(note);
-    }
-  }
-  return lines.join('\n');
-}
-
 function getCommandHelpSpecs(i18n: Translator) {
   return Object.freeze({
   helps: freezeCommandHelp({
@@ -19227,107 +19297,6 @@ function getCommandHelpSpecs(i18n: Translator) {
   });
 }
 
-const COMMAND_HELP_ORDER = Object.freeze([
-  'helps',
-  'status',
-  'usage',
-  'login',
-  'stop',
-  'review',
-  'skills',
-  'plugins',
-  'apps',
-  'mcp',
-  'use',
-  'automation',
-  'weibo',
-  'new',
-  'project',
-  'uploads',
-  'assistant',
-  'log',
-  'todo',
-  'remind',
-  'note',
-  'provider',
-  'models',
-  'model',
-  'plan',
-  'experimental',
-  'compact',
-  'goal',
-  'personality',
-  'instructions',
-  'fast',
-  'threads',
-  'search',
-  'next',
-  'prev',
-  'open',
-  'peek',
-  'rename',
-  'permissions',
-  'allow',
-  'deny',
-  'reconnect',
-  'retry',
-  'restart',
-  'lang',
-]);
-
-const HIDDEN_COMMAND_ALIASES = Object.freeze({
-  interrupt: 'stop',
-});
-
-const COMMAND_ALIAS_DEFINITIONS = Object.freeze({
-  helps: ['help', 'h'],
-  status: ['where', 'st'],
-  usage: ['us'],
-  login: ['lg'],
-  stop: ['sp'],
-  review: ['rv'],
-  skills: ['sk'],
-  plugins: ['pg'],
-  apps: ['ap'],
-  mcp: [],
-  use: [],
-  automation: ['auto'],
-  weibo: ['wb'],
-  new: ['n'],
-  project: ['proj', 'workspace', 'workdir'],
-  uploads: ['up', 'ul'],
-  assistant: ['as'],
-  log: [],
-  todo: ['td'],
-  remind: ['rmd'],
-  note: ['nt'],
-  provider: ['pd'],
-  models: ['ms'],
-  model: ['m'],
-  plan: ['pl'],
-  experimental: ['experiment', 'experiments', 'exp'],
-  compact: [],
-  goal: [],
-  personality: ['psn'],
-  instructions: ['ins'],
-  fast: [],
-  threads: ['th'],
-  search: ['se'],
-  next: ['nx'],
-  prev: ['pv'],
-  open: ['o'],
-  peek: ['pk'],
-  rename: ['rn'],
-  permissions: ['perm'],
-  allow: ['al'],
-  deny: ['dn'],
-  reconnect: ['rc'],
-  retry: ['rt'],
-  restart: ['rs'],
-  lang: [],
-});
-
-const COMMAND_CANONICAL_NAME_MAP = buildCommandCanonicalNameMapFromAliases(COMMAND_ALIAS_DEFINITIONS, HIDDEN_COMMAND_ALIASES);
 const PLUGIN_ALIAS_RESERVED_TOKENS = new Set([
   ...COMMAND_CANONICAL_NAME_MAP.keys(),
   'add',
@@ -19883,7 +19852,7 @@ function parsePluginSearchArgs(args: unknown[]): { searchTerm: string; pageNumbe
   };
 }
 
-const PLUGIN_SEARCH_SYNONYM_GROUPS = [
+const PLUGIN_SEARCH_SYNONYM_GROUPS: PluginSearchSynonymGroups = [
   ['todo', 'todos', 'task', 'tasks', 'checklist', '待办', '任务', '清单', '事项'],
   ['diary', 'journal', 'journals', 'notion', 'database', 'databases', 'workspace', '日记'],
   ['log', 'logs', 'record', 'records', '日志', '记录', '流水', '操作记录'],
@@ -19899,30 +19868,6 @@ const PLUGIN_SEARCH_SYNONYM_GROUPS = [
   ['slack', 'chat', 'message', 'messages', 'team', '聊天', '消息', '团队'],
   ['linear', 'project', 'projects', 'ticket', 'tickets', 'issue', 'issues', '项目', '工单', '缺陷'],
 ] as const;
-
-function splitPluginSearchTokens(value: unknown): string[] {
-  const normalized = normalizePluginLookupToken(value)
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .replace(/\s+/gu, ' ')
-    .trim();
-  return normalized ? normalized.split(' ').filter(Boolean) : [];
-}
-
-function buildPluginSearchTokens(searchTerm: string): string[] {
-  const normalizedQuery = normalizePluginLookupToken(searchTerm);
-  const tokens = new Set(splitPluginSearchTokens(normalizedQuery));
-  for (const group of PLUGIN_SEARCH_SYNONYM_GROUPS) {
-    const normalizedGroup = group
-      .flatMap((entry) => [normalizePluginLookupToken(entry), ...splitPluginSearchTokens(entry)])
-      .filter(Boolean);
-    if (normalizedGroup.some((entry) => tokens.has(entry) || (entry.length >= 2 && normalizedQuery.includes(entry)))) {
-      for (const entry of normalizedGroup) {
-        tokens.add(entry);
-      }
-    }
-  }
-  return Array.from(tokens).filter((token) => token.length > 0);
-}
 
 function collectPluginSearchFields(detail: ProviderPluginDetail): { primary: string[]; secondary: string[] } {
   const summary = detail.summary;
@@ -19964,100 +19909,12 @@ function collectPluginSearchFields(detail: ProviderPluginDetail): { primary: str
   };
 }
 
-function isPluginSubsequenceMatch(needle: string, haystack: string): boolean {
-  if (needle.length < 3 || haystack.length < 3 || needle.length > haystack.length + 2) {
-    return false;
-  }
-  let index = 0;
-  for (const char of haystack) {
-    if (char === needle[index]) {
-      index += 1;
-      if (index >= needle.length) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-function pluginEditDistance(left: string, right: string): number {
-  if (left === right) {
-    return 0;
-  }
-  if (!left) {
-    return right.length;
-  }
-  if (!right) {
-    return left.length;
-  }
-  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
-  const current = Array.from({ length: right.length + 1 }, () => 0);
-  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
-    current[0] = leftIndex;
-    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
-      const cost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
-      current[rightIndex] = Math.min(
-        previous[rightIndex] + 1,
-        current[rightIndex - 1] + 1,
-        previous[rightIndex - 1] + cost,
-      );
-    }
-    for (let index = 0; index < previous.length; index += 1) {
-      previous[index] = current[index];
-    }
-  }
-  return previous[right.length] ?? Math.max(left.length, right.length);
-}
-
-function isPluginFuzzyTokenMatch(token: string, fieldToken: string): boolean {
-  if (token.length < 3 || fieldToken.length < 3) {
-    return false;
-  }
-  if (isPluginSubsequenceMatch(token, fieldToken)) {
-    return true;
-  }
-  const maxDistance = token.length <= 5 ? 1 : 2;
-  return Math.abs(token.length - fieldToken.length) <= maxDistance
-    && pluginEditDistance(token, fieldToken) <= maxDistance;
-}
-
-function scorePluginTokenAgainstField(token: string, normalizedField: string): number {
-  if (!token || !normalizedField) {
-    return 0;
-  }
-  if (normalizedField === token) {
-    return 72;
-  }
-  if (normalizedField.startsWith(token)) {
-    return 48;
-  }
-  if (normalizedField.includes(token)) {
-    return token.length >= 3 ? 32 : 12;
-  }
-  const fieldTokens = splitPluginSearchTokens(normalizedField);
-  let best = 0;
-  for (const fieldToken of fieldTokens) {
-    if (fieldToken === token) {
-      best = Math.max(best, 64);
-    } else if (fieldToken.startsWith(token)) {
-      best = Math.max(best, 36);
-    } else if (fieldToken.includes(token)) {
-      best = Math.max(best, 24);
-    } else if (token.length >= 3 && token.includes(fieldToken) && fieldToken.length >= 3) {
-      best = Math.max(best, 18);
-    } else if (isPluginFuzzyTokenMatch(token, fieldToken)) {
-      best = Math.max(best, 16);
-    }
-  }
-  return best;
-}
-
 function scorePluginMatch(detail: ProviderPluginDetail, searchTerm: string): number {
   const normalizedQuery = normalizePluginLookupToken(searchTerm);
   if (!normalizedQuery) {
     return 0;
   }
-  const tokens = buildPluginSearchTokens(searchTerm);
+  const tokens = buildPluginSearchTokens(searchTerm, PLUGIN_SEARCH_SYNONYM_GROUPS);
   if (tokens.length === 0) {
     return 0;
   }
@@ -21154,15 +21011,6 @@ function validatePluginAliasChange({
   };
 }
 
-function normalizePluginLookupToken(value: unknown): string {
-  return String(value ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/gu, ' ')
-    .replace(/[_/\\-]+/gu, ' ')
-    .replace(/\s+/gu, ' ');
-}
-
 function normalizePluginAliasValue(value: unknown): string {
   return String(value ?? '')
     .trim()
@@ -21421,33 +21269,6 @@ function buildCommandCanonicalNameMap(
     map.set(alias, canonical);
   }
   return map;
-}
-
-function buildCommandCanonicalNameMapFromAliases(
-  aliases: Record<string, readonly string[]>,
-  hiddenAliases: Record<string, string> = {},
-) {
-  const map = new Map();
-  for (const [canonical, aliasList] of Object.entries(aliases)) {
-    map.set(canonical, canonical);
-    for (const alias of aliasList) {
-      map.set(alias, canonical);
-    }
-  }
-  for (const [alias, canonical] of Object.entries(hiddenAliases)) {
-    map.set(alias, canonical);
-  }
-  return map;
-}
-
-function freezeCommandHelp(spec: CommandHelpSpec): CommandHelpSpec {
-  return Object.freeze({
-    ...spec,
-    aliases: Object.freeze([...(spec.aliases ?? [])]),
-    usage: Object.freeze([...(spec.usage ?? [])]),
-    examples: Object.freeze([...(spec.examples ?? [])]),
-    notes: Object.freeze([...(spec.notes ?? [])]),
-  });
 }
 
 function normalizeHelpFlag(value) {

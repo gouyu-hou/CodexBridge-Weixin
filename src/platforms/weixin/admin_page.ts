@@ -2444,6 +2444,10 @@ export function renderAdminHtml(adminToken: string, cspNonce: string) {
             <div class="metric-label">最近错误</div>
             <div class="metric-value" id="metric-error">-</div>
           </div>
+          <div class="metric">
+            <div class="metric-label">任务恢复</div>
+            <div class="metric-value" id="metric-recovery">-</div>
+          </div>
         </div>
       </div>
     </section>
@@ -4983,6 +4987,7 @@ export function renderAdminHtml(adminToken: string, cspNonce: string) {
     function renderRuntimeStatus(data) {
       const bridge = data.bridge || {};
       const weixin = bridge.weixin || {};
+      const turnRecovery = bridge.turnRecovery || {};
       const active = Number(bridge.activeTurns || 0);
       const queued = Number(bridge.queuedTurns || 0);
       const maxTurns = Number(bridge.maxConcurrentTurns || 0);
@@ -4996,6 +5001,11 @@ export function renderAdminHtml(adminToken: string, cspNonce: string) {
         ? String(bridge.lastError).slice(0, 80)
         : '无';
       $('metric-error').title = bridge.lastError || '';
+      $('metric-recovery').textContent = Number(turnRecovery.total || 0)
+        ? (Number(turnRecovery.running || 0) + ' 运行 / '
+          + Number(turnRecovery.reconciling || 0) + ' 对账 / '
+          + Number(turnRecovery.uncertain || 0) + ' 待确认')
+        : '无待恢复任务';
       $('overview-account-total').textContent = fmtNumber(accountCount);
       $('status-updated').textContent = [
         '上次轮询 ' + fmtRelativeMs(bridge.lastPollAt),
