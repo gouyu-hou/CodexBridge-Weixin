@@ -47,7 +47,7 @@
     "weixin:electron:prepare-runtime": "node scripts/electron/prepare-windows-runtime.cjs",
     "weixin:electron:lightweight": "node scripts/electron/build-lightweight-update.cjs",
     "weixin:electron:pack": "npm run weixin:electron:prepare-runtime && electron-builder --win dir --x64",
-    "weixin:electron:dist": "npm run weixin:electron:prepare-runtime && electron-builder --win nsis --x64",
+    "weixin:electron:dist": "npm run weixin:electron:prepare-runtime && electron-builder --win nsis --x64 --publish never",
     "weixin:electron:publish": "npm run weixin:electron:prepare-runtime && electron-builder --win nsis --x64 --publish always",
     "codex:cleanup-internal-threads": "tsx src/cli.ts codex cleanup-internal-threads",
     "test": "node ./scripts/test.mjs",

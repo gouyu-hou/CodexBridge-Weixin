@@ -101,6 +101,17 @@ test('CI runs the complete validation gate and Windows package smoke without pub
   assert.doesNotMatch(workflow, /--publish|git push|gh release (?:create|edit)/u);
 });
 
+test('Electron build scripts keep CI packaging separate from GitHub publishing', () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+  ) as { scripts?: Record<string, string> };
+  const distCommand = packageJson.scripts?.['weixin:electron:dist'] ?? '';
+  const publishCommand = packageJson.scripts?.['weixin:electron:publish'] ?? '';
+
+  assert.match(distCommand, /--publish never/u);
+  assert.match(publishCommand, /--publish always/u);
+});
+
 test('CI builds the Web console and its README matches the implemented surface', () => {
   const workflow = fs.readFileSync(
     path.join(process.cwd(), '.github', 'workflows', 'ci.yml'),
