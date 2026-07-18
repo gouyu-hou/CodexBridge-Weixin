@@ -79,6 +79,8 @@ export class BridgeSessionService {
 
   private readonly now: () => number;
 
+  private readonly lastSessionTimestampByProvider = new Map<string, number>();
+
   private readonly i18n: Translator;
 
   constructor({
@@ -150,7 +152,7 @@ export class BridgeSessionService {
       },
     });
     const resolvedTitle = normalizeThreadTitle(thread.title) ?? startTitle;
-    const now = this.now();
+    const now = this.nextSessionTimestamp(providerProfile.id);
     const session: BridgeSession = {
       id: crypto.randomUUID(),
       providerProfileId: providerProfile.id,
@@ -206,7 +208,7 @@ export class BridgeSessionService {
       },
     });
     const resolvedTitle = normalizeThreadTitle(thread.title) ?? startTitle;
-    const now = this.now();
+    const now = this.nextSessionTimestamp(providerProfile.id);
     const session: BridgeSession = {
       id: crypto.randomUUID(),
       providerProfileId: providerProfile.id,
@@ -253,7 +255,7 @@ export class BridgeSessionService {
     const next: BridgeSession = {
       ...current,
       ...updates,
-      updatedAt: this.now(),
+      updatedAt: this.nextSessionTimestamp(current.providerProfileId),
     };
     this.bridgeSessions.save(next);
     return next;
@@ -267,6 +269,19 @@ export class BridgeSessionService {
     return this.bridgeSessions
       .listByProviderProfileId(providerProfileId)
       .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  private nextSessionTimestamp(providerProfileId: string): number {
+    const persistedMaximum = this.lastSessionTimestampByProvider.get(providerProfileId)
+      ?? this.bridgeSessions
+        .listByProviderProfileId(providerProfileId)
+        .reduce((maximum, session) => (
+          Number.isFinite(session.updatedAt) ? Math.max(maximum, session.updatedAt) : maximum
+        ), Number.NEGATIVE_INFINITY);
+    const observed = this.now();
+    const next = observed > persistedMaximum ? observed : persistedMaximum + 1;
+    this.lastSessionTimestampByProvider.set(providerProfileId, next);
+    return next;
   }
 
   createDefaultThreadTitle(providerProfileId: string): string {

@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { BridgeSessionService } from '../../src/core/bridge_session_service.js';
+import { SessionRouter } from '../../src/core/session_router.js';
 import { createCodexBridgeRuntime } from '../../src/runtime/bootstrap.js';
+import { PluginRegistry } from '../../src/runtime/plugin_registry.js';
+import { InMemoryBridgeSessionRepository } from '../../src/store/in_memory/in_memory_bridge_session_repository.js';
+import { InMemoryPlatformBindingRepository } from '../../src/store/in_memory/in_memory_platform_binding_repository.js';
+import { InMemoryProviderProfileRepository } from '../../src/store/in_memory/in_memory_provider_profile_repository.js';
+import { InMemorySessionSettingsRepository } from '../../src/store/in_memory/in_memory_session_settings_repository.js';
+import { InMemoryThreadMetadataRepository } from '../../src/store/in_memory/in_memory_thread_metadata_repository.js';
 
 class FakeProviderPlugin {
   kind: string;
@@ -12,9 +20,11 @@ class FakeProviderPlugin {
   archivedThreadIds: Set<string>;
   archiveThreadCalls: string[];
   unarchiveThreadCalls: string[];
+  now: () => number;
 
-  constructor(kind: string) {
+  constructor(kind: string, now = () => Date.now()) {
     this.kind = kind;
+    this.now = now;
     this.calls = [];
     this.counter = 0;
     this.threads = new Map();
@@ -36,7 +46,7 @@ class FakeProviderPlugin {
       threadId: `${providerProfile.id}-thread-${this.counter}`,
       cwd: cwd ?? `/tmp/${providerProfile.id}`,
       title: title ?? `${providerProfile.displayName} thread ${this.counter}`,
-      updatedAt: Date.now() + this.counter,
+      updatedAt: this.now(),
       preview: '',
     };
     this.threads.set(thread.threadId, thread);
@@ -62,6 +72,41 @@ class FakeProviderPlugin {
     this.archivedThreadIds.delete(threadId);
   }
 }
+
+test('new sessions keep deterministic recency order when the clock does not advance', async () => {
+  const now = () => 1_000;
+  const providerProfiles = new InMemoryProviderProfileRepository();
+  const bridgeSessions = new InMemoryBridgeSessionRepository();
+  const sessionSettings = new InMemorySessionSettingsRepository();
+  const threadMetadata = new InMemoryThreadMetadataRepository();
+  const platformBindings = new InMemoryPlatformBindingRepository();
+  const providerRegistry = new PluginRegistry();
+  const provider = new FakeProviderPlugin('openai-native', now);
+  const profile = makeProviderProfile('openai-default', 'openai-native', 'OpenAI Default');
+  providerProfiles.save(profile);
+  providerRegistry.registerProvider(provider);
+  const sessionRouter = new SessionRouter({ platformBindings, bridgeSessions });
+  const service = new BridgeSessionService({
+    providerProfiles,
+    bridgeSessions,
+    sessionSettings,
+    threadMetadata,
+    providerRegistry,
+    sessionRouter,
+    now,
+  });
+
+  const first = await service.createDetachedSession({ providerProfileId: profile.id });
+  const second = await service.createDetachedSession({ providerProfileId: profile.id });
+  const third = await service.createDetachedSession({ providerProfileId: profile.id });
+
+  const listed = await service.listProviderThreads(profile.id);
+
+  assert.deepEqual(
+    listed.items.map((item) => item.threadId),
+    [third.codexThreadId, second.codexThreadId, first.codexThreadId],
+  );
+});
 
 function makeProviderProfile(id: string, providerKind: string, displayName: string) {
   const now = Date.now();
