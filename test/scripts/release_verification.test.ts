@@ -112,6 +112,21 @@ test('Electron build scripts keep CI packaging separate from GitHub publishing',
   assert.match(publishCommand, /--publish always/u);
 });
 
+test('CI audits production dependencies against the official npm advisory service', () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+  ) as { scripts?: Record<string, string> };
+  const workflow = fs.readFileSync(
+    path.join(process.cwd(), '.github', 'workflows', 'ci.yml'),
+    'utf8',
+  );
+  const auditCommand = packageJson.scripts?.['audit:prod'] ?? '';
+
+  assert.match(auditCommand, /npm audit --omit=dev --audit-level=high/u);
+  assert.match(auditCommand, /--registry=https:\/\/registry\.npmjs\.org/u);
+  assert.match(workflow, /npm run audit:prod/u);
+});
+
 test('CI builds the Web console and its README matches the implemented surface', () => {
   const workflow = fs.readFileSync(
     path.join(process.cwd(), '.github', 'workflows', 'ci.yml'),

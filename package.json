@@ -20,6 +20,7 @@
     "mission-control:typecheck": "tsc -p packages/mission-control/tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:js": "tsc -p tsconfig.checkjs.json",
+    "audit:prod": "npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org",
     "release": "node scripts/release/release.mjs",
     "verify:release": "npm run typecheck && npm run typecheck:js && npm run web:verify && npm run codex-gateway:check-boundary && npm run codex-gateway:typecheck && npm run codex-provider-relay:check-boundary && npm run codex-provider-relay:typecheck && npm run codex-native-api:check-boundary && npm run codex-native-api:typecheck && npm run mission-control:check-boundary && npm run mission-control:typecheck && npm run test && npm run codex-gateway:test && npm run codex-provider-relay:test && npm run codex-native-api:test && npm run mission-control:test && npm run build && npm run codex-gateway:build && npm run codex-provider-relay:build && npm run codex-native-api:build && npm run mission-control:build && git diff --check",
     "codex-gateway:build": "tsc -p packages/codex-gateway/tsconfig.json",
