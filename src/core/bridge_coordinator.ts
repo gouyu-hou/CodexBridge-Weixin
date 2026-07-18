@@ -6,6 +6,12 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { formatPlatformScopeKey } from './contracts.js';
 import { buildActiveTurnDeliveryKey } from './active_turn_delivery.js';
+import {
+  parseAllowCommandArgs,
+  renderAllowAcknowledgementLines,
+  renderAllowLines,
+  renderApprovalPromptLines,
+} from './approval_command.js';
 import { isAgentCommandEnabled } from './command_availability.js';
 import {
   COMMAND_CANONICAL_NAME_MAP,
@@ -28,9 +34,16 @@ import { parseSlashCommand } from './command_parser.js';
 import { NotFoundError } from './errors.js';
 import { ProviderUsageService } from './provider_usage_service.js';
 import {
+  formatApprovalPolicyValue,
+  formatApprovalsReviewerValue,
+  formatPermissionsMode,
+  formatSandboxModeValue,
+  normalizePermissionsCommandArg,
+  renderPermissionsLines,
+} from './permissions_command.js';
+import {
   buildLegacyReadOnlyCustomSettingsUpdate,
   buildPermissionsSettingsUpdate,
-  normalizePermissionsMode,
   resolvePermissionsState,
   type LegacyAccessPreset,
 } from './permissions_mode.js';
@@ -21490,22 +21503,6 @@ function truncateUserError(message, limit = 180) {
   return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
 }
 
-function normalizePermissionsCommandArg(
-  value: unknown,
-): NonNullable<SessionSettings['permissionsMode']> | null {
-  const normalized = String(value ?? '').trim().toLowerCase();
-  if (!normalized) {
-    return null;
-  }
-  if (normalized === 'default') {
-    return 'default-permissions';
-  }
-  if (normalized === 'read-only') {
-    return null;
-  }
-  return normalizePermissionsMode(normalized);
-}
-
 function normalizeCodexPersonalityArg(value) {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (normalized === 'friendly' || normalized === 'pragmatic' || normalized === 'none') {
@@ -21612,62 +21609,6 @@ function formatInstructionsStatus(hasInstructions: boolean, i18n: Translator) {
   return hasInstructions ? i18n.t('common.enabled') : i18n.t('common.notSet');
 }
 
-function formatPermissionsMode(
-  mode: NonNullable<SessionSettings['permissionsMode']>,
-  i18n: Translator,
-): string {
-  switch (mode) {
-    case 'auto-review':
-      return i18n.t('coordinator.permissions.mode.autoReview');
-    case 'full-access':
-      return i18n.t('coordinator.permissions.mode.fullAccess');
-    case 'custom':
-      return i18n.t('coordinator.permissions.mode.custom');
-    case 'default-permissions':
-    default:
-      return i18n.t('coordinator.permissions.mode.defaultPermissions');
-  }
-}
-
-function formatApprovalPolicyValue(
-  state: ReturnType<typeof resolvePermissionsState>,
-  i18n: Translator,
-): string {
-  if (state.usesProfileDefaults) {
-    return i18n.t('coordinator.permissions.configuredInProfile');
-  }
-  return state.approvalPolicy ?? i18n.t('common.notSet');
-}
-
-function formatSandboxModeValue(
-  state: ReturnType<typeof resolvePermissionsState>,
-  i18n: Translator,
-): string {
-  if (state.usesProfileDefaults) {
-    return i18n.t('coordinator.permissions.configuredInProfile');
-  }
-  return state.sandboxMode ?? i18n.t('common.notSet');
-}
-
-function formatApprovalsReviewerValue(
-  state: ReturnType<typeof resolvePermissionsState>,
-  i18n: Translator,
-): string {
-  if (state.permissionsMode === 'full-access') {
-    return i18n.t('coordinator.permissions.notApplicable');
-  }
-  if (state.usesProfileDefaults) {
-    return i18n.t('coordinator.permissions.configuredInProfile');
-  }
-  if (state.approvalsReviewer === 'auto_review') {
-    return i18n.t('coordinator.permissions.reviewer.autoReview');
-  }
-  if (state.approvalsReviewer === 'user') {
-    return i18n.t('coordinator.permissions.reviewer.user');
-  }
-  return i18n.t('common.notSet');
-}
-
 function buildThreadOperationKey(scopeRef: PlatformScopeRef) {
   return formatPlatformScopeKey(scopeRef.platform, scopeRef.externalScopeId);
 }
@@ -21744,192 +21685,6 @@ function extractInstructionsEditBody(text: string) {
     return '';
   }
   return compactWhitespace(match[1] ?? '');
-}
-
-function renderPermissionsLines(settings, i18n: Translator) {
-  const state = resolvePermissionsState(settings);
-  return [
-    i18n.t('coordinator.permissions.current', { value: formatPermissionsMode(state.permissionsMode, i18n) }),
-    i18n.t('coordinator.status.approvalPolicy', { value: formatApprovalPolicyValue(state, i18n) }),
-    i18n.t('coordinator.status.sandboxMode', { value: formatSandboxModeValue(state, i18n) }),
-    i18n.t('coordinator.status.approvalsReviewer', { value: formatApprovalsReviewerValue(state, i18n) }),
-    '',
-    i18n.t('coordinator.permissions.availableCommands'),
-    '- /permissions default-permissions',
-    '- /permissions auto-review',
-    '- /permissions full-access',
-    '- /permissions custom',
-    '',
-    i18n.t('coordinator.permissions.notes'),
-    i18n.t('coordinator.permissions.defaultPermissionsDesc'),
-    i18n.t('coordinator.permissions.autoReviewDesc'),
-    i18n.t('coordinator.permissions.fullAccessDesc'),
-    i18n.t('coordinator.permissions.customDesc'),
-    '',
-    i18n.t('coordinator.permissions.applyNextTurn'),
-  ];
-}
-
-function parseAllowCommandArgs(args): { option: 1 | 2 | 3 | null; requestIndex: number } {
-  const option = normalizeAllowOption(args[0]);
-  const parsedIndex = Number.parseInt(String(args[1] ?? ''), 10);
-  return {
-    option,
-    requestIndex: Number.isFinite(parsedIndex) && parsedIndex > 0 ? parsedIndex : 1,
-  };
-}
-
-function normalizeAllowOption(value): 1 | 2 | 3 | null {
-  const normalized = String(value ?? '').trim().toLowerCase();
-  if (['1', 'once', 'yes', 'y', 'approve'].includes(normalized)) {
-    return 1;
-  }
-  if (['2', 'session', 'always', 'remember', 'allow'].includes(normalized)) {
-    return 2;
-  }
-  if (['3', 'deny', 'no', 'n', 'reject'].includes(normalized)) {
-    return 3;
-  }
-  return null;
-}
-
-function renderAllowLines(requests: ProviderApprovalRequest[], i18n: Translator) {
-  const lines = [
-    i18n.t('coordinator.allow.title', { count: requests.length }),
-  ];
-  if (requests.length > 1) {
-    lines.push(i18n.t('coordinator.allow.requestIndexHint'));
-  }
-  const visibleRequests = requests.slice(0, 3);
-  for (const [index, request] of visibleRequests.entries()) {
-    if (lines.length > 1) {
-      lines.push('');
-    }
-    lines.push(...renderApprovalRequestLines(request, index + 1, i18n));
-  }
-  if (requests.length > visibleRequests.length) {
-    lines.push('');
-    lines.push(i18n.t('coordinator.allow.moreRequests', { count: requests.length - visibleRequests.length }));
-  }
-  return lines;
-}
-
-function renderApprovalPromptLines(requests: ProviderApprovalRequest[], i18n: Translator) {
-  const visibleRequest = requests[0] ?? null;
-  const lines = [
-    i18n.t('coordinator.allow.title', { count: requests.length }),
-  ];
-  if (visibleRequest) {
-    lines.push(i18n.t('coordinator.allow.requestHeader', {
-      index: 1,
-      kind: formatApprovalKind(visibleRequest.kind, i18n),
-    }));
-    if (visibleRequest.reason) {
-      lines.push(i18n.t('coordinator.allow.reason', {
-        value: truncateInlineText(visibleRequest.reason, 160),
-      }));
-    }
-  }
-  lines.push(i18n.t('coordinator.allow.promptView'));
-  if (requests.length > 1) {
-    lines.push(i18n.t('coordinator.allow.promptDecisionsIndexed'));
-  } else if (visibleRequest && !supportsSessionWideApproval(visibleRequest)) {
-    lines.push(i18n.t('coordinator.allow.promptDecisionsSingleNoRemember'));
-  } else {
-    lines.push(i18n.t('coordinator.allow.promptDecisionsSingle'));
-  }
-  return lines;
-}
-
-function renderApprovalRequestLines(request: ProviderApprovalRequest, index: number, i18n: Translator) {
-  const lines = [
-    i18n.t('coordinator.allow.requestHeader', {
-      index,
-      kind: formatApprovalKind(request.kind, i18n),
-    }),
-  ];
-  if (request.reason) {
-    lines.push(i18n.t('coordinator.allow.reason', { value: request.reason }));
-  }
-  if (request.command) {
-    lines.push(i18n.t('coordinator.allow.command', { value: request.command }));
-  }
-  if (request.cwd) {
-    lines.push(i18n.t('coordinator.allow.cwd', { value: request.cwd }));
-  }
-  if (request.fileChanges?.length) {
-    lines.push(i18n.t('coordinator.allow.files', { value: request.fileChanges.join(', ') }));
-  }
-  if (request.grantRoot) {
-    lines.push(i18n.t('coordinator.allow.grantRoot', { value: request.grantRoot }));
-  }
-  if (request.networkPermission != null) {
-    lines.push(i18n.t('coordinator.allow.network', {
-      value: request.networkPermission ? i18n.t('common.enabled') : i18n.t('common.disabled'),
-    }));
-  }
-  if (request.fileReadPermissions?.length) {
-    lines.push(i18n.t('coordinator.allow.fileRead', { value: request.fileReadPermissions.join(', ') }));
-  }
-  if (request.fileWritePermissions?.length) {
-    lines.push(i18n.t('coordinator.allow.fileWrite', { value: request.fileWritePermissions.join(', ') }));
-  }
-  lines.push(i18n.t('coordinator.allow.options'));
-  lines.push(i18n.t('coordinator.allow.option1'));
-  lines.push(supportsSessionWideApproval(request)
-    ? i18n.t('coordinator.allow.option2')
-    : i18n.t('coordinator.allow.option2Unavailable'));
-  lines.push(i18n.t('coordinator.allow.option3'));
-  lines.push(i18n.t('coordinator.allow.help'));
-  return lines;
-}
-
-function renderAllowAcknowledgementLines(
-  request: ProviderApprovalRequest,
-  option: 1 | 2 | 3,
-  i18n: Translator,
-  activeTurnContinues = true,
-) {
-  const followUpLine = activeTurnContinues
-    ? (option === 3 ? i18n.t('coordinator.allow.waitModel') : i18n.t('coordinator.allow.continue'))
-    : i18n.t('coordinator.allow.noLongerActive');
-  if (option === 1) {
-    return [
-      i18n.t('coordinator.allow.approvedOnce', { kind: formatApprovalKind(request.kind, i18n) }),
-      followUpLine,
-    ];
-  }
-  if (option === 2) {
-    return [
-      i18n.t('coordinator.allow.approvedSession', { kind: formatApprovalKind(request.kind, i18n) }),
-      followUpLine,
-    ];
-  }
-  return [
-    i18n.t('coordinator.allow.denied', { kind: formatApprovalKind(request.kind, i18n) }),
-    followUpLine,
-  ];
-}
-
-function supportsSessionWideApproval(request: ProviderApprovalRequest): boolean {
-  if (request.kind === 'permissions' || request.kind === 'file_change') {
-    return true;
-  }
-  return Boolean(
-    request.availableDecisionKeys?.includes('acceptForSession')
-    || request.availableDecisionKeys?.includes('acceptWithExecpolicyAmendment')
-    || (request.execPolicyAmendment && request.execPolicyAmendment.length > 0),
-  );
-}
-
-function formatApprovalKind(kind: ProviderApprovalRequest['kind'], i18n: Translator) {
-  if (kind === 'permissions') {
-    return i18n.t('coordinator.allow.kind.permissions');
-  }
-  if (kind === 'file_change') {
-    return i18n.t('coordinator.allow.kind.fileChange');
-  }
-  return i18n.t('coordinator.allow.kind.command');
 }
 
 function parseWeiboCommandArgs(args): HandleWeiboCommandResult | null {
