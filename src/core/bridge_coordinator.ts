@@ -31,6 +31,16 @@ import {
   type PluginSearchSynonymGroups,
 } from './plugin_search_text.js';
 import { parseSlashCommand } from './command_parser.js';
+import {
+  resolveThreadCommandRoute,
+  resolveThreadSkillCandidateItems,
+  skillActionToThreadOperationKind,
+  type PendingThreadCommandOperation,
+  type ThreadCommandInventoryItem,
+  type ThreadCommandOperationKind,
+  type ThreadCommandSkillResult,
+  type ThreadCommandSkillSubcommand,
+} from './thread_command.js';
 import { NotFoundError } from './errors.js';
 import { ProviderUsageService } from './provider_usage_service.js';
 import {
@@ -738,68 +748,6 @@ type PendingPluginAliasDraft = {
   plugin: ProviderPluginSummary;
   alias: string | null;
 };
-
-type ThreadCommandOperationKind = 'archive' | 'restore' | 'pin' | 'unpin';
-type ThreadCommandSkillSubcommand = ThreadCommandOperationKind | 'search' | 'natural';
-
-type ThreadCommandInventoryItem = {
-  threadId: string;
-  title: string | null;
-  alias: string | null;
-  preview: string | null;
-  updatedAt: number | null;
-  archivedAt: number | null;
-  pinnedAt: number | null;
-  isCurrent: boolean;
-};
-
-type PendingThreadCommandOperation = {
-  kind: ThreadCommandOperationKind;
-  createdAt: number;
-  rawInput: string;
-  providerProfileId: string;
-  summary: string;
-  reason: string | null;
-  threads: ThreadCommandInventoryItem[];
-};
-
-type ThreadCommandSkillResult =
-  | {
-    action: 'show_default_threads' | 'show_all_threads' | 'show_pinned_threads';
-    confidence: number;
-    reason: string | null;
-  }
-  | {
-    action: 'search_threads' | 'open_thread' | 'peek_thread';
-    confidence: number;
-    summary: string | null;
-    candidateThreadIds: string[];
-  }
-  | {
-    action: 'rename_thread';
-    confidence: number;
-    summary: string;
-    candidateThreadIds: string[];
-    newName: string;
-  }
-  | {
-    action: 'propose_archive_threads' | 'propose_restore_threads' | 'propose_pin_threads' | 'propose_unpin_threads';
-    confidence: number;
-    summary: string;
-    reason: string | null;
-    candidateThreadIds: string[];
-  }
-  | {
-    action: 'clarify';
-    confidence: number;
-    question: string;
-    candidates: Array<Record<string, unknown>>;
-  }
-  | {
-    action: 'no_match' | 'reject' | 'local_only';
-    confidence: number;
-    reason: string | null;
-  };
 
 type ResolvedPluginAlias = {
   pluginId: string;
@@ -3639,62 +3587,32 @@ export class BridgeCoordinator {
   }
 
   async handleThreadsCommand(event, args = []) {
-    const action = String(args[0] ?? '').trim().toLowerCase();
-    if (action === 'confirm' || action === 'ok') {
+    const route = resolveThreadCommandRoute(args);
+    if (route.kind === 'confirm') {
       return this.handleThreadsConfirmCommand(event);
     }
-    if (action === 'cancel') {
+    if (route.kind === 'cancel') {
       return this.handleThreadsCancelCommand(event);
     }
-    if (action === 'all') {
-      return this.renderThreadsHomePage(event, { includeArchived: true, onlyPinned: false });
+    if (route.kind === 'home') {
+      return this.renderThreadsHomePage(event, route);
     }
-    if (action === 'pinned') {
-      return this.renderThreadsHomePage(event, { includeArchived: false, onlyPinned: true });
+    if (route.kind === 'natural') {
+      return this.handleThreadsNaturalCommand(event, route.args);
     }
-    if (action === 'del') {
-      if (this.areExplicitThreadTargets(event, args.slice(1))) {
-        return this.handleThreadsArchiveCommand(event, args.slice(1));
-      }
-      return this.handleThreadNaturalManagementCommand(event, 'archive', args.slice(1));
+    if (!this.areExplicitThreadTargets(event, route.args)) {
+      return this.handleThreadNaturalManagementCommand(event, route.operation, route.args);
     }
-    if (action === 'delete') {
-      if (this.areExplicitThreadTargets(event, args.slice(1))) {
-        return this.handleThreadsArchiveCommand(event, args.slice(1));
-      }
-      return this.handleThreadNaturalManagementCommand(event, 'archive', args.slice(1));
+    if (route.operation === 'archive') {
+      return this.handleThreadsArchiveCommand(event, route.args);
     }
-    if (action === 'archive') {
-      if (this.areExplicitThreadTargets(event, args.slice(1))) {
-        return this.handleThreadsArchiveCommand(event, args.slice(1));
-      }
-      return this.handleThreadNaturalManagementCommand(event, 'archive', args.slice(1));
+    if (route.operation === 'restore') {
+      return this.handleThreadsRestoreCommand(event, route.args);
     }
-    if (action === 'restore') {
-      if (this.areExplicitThreadTargets(event, args.slice(1))) {
-        return this.handleThreadsRestoreCommand(event, args.slice(1));
-      }
-      return this.handleThreadNaturalManagementCommand(event, 'restore', args.slice(1));
+    if (route.operation === 'pin') {
+      return this.handleThreadsPinCommand(event, route.args);
     }
-    if (action === 'pin') {
-      if (args.length === 1) {
-        return this.renderThreadsHomePage(event, { includeArchived: false, onlyPinned: true });
-      }
-      if (this.areExplicitThreadTargets(event, args.slice(1))) {
-        return this.handleThreadsPinCommand(event, args.slice(1));
-      }
-      return this.handleThreadNaturalManagementCommand(event, 'pin', args.slice(1));
-    }
-    if (action === 'unpin') {
-      if (this.areExplicitThreadTargets(event, args.slice(1))) {
-        return this.handleThreadsUnpinCommand(event, args.slice(1));
-      }
-      return this.handleThreadNaturalManagementCommand(event, 'unpin', args.slice(1));
-    }
-    if (action) {
-      return this.handleThreadsNaturalCommand(event, args);
-    }
-    return this.renderThreadsHomePage(event, { includeArchived: false, onlyPinned: false });
+    return this.handleThreadsUnpinCommand(event, route.args);
   }
 
   async handleSearchCommand(event, args) {
@@ -4179,22 +4097,7 @@ export class BridgeCoordinator {
     inventory: ThreadCommandInventoryItem[],
     candidateThreadIds: string[],
   ): ThreadCommandInventoryItem[] {
-    const byId = new Map(inventory.map((item) => [item.threadId, item] as const));
-    const seen = new Set<string>();
-    const items: ThreadCommandInventoryItem[] = [];
-    for (const threadId of candidateThreadIds) {
-      const normalizedThreadId = String(threadId ?? '').trim();
-      if (!normalizedThreadId || seen.has(normalizedThreadId)) {
-        continue;
-      }
-      const item = byId.get(normalizedThreadId);
-      if (!item) {
-        continue;
-      }
-      seen.add(normalizedThreadId);
-      items.push(item);
-    }
-    return items;
+    return resolveThreadSkillCandidateItems(inventory, candidateThreadIds);
   }
 
   resolveSingleThreadSkillTarget(
@@ -21624,24 +21527,6 @@ function threadOperationKindToSkillAction(kind: ThreadCommandOperationKind): Thr
     return 'propose_pin_threads';
   }
   return 'propose_unpin_threads';
-}
-
-function skillActionToThreadOperationKind(
-  action: ThreadCommandSkillResult['action'],
-): ThreadCommandOperationKind | null {
-  if (action === 'propose_archive_threads') {
-    return 'archive';
-  }
-  if (action === 'propose_restore_threads') {
-    return 'restore';
-  }
-  if (action === 'propose_pin_threads') {
-    return 'pin';
-  }
-  if (action === 'propose_unpin_threads') {
-    return 'unpin';
-  }
-  return null;
 }
 
 function isThreadItemEligibleForOperation(item: ThreadCommandInventoryItem, kind: ThreadCommandOperationKind): boolean {
