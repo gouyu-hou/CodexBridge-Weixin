@@ -82,20 +82,14 @@
   "build": {
     "appId": "com.gouyu.codexbridge.weixin.admin",
     "productName": "CodexBridge Weixin Admin",
-    "asar": false,
+    "asar": true,
     "artifactName": "CodexBridge-Weixin-Admin-Setup-${version}.${ext}",
     "directories": {
       "output": "release"
     },
     "files": [
       "assets/**/*",
-      "config/examples/**/*",
-      "packages/**/*",
       "scripts/electron/**/*",
-      "scripts/service/run-weixin-service.mjs",
-      "src/**/*",
-      "tsconfig.json",
-      "tsconfig.checkjs.json",
       "package.json",
       "!**/.env",
       "!**/.env.*",
@@ -113,9 +107,13 @@
       "!node_modules/@openai/codex-darwin-*/**/*",
       "!node_modules/@openai/codex-linux-*/**/*",
       "!node_modules/@openai/codex-win32-ia32/**/*",
+      "!node_modules/@openai/codex-win32-x64/**/*",
       "!node_modules/@esbuild/darwin-*/**/*",
       "!node_modules/@esbuild/linux-*/**/*",
-      "!node_modules/@esbuild/win32-ia32/**/*"
+      "!node_modules/@esbuild/win32-ia32/**/*",
+      "!node_modules/@esbuild/win32-x64/**/*",
+      "!node_modules/ffmpeg-static/**/*",
+      "!node_modules/ffprobe-static/**/*"
     ],
     "win": {
       "signAndEditExecutable": false,
@@ -149,6 +147,13 @@
       {
         "from": "build/runtime/node",
         "to": "runtime/node",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/runtime/app",
+        "to": "runtime-app",
         "filter": [
           "**/*"
         ]

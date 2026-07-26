@@ -4,7 +4,7 @@
 
 **Goal:** Enable ASAR while giving the spawned Node service explicit, ordinary-filesystem runtime and dependency roots.
 
-**Architecture:** A pure layout helper resolves Electron app, built-in runtime, and dependency roots. Service sources live in `extraResources/runtime-app`, dependencies live in `app.asar.unpacked`, and the runner receives the dependency root explicitly.
+**Architecture:** A pure layout helper resolves Electron app, built-in runtime, and dependency roots. The preparation script stages service sources and filtered production dependencies together for `extraResources/runtime-app`, and the runner receives the dependency root explicitly.
 
 **Tech Stack:** Electron 41, electron-builder 24, Node.js 24, TypeScript 6.
 
@@ -24,21 +24,22 @@
 - Create: `test/scripts/electron_asar_runtime.test.ts`
 
 **Interfaces:**
-- Produces: `resolveElectronRuntimeLayout({ appRoot, isPackaged, resourcesPath })`.
+- Produces: `resolveElectronRuntimeLayout({ appRoot, isPackaged, resourcesPath })`
+  and runtime staging filters.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 Assert development mode returns the repository for all roots, while packaged
-mode returns `runtime-app` and `app.asar.unpacked` under the resources path.
-Also assert the package build config enables ASAR, copies the runtime source
-surface to `runtime-app`, and unpacks dependencies.
+mode returns `runtime-app` for both service sources and dependencies. Also
+assert the package build config enables ASAR and copies the staged runtime to
+`runtime-app`.
 
-- [ ] **Step 2: Verify the tests fail**
+- [x] **Step 2: Verify the tests fail**
 
 Run `node scripts/test.mjs test/scripts/electron_asar_runtime.test.ts` and expect
 the missing layout module or `asar: false` assertion to fail.
 
-- [ ] **Step 3: Implement the pure layout helper**
+- [x] **Step 3: Implement the pure layout helper**
 
 Normalize every returned path with `path.resolve`. In packaged mode return:
 
@@ -46,7 +47,7 @@ Normalize every returned path with `path.resolve`. In packaged mode return:
 {
   appRoot,
   builtInRuntimeRoot: path.join(resourcesPath, 'runtime-app'),
-  dependencyRoot: path.join(resourcesPath, 'app.asar.unpacked'),
+  dependencyRoot: path.join(resourcesPath, 'runtime-app'),
 }
 ```
 
@@ -63,16 +64,16 @@ In development, use `appRoot` for all three roots.
 - Consumes: the layout helper from Task 1.
 - Produces: `--dependency-root-dir` service-runner argument.
 
-- [ ] **Step 1: Add failing source-contract tests**
+- [x] **Step 1: Add failing source-contract tests**
 
 Assert the main process passes `--dependency-root-dir`, the runner resolves
 `tsx` from that root, and Electron UI assets remain rooted at `appRoot`.
 
-- [ ] **Step 2: Verify the new assertions fail**
+- [x] **Step 2: Verify the new assertions fail**
 
 Run the focused test and confirm failure is caused by the absent explicit root.
 
-- [ ] **Step 3: Implement root propagation**
+- [x] **Step 3: Implement root propagation**
 
 Use `builtInRuntimeRoot` for built-in service source and env files,
 `dependencyRoot/node_modules` for `NODE_PATH`, Codex discovery, linking, and
@@ -80,7 +81,7 @@ verification, and `appRoot` for preload, icons, and shipped trust assets.
 Pass `--base-root-dir builtInRuntimeRoot` and
 `--dependency-root-dir dependencyRoot` to the service runner.
 
-- [ ] **Step 4: Verify focused Electron and update tests**
+- [x] **Step 4: Verify focused Electron and update tests**
 
 Run the ASAR test plus Electron args, lightweight update, release verification,
 and release automation tests. Expect zero failures.
@@ -93,19 +94,21 @@ and release automation tests. Expect zero failures.
 - Test: `test/scripts/electron_asar_runtime.test.ts`
 
 **Interfaces:**
-- Produces: packaged `resources/runtime-app` and
-  `resources/app.asar.unpacked/node_modules`.
+- Produces: packaged `resources/runtime-app` containing service sources and
+  filtered production dependencies.
 
-- [ ] **Step 1: Configure Electron Builder**
+- [x] **Step 1: Configure Electron Builder**
 
-Set `asar: true`, keep Electron files in `files`, unpack `node_modules/**/*`,
-and add explicit `extraResources` entries for service sources and metadata
-under `runtime-app`.
+Set `asar: true`, keep Electron files in `files`, stage the runtime through
+`prepare-windows-runtime.cjs`, and copy `build/runtime/app` to `runtime-app`.
 
-- [ ] **Step 2: Extend packaged smoke preflight**
+- [x] **Step 2: Extend packaged smoke preflight**
 
 Before launch, verify `app.asar`, the service runner, `src/cli.ts`, and unpacked
 `tsx` exist. Emit a specific missing-boundary error if any file is absent.
+The smoke launcher also strips `ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS` so
+Node-mode shells (agent sandboxes, VS Code tasks) cannot force the packaged
+Electron binary to parse argv as Node CLI flags.
 
 - [ ] **Step 3: Run complete verification**
 
@@ -117,4 +120,3 @@ Run `npm run verify:release`, `npm run weixin:electron:dist`,
 
 Commit with `build: enable Electron ASAR runtime boundary`, push `main` to
 `gouyu`, then wait for Ubuntu and Windows CI to finish successfully.
-

@@ -11,6 +11,9 @@ const defaultRootDir = path.resolve(path.dirname(scriptPath), '..', '..');
 const args = parseArgs(process.argv.slice(2));
 const rootDir = path.resolve(args.rootDir ?? defaultRootDir);
 const baseRootDir = path.resolve(args.baseRootDir ?? process.env.CODEXBRIDGE_BASE_ROOT ?? rootDir);
+const dependencyRootDir = path.resolve(
+  args.dependencyRootDir ?? process.env.CODEXBRIDGE_DEPENDENCY_ROOT ?? baseRootDir,
+);
 const homeDir = args.homeDir ? path.resolve(args.homeDir) : null;
 const stateDir = path.resolve(args.stateDir ?? process.env.CODEXBRIDGE_STATE_DIR ?? path.join(os.homedir(), '.codexbridge'));
 const envFile = path.resolve(args.serviceEnvFile ?? args.envFile ?? defaultServiceEnvFile());
@@ -32,6 +35,7 @@ await loadEnvFile(path.join(rootDir, '.env.local'));
 await loadEnvFile(envFile);
 process.env.CODEXBRIDGE_APP_ROOT = rootDir;
 process.env.CODEXBRIDGE_BASE_ROOT = baseRootDir;
+process.env.CODEXBRIDGE_DEPENDENCY_ROOT = dependencyRootDir;
 process.env.CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE = envFile;
 if (homeDir) {
   process.env.HOME = homeDir;
@@ -83,6 +87,7 @@ async function runServe() {
   writeLine('stdout', `[codexbridge-service] starting: ${process.execPath} ${serveArgs.join(' ')}`);
   writeLine('stdout', `[codexbridge-service] app root=${rootDir}`);
   writeLine('stdout', `[codexbridge-service] base root=${baseRootDir}`);
+  writeLine('stdout', `[codexbridge-service] dependency root=${dependencyRootDir}`);
   writeLine('stdout', `[codexbridge-service] env HOME=${process.env.HOME ?? ''}`);
   writeLine('stdout', `[codexbridge-service] env USERPROFILE=${process.env.USERPROFILE ?? ''}`);
   writeLine('stdout', `[codexbridge-service] env CODEX_HOME=${process.env.CODEX_HOME ?? ''}`);
@@ -113,7 +118,7 @@ async function runServe() {
 function resolveTsxLoader() {
   const candidates = [
     path.join(rootDir, 'node_modules', 'tsx', 'dist', 'loader.mjs'),
-    path.join(baseRootDir, 'node_modules', 'tsx', 'dist', 'loader.mjs'),
+    path.join(dependencyRootDir, 'node_modules', 'tsx', 'dist', 'loader.mjs'),
   ];
   const localLoader = candidates.find((candidate) => fs.existsSync(candidate));
   return localLoader ? pathToFileURL(localLoader).href : 'tsx';

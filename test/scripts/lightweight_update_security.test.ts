@@ -476,7 +476,7 @@ test('Electron lightweight updater enforces trust, bounds, archive safety, and p
   }
   assert.match(
     source,
-    /verifyLightweightPackage\(lightweightCurrentDir,\s*publicKey,\s*\{[\s\S]{0,160}allowInstalledFiles:\s*true,[\s\S]{0,160}nodeModulesTarget:\s*path\.join\(ROOT_DIR,\s*['"]node_modules['"]\)/u,
+    /verifyLightweightPackage\(lightweightCurrentDir,\s*publicKey,\s*\{[\s\S]{0,160}allowInstalledFiles:\s*true,[\s\S]{0,160}nodeModulesTarget:\s*path\.join\(DEPENDENCY_ROOT,\s*['"]node_modules['"]\)/u,
   );
   assert.match(source, /maxBytes:\s*LIGHTWEIGHT_MAX_DOWNLOAD_BYTES/u);
   assert.match(source, /assertLightweightManifestCompatibility\(/u);

@@ -15,6 +15,28 @@ export function packagedExecutablePath(rootDir) {
   );
 }
 
+export function assertPackagedRuntimeBoundary(rootDir) {
+  const resourcesDir = path.join(
+    path.resolve(rootDir),
+    'release',
+    'win-unpacked',
+    'resources',
+  );
+  const requiredFiles = [
+    'app.asar',
+    path.join('runtime', 'node', 'node.exe'),
+    path.join('runtime-app', 'scripts', 'service', 'run-weixin-service.mjs'),
+    path.join('runtime-app', 'src', 'cli.ts'),
+    path.join('runtime-app', 'node_modules', 'tsx', 'dist', 'loader.mjs'),
+  ];
+  for (const relativePath of requiredFiles) {
+    const candidate = path.join(resourcesDir, relativePath);
+    if (!fs.existsSync(candidate)) {
+      throw new Error(`packaged runtime boundary is incomplete: ${candidate}`);
+    }
+  }
+}
+
 export function isPathInside(parentPath, candidatePath) {
   const relative = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
   return Boolean(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
@@ -63,6 +85,7 @@ export async function runPackagedSmoke({
   if (!fs.existsSync(executable)) {
     throw new Error('packaged Electron executable is missing; run the distribution build first');
   }
+  assertPackagedRuntimeBoundary(rootDir);
 
   const tempRoot = path.resolve(os.tmpdir());
   const stateDir = await fsp.mkdtemp(path.join(tempRoot, 'codexbridge-release-smoke-'));
@@ -76,6 +99,28 @@ export async function runPackagedSmoke({
     throw new Error('packaged smoke admin URL must use loopback HTTP');
   }
 
+  const smokeEnv = {
+    ...process.env,
+    CODEXBRIDGE_STATE_DIR: stateDir,
+    CODEX_COMPAT_API_KEY: 'smoke-test-placeholder',
+    CODEX_COMPAT_BASE_URL: 'http://127.0.0.1:9/v1',
+    CODEX_COMPAT_DEFAULT_MODEL: 'gpt-5.6-sol',
+    CODEX_COMPAT_MODEL_IDS: 'gpt-5.6-sol',
+    CODEX_COMPAT_PROVIDER_ID: 'openai-compatible',
+    CODEX_COMPAT_PROVIDER_NAME: 'Release Smoke Test',
+    CODEX_COMPAT_RESTRICT_MODELS: '1',
+    CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'openai-default',
+    CODEX_NATIVE_API_ENABLE: '0',
+    WEIXIN_ADMIN_HOST: '127.0.0.1',
+    WEIXIN_ADMIN_PORT: String(adminPort),
+    WEIXIN_PROGRESS_PREVIEWS: '0',
+  };
+  // Electron-hosted shells (VS Code tasks, agent sandboxes) may leak Node-mode
+  // overrides that make the packaged app parse argv as Node CLI flags and exit
+  // before the main process runs. The smoke must launch Electron in app mode.
+  delete smokeEnv.ELECTRON_RUN_AS_NODE;
+  delete smokeEnv.NODE_OPTIONS;
+
   const child = spawnFn(executable, [
     '--smoke-test',
     '--state-dir',
@@ -84,22 +129,7 @@ export async function runPackagedSmoke({
     path.join(stateDir, 'missing.service.env'),
   ], {
     cwd: path.dirname(executable),
-    env: {
-      ...process.env,
-      CODEXBRIDGE_STATE_DIR: stateDir,
-      CODEX_COMPAT_API_KEY: 'smoke-test-placeholder',
-      CODEX_COMPAT_BASE_URL: 'http://127.0.0.1:9/v1',
-      CODEX_COMPAT_DEFAULT_MODEL: 'gpt-5.6-sol',
-      CODEX_COMPAT_MODEL_IDS: 'gpt-5.6-sol',
-      CODEX_COMPAT_PROVIDER_ID: 'openai-compatible',
-      CODEX_COMPAT_PROVIDER_NAME: 'Release Smoke Test',
-      CODEX_COMPAT_RESTRICT_MODELS: '1',
-      CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'openai-default',
-      CODEX_NATIVE_API_ENABLE: '0',
-      WEIXIN_ADMIN_HOST: '127.0.0.1',
-      WEIXIN_ADMIN_PORT: String(adminPort),
-      WEIXIN_PROGRESS_PREVIEWS: '0',
-    },
+    env: smokeEnv,
     stdio: 'ignore',
     windowsHide: true,
   });

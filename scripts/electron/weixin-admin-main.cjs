@@ -1,5 +1,6 @@
 const { app, BrowserWindow, dialog, ipcMain, Menu, shell } = require('electron');
 const { resolveElectronUserArgs } = require('./weixin-admin-args.cjs');
+const { resolveElectronRuntimeLayout } = require('./runtime-layout.cjs');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -30,7 +31,16 @@ try {
   autoUpdater = null;
 }
 
-const ROOT_DIR = path.resolve(__dirname, '..', '..');
+const APP_ROOT = path.resolve(app.getAppPath());
+const {
+  builtInRuntimeRoot: BUILTIN_RUNTIME_ROOT,
+  dependencyRoot: DEPENDENCY_ROOT,
+} = resolveElectronRuntimeLayout({
+  appRoot: APP_ROOT,
+  isPackaged: app.isPackaged,
+  resourcesPath: process.resourcesPath,
+});
+const ROOT_DIR = BUILTIN_RUNTIME_ROOT;
 const PROJECT_PARENT = path.dirname(ROOT_DIR);
 const args = parseArgs(resolveElectronUserArgs(process.argv, app.isPackaged));
 const stateDir = path.resolve(args.stateDir || process.env.CODEXBRIDGE_STATE_DIR || defaultStateDir());
@@ -875,7 +885,7 @@ function resolveLightweightUpdatePublicKey() {
   }
 
   const shippedKeyRingFile = path.join(
-    ROOT_DIR,
+    APP_ROOT,
     'assets', 'update', 'lightweight-public-keys.json',
   );
   if (fs.existsSync(shippedKeyRingFile)) {
@@ -889,7 +899,7 @@ function resolveLightweightUpdatePublicKey() {
   }
 
   const shippedKeyFile = path.join(
-    ROOT_DIR,
+    APP_ROOT,
     'assets', 'update', 'lightweight-public-key.pem',
   );
   if (!fs.existsSync(shippedKeyFile)) {
@@ -1317,7 +1327,7 @@ async function activateLightweightPackage(packageRoot, manifest, publicKey) {
 }
 
 async function linkLightweightDependencies(targetRootDir) {
-  const sourceNodeModules = path.join(ROOT_DIR, 'node_modules');
+  const sourceNodeModules = path.join(DEPENDENCY_ROOT, 'node_modules');
   const targetNodeModules = path.join(targetRootDir, 'node_modules');
   if (!fs.existsSync(sourceNodeModules) || fs.existsSync(targetNodeModules)) {
     return;
@@ -1641,8 +1651,8 @@ async function startOrAttachService(serviceEnv) {
 }
 
 function createMainWindow() {
-  const iconPath = path.join(ROOT_DIR, 'assets', 'windows', 'codexbridge-weixin.ico');
-  const preloadPath = path.join(ROOT_DIR, 'scripts', 'electron', 'weixin-admin-preload.cjs');
+  const iconPath = path.join(APP_ROOT, 'assets', 'windows', 'codexbridge-weixin.ico');
+  const preloadPath = path.join(APP_ROOT, 'scripts', 'electron', 'weixin-admin-preload.cjs');
   const window = new BrowserWindow({
     show: false,
     width: 1280,
@@ -1721,14 +1731,16 @@ function startService(env) {
   const runtimeEnv = {
     ...runtime.env,
     CODEXBRIDGE_APP_ROOT: activeRootDir,
-    CODEXBRIDGE_BASE_ROOT: ROOT_DIR,
-    NODE_PATH: buildNodePath(activeRootDir, ROOT_DIR, runtime.env.NODE_PATH),
+    CODEXBRIDGE_BASE_ROOT: BUILTIN_RUNTIME_ROOT,
+    CODEXBRIDGE_DEPENDENCY_ROOT: DEPENDENCY_ROOT,
+    NODE_PATH: buildNodePath(activeRootDir, DEPENDENCY_ROOT, runtime.env.NODE_PATH),
   };
   const child = spawn(runtime.command, [
     runner,
     '--once',
     '--root-dir', activeRootDir,
-    '--base-root-dir', ROOT_DIR,
+    '--base-root-dir', BUILTIN_RUNTIME_ROOT,
+    '--dependency-root-dir', DEPENDENCY_ROOT,
     '--home-dir', os.homedir(),
     '--state-dir', stateDir,
     '--service-env-file', envFile,
@@ -1791,7 +1803,7 @@ async function ensureActiveLightweightRootVerified() {
   try {
     const manifest = await verifyLightweightPackage(lightweightCurrentDir, publicKey, {
       allowInstalledFiles: true,
-      nodeModulesTarget: path.join(ROOT_DIR, 'node_modules'),
+      nodeModulesTarget: path.join(DEPENDENCY_ROOT, 'node_modules'),
     });
     assertLightweightManifestCompatibility(manifest, {
       builtInVersion: app.getVersion(),
@@ -2839,9 +2851,9 @@ function resolveBundledNodeBin() {
 
 function resolveBundledCodexBin() {
   const candidates = [
-    path.join(ROOT_DIR, 'node_modules', '@openai', 'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'),
-    path.join(ROOT_DIR, 'node_modules', '.bin', process.platform === 'win32' ? 'codex.cmd' : 'codex'),
-    path.join(ROOT_DIR, 'node_modules', '@openai', 'codex', 'bin', 'codex.js'),
+    path.join(DEPENDENCY_ROOT, 'node_modules', '@openai', 'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe'),
+    path.join(DEPENDENCY_ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'codex.cmd' : 'codex'),
+    path.join(DEPENDENCY_ROOT, 'node_modules', '@openai', 'codex', 'bin', 'codex.js'),
   ];
   return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
 }
