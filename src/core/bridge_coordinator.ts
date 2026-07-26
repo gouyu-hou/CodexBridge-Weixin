@@ -34,10 +34,10 @@ import { parseSlashCommand } from './command_parser.js';
 import { parseJsonObject } from './json_object_parser.js';
 import {
   THREAD_COMMAND_SKILL_ACTIONS,
+  ThreadCommandService,
   isThreadItemEligibleForOperation,
   parseThreadCommandSkillResult,
   resolveSingleThreadSkillTarget,
-  resolveThreadCommandRoute,
   resolveThreadSkillCandidateItems,
   skillActionToThreadOperationKind,
   threadOperationKindToSkillAction,
@@ -915,6 +915,7 @@ export class BridgeCoordinator {
   pendingNewSessionsByScope: Map<string, PendingNewSessionRequest>;
   localeContext: AsyncLocalStorage<SupportedLocale>;
   i18n: Translator;
+  threadCommands: ThreadCommandService<any, CoordinatorResponse>;
 
   constructor({
     bridgeSessions,
@@ -986,6 +987,15 @@ export class BridgeCoordinator {
     this.pendingNewSessionsByScope = new Map();
     this.localeContext = new AsyncLocalStorage();
     this.i18n = createI18n(locale);
+    this.threadCommands = new ThreadCommandService({
+      confirm: (event) => this.handleThreadsConfirmCommand(event),
+      cancel: (event) => this.handleThreadsCancelCommand(event),
+      renderHome: (event, options) => this.renderThreadsHomePage(event, options),
+      natural: (event, args) => this.handleThreadsNaturalCommand(event, args),
+      areExplicitTargets: (event, args) => this.areExplicitThreadTargets(event, args),
+      manageExplicit: (event, operation, args) => this.handleExplicitThreadManagementCommand(event, operation, args),
+      manageNatural: (event, operation, args) => this.handleThreadNaturalManagementCommand(event, operation, args),
+    });
   }
 
   t(key, params = {}) {
@@ -3576,32 +3586,24 @@ export class BridgeCoordinator {
   }
 
   async handleThreadsCommand(event, args = []) {
-    const route = resolveThreadCommandRoute(args);
-    if (route.kind === 'confirm') {
-      return this.handleThreadsConfirmCommand(event);
+    return this.threadCommands.handle(event, args);
+  }
+
+  async handleExplicitThreadManagementCommand(
+    event,
+    operation: ThreadCommandOperationKind,
+    args: unknown[],
+  ) {
+    if (operation === 'archive') {
+      return this.handleThreadsArchiveCommand(event, args);
     }
-    if (route.kind === 'cancel') {
-      return this.handleThreadsCancelCommand(event);
+    if (operation === 'restore') {
+      return this.handleThreadsRestoreCommand(event, args);
     }
-    if (route.kind === 'home') {
-      return this.renderThreadsHomePage(event, route);
+    if (operation === 'pin') {
+      return this.handleThreadsPinCommand(event, args);
     }
-    if (route.kind === 'natural') {
-      return this.handleThreadsNaturalCommand(event, route.args);
-    }
-    if (!this.areExplicitThreadTargets(event, route.args)) {
-      return this.handleThreadNaturalManagementCommand(event, route.operation, route.args);
-    }
-    if (route.operation === 'archive') {
-      return this.handleThreadsArchiveCommand(event, route.args);
-    }
-    if (route.operation === 'restore') {
-      return this.handleThreadsRestoreCommand(event, route.args);
-    }
-    if (route.operation === 'pin') {
-      return this.handleThreadsPinCommand(event, route.args);
-    }
-    return this.handleThreadsUnpinCommand(event, route.args);
+    return this.handleThreadsUnpinCommand(event, args);
   }
 
   async handleSearchCommand(event, args) {

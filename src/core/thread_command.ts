@@ -67,6 +67,55 @@ export type ThreadCommandRoute =
   | { kind: 'manage'; operation: ThreadCommandOperationKind; args: unknown[] }
   | { kind: 'natural'; args: unknown[] };
 
+export interface ThreadCommandHost<Event, Response> {
+  confirm(event: Event): Promise<Response>;
+  cancel(event: Event): Promise<Response>;
+  renderHome(
+    event: Event,
+    options: { includeArchived: boolean; onlyPinned: boolean },
+  ): Promise<Response>;
+  natural(event: Event, args: unknown[]): Promise<Response>;
+  areExplicitTargets(event: Event, args: unknown[]): boolean;
+  manageExplicit(
+    event: Event,
+    operation: ThreadCommandOperationKind,
+    args: unknown[],
+  ): Promise<Response>;
+  manageNatural(
+    event: Event,
+    operation: ThreadCommandOperationKind,
+    args: unknown[],
+  ): Promise<Response>;
+}
+
+export class ThreadCommandService<Event, Response> {
+  readonly host: ThreadCommandHost<Event, Response>;
+
+  constructor(host: ThreadCommandHost<Event, Response>) {
+    this.host = host;
+  }
+
+  async handle(event: Event, args: readonly unknown[] = []): Promise<Response> {
+    const route = resolveThreadCommandRoute(args);
+    if (route.kind === 'confirm') {
+      return this.host.confirm(event);
+    }
+    if (route.kind === 'cancel') {
+      return this.host.cancel(event);
+    }
+    if (route.kind === 'home') {
+      return this.host.renderHome(event, route);
+    }
+    if (route.kind === 'natural') {
+      return this.host.natural(event, route.args);
+    }
+    if (this.host.areExplicitTargets(event, route.args)) {
+      return this.host.manageExplicit(event, route.operation, route.args);
+    }
+    return this.host.manageNatural(event, route.operation, route.args);
+  }
+}
+
 export function resolveThreadCommandRoute(args: readonly unknown[]): ThreadCommandRoute {
   const action = String(args[0] ?? '').trim().toLowerCase();
   if (action === 'confirm' || action === 'ok') {

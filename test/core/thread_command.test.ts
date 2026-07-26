@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  ThreadCommandService,
   isThreadItemEligibleForOperation,
   parseThreadCommandSkillResult,
   resolveSingleThreadSkillTarget,
@@ -10,6 +11,35 @@ import {
   threadOperationKindToSkillAction,
   type ThreadCommandInventoryItem,
 } from '../../src/core/thread_command.js';
+
+test('ThreadCommandService dispatches views and management through its host', async () => {
+  const calls: string[] = [];
+  const service = new ThreadCommandService<string, string>({
+    confirm: async (event) => record(`confirm:${event}`),
+    cancel: async (event) => record(`cancel:${event}`),
+    renderHome: async (event, options) => record(`home:${event}:${options.includeArchived}:${options.onlyPinned}`),
+    natural: async (event, args) => record(`natural:${event}:${args.join('|')}`),
+    areExplicitTargets: (_event, args) => args[0] === 'thread-1',
+    manageExplicit: async (event, operation, args) => record(`explicit:${event}:${operation}:${args.join('|')}`),
+    manageNatural: async (event, operation, args) => record(`management:${event}:${operation}:${args.join('|')}`),
+  });
+
+  assert.equal(await service.handle('scope', ['all']), 'home:scope:true:false');
+  assert.equal(await service.handle('scope', ['archive', 'thread-1']), 'explicit:scope:archive:thread-1');
+  assert.equal(await service.handle('scope', ['delete', 'last week']), 'management:scope:archive:last week');
+  assert.equal(await service.handle('scope', ['find', 'planning']), 'natural:scope:find|planning');
+  assert.deepEqual(calls, [
+    'home:scope:true:false',
+    'explicit:scope:archive:thread-1',
+    'management:scope:archive:last week',
+    'natural:scope:find|planning',
+  ]);
+
+  function record(value: string): string {
+    calls.push(value);
+    return value;
+  }
+});
 
 test('resolveThreadCommandRoute maps thread command aliases and views', () => {
   assert.deepEqual(resolveThreadCommandRoute([]), {
