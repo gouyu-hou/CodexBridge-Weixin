@@ -35,6 +35,23 @@ reverse proxy. Put the console behind HTTPS and an access-controlled proxy for
 public or shared-network exposure; do not expose the development server
 directly to the internet.
 
+## Reply Process Limits
+
+Web reply workers do not have a total execution deadline. The idle timeout is
+their only time-based deadline and is refreshed by stdout or stderr activity.
+Workers are also stopped for an oversized protocol line or process I/O error.
+The defaults bound idle time, incomplete protocol lines, and retained errors:
+
+```bash
+export CODEXBRIDGE_WEB_REPLY_IDLE_TIMEOUT_MS=600000
+export CODEXBRIDGE_WEB_REPLY_MAX_STDOUT_LINE_BYTES=8388608
+export CODEXBRIDGE_WEB_REPLY_STDERR_TAIL_BYTES=65536
+```
+
+Keep the idle timeout long enough for providers or tools that may be silent
+while working. The stdout limit applies to one pending newline-delimited event,
+not to the total output of a reply run.
+
 ## Install, Check, Build
 
 From the repository root:

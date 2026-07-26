@@ -93,6 +93,10 @@ test('CI runs the complete validation gate and Windows package smoke without pub
   );
 
   assert.match(workflow, /npm ci/u);
+  assert.match(workflow, /^\s*uses:\s*actions\/checkout@v7\s*$/mu);
+  assert.doesNotMatch(workflow, /^\s*uses:\s*actions\/checkout@(?!v7\s*$)\S+\s*$/mu);
+  assert.match(workflow, /^\s*uses:\s*actions\/setup-node@v7\s*$/mu);
+  assert.doesNotMatch(workflow, /^\s*uses:\s*actions\/setup-node@(?!v7\s*$)\S+\s*$/mu);
   assert.match(workflow, /npm run verify:release/u);
   assert.match(workflow, /runner\.os\s*==\s*['"]Windows['"]/u);
   assert.match(workflow, /npm run weixin:electron:dist/u);
@@ -146,7 +150,8 @@ test('CI builds the Web console and its README matches the implemented surface',
   );
   const readme = fs.readFileSync(path.join(process.cwd(), 'apps', 'web', 'README.md'), 'utf8');
 
-  assert.match(workflow, /pnpm\/action-setup@v4/u);
+  assert.match(workflow, /^\s*uses:\s*pnpm\/action-setup@v6\s*$/mu);
+  assert.doesNotMatch(workflow, /^\s*uses:\s*pnpm\/action-setup@(?!v6\s*$)\S+\s*$/mu);
   assert.match(workflow, /pnpm --dir apps\/web install --frozen-lockfile/u);
   assert.match(workflow, /CI:\s*['"]?true['"]?/u);
   assert.match(rootPackage.scripts?.['verify:release'] ?? '', /npm run web:verify/u);
