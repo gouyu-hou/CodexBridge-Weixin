@@ -34,30 +34,30 @@
   `normalizeProtocolTimestamp`, and `normalizeTurnStatusKey`.
 - Consumes: no provider or client-owned type.
 
-- [ ] **Step 1: Add failing table-driven helper tests**
+- [x] **Step 1: Add failing table-driven helper tests**
 
 Assert trimming/null behavior, array filtering, strict booleans, quoted config
 segments with slash/quote escaping, stable feature deduplication, seconds to
 milliseconds conversion, and separator-insensitive turn status keys.
 
-- [ ] **Step 2: Verify the missing-module failure**
+- [x] **Step 2: Verify the missing-module failure**
 
 Run `npm run codex-native-api:test` and expect the protocol module import to
 fail because the file does not exist.
 
-- [ ] **Step 3: Implement the pure protocol module**
+- [x] **Step 3: Implement the pure protocol module**
 
 Copy the existing behavior exactly. Functions accept `unknown` where existing
 callers do, return new arrays, and have no environment or filesystem access.
 
-- [ ] **Step 4: Migrate both clients**
+- [x] **Step 4: Migrate both clients**
 
 Import the canonical helpers, aliasing names only where needed to keep call
 sites unchanged. Delete the corresponding local function bodies from both
 clients. Leave `serializeCollaborationMode` local because package behavior
 currently retains an unset model while root behavior omits it.
 
-- [ ] **Step 5: Run focused verification**
+- [x] **Step 5: Run focused verification**
 
 Run:
 
@@ -71,7 +71,7 @@ npm run typecheck
 
 Expected: every command exits `0`.
 
-- [ ] **Step 6: Review and commit**
+- [x] **Step 6: Review and commit**
 
 Run `git diff --check`, verify both clients import the same module, and commit
 with `refactor: share Codex AppClient protocol helpers`.
@@ -87,12 +87,12 @@ with `refactor: share Codex AppClient protocol helpers`.
 - Produces: fixtures for turn status, feature/config normalization, and later
   notification identifier normalization.
 
-- [ ] **Step 1: Add parity fixtures for malformed and edge inputs**
+- [x] **Step 1: Add parity fixtures for malformed and edge inputs**
 
 Cover `null`, boxed values, whitespace-only strings, duplicate features,
 sub-second/second/millisecond timestamps, and Unicode config segments.
 
-- [ ] **Step 2: Run tests and confirm any new case fails before changing code**
+- [x] **Step 2: Run tests and confirm any new case fails before changing code**
 
 Use `npm run codex-native-api:test`; expected failures must identify a specific
 normalization contract.
@@ -102,7 +102,7 @@ normalization contract.
 For any disagreement, document it in the test name and leave both local
 implementations in place for a later behavioral decision.
 
-- [ ] **Step 4: Run the Task 1 verification matrix and commit**
+- [x] **Step 4: Run the Task 1 verification matrix and commit**
 
 Commit with `test: add AppClient protocol parity fixtures` after all commands
 exit `0`.
