@@ -99,8 +99,16 @@ export async function runPackagedSmoke({
     throw new Error('packaged smoke admin URL must use loopback HTTP');
   }
 
+  // Electron-hosted shells (VS Code tasks, agent sandboxes) may leak Node-mode
+  // overrides that make the packaged app parse argv as Node CLI flags and exit
+  // before the main process runs. The smoke must launch Electron in app mode.
+  const {
+    ELECTRON_RUN_AS_NODE: _electronRunAsNode,
+    NODE_OPTIONS: _nodeOptions,
+    ...inheritedEnv
+  } = process.env;
   const smokeEnv = {
-    ...process.env,
+    ...inheritedEnv,
     CODEXBRIDGE_STATE_DIR: stateDir,
     CODEX_COMPAT_API_KEY: 'smoke-test-placeholder',
     CODEX_COMPAT_BASE_URL: 'http://127.0.0.1:9/v1',
@@ -115,11 +123,6 @@ export async function runPackagedSmoke({
     WEIXIN_ADMIN_PORT: String(adminPort),
     WEIXIN_PROGRESS_PREVIEWS: '0',
   };
-  // Electron-hosted shells (VS Code tasks, agent sandboxes) may leak Node-mode
-  // overrides that make the packaged app parse argv as Node CLI flags and exit
-  // before the main process runs. The smoke must launch Electron in app mode.
-  delete smokeEnv.ELECTRON_RUN_AS_NODE;
-  delete smokeEnv.NODE_OPTIONS;
 
   const child = spawnFn(executable, [
     '--smoke-test',

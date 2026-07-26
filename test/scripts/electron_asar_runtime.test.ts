@@ -189,8 +189,10 @@ test('packaged smoke launches Electron in app mode even under Node-mode shells',
     'utf8',
   );
 
-  assert.match(smokeSource, /delete smokeEnv\.ELECTRON_RUN_AS_NODE/u);
-  assert.match(smokeSource, /delete smokeEnv\.NODE_OPTIONS/u);
+  assert.match(smokeSource, /ELECTRON_RUN_AS_NODE:\s*_electronRunAsNode/u);
+  assert.match(smokeSource, /NODE_OPTIONS:\s*_nodeOptions/u);
+  assert.match(smokeSource, /\.\.\.inheritedEnv/u);
+  assert.doesNotMatch(smokeSource, /\.\.\.process\.env/u);
 });
 
 test('Electron runtime boundary scripts are covered by JavaScript typechecking', () => {
