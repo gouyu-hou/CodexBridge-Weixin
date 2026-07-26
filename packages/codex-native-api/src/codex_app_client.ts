@@ -6,6 +6,15 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { writeSequencedStderrLine } from './sequenced_stderr.js';
 import { readCodexAccountIdentity } from './auth_state.js';
+import {
+  formatConfigKeyPath,
+  normalizeFeatureList,
+  normalizeNullableString,
+  normalizeOptionalBoolean as normalizeBoolean,
+  normalizeProtocolTimestamp as normalizeTimestamp,
+  normalizeStringList,
+  normalizeTurnStatusKey,
+} from './codex_app_protocol.js';
 import type {
   ProviderAppInfo,
   ProviderApprovalRequest,
@@ -2361,33 +2370,6 @@ function summarizeApprovedExecutionSignal(entry: ApprovedExecution, signalKind: 
   };
 }
 
-function normalizeNullableString(value: unknown): string | null {
-  const normalized = String(value ?? '').trim();
-  return normalized || null;
-}
-
-function normalizeStringList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.map((entry) => String(entry ?? '').trim()).filter(Boolean)
-    : [];
-}
-
-function normalizeBoolean(value: unknown): boolean | null {
-  return typeof value === 'boolean' ? value : null;
-}
-
-function formatConfigKeyPath(segments: string[]): string {
-  return segments
-    .map((segment) => {
-      const value = String(segment ?? '').trim();
-      if (/^[A-Za-z0-9_]+$/u.test(value)) {
-        return value;
-      }
-      return `"${value.replace(/\\/gu, '\\\\').replace(/"/gu, '\\"')}"`;
-    })
-    .join('.');
-}
-
 function serializeCollaborationMode({ collaborationMode, model, effort, developerInstructions = '' }: any) {
   if (!collaborationMode) {
     return null;
@@ -2442,23 +2424,6 @@ export function createStderrLogger({
       writeSequencedStderrLine(message);
     },
   };
-}
-
-function normalizeFeatureList(features: string[]): string[] {
-  const normalized = [];
-  const seen = new Set<string>();
-  for (const feature of features) {
-    if (typeof feature !== 'string') {
-      continue;
-    }
-    const value = feature.trim();
-    if (!value || seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    normalized.push(value);
-  }
-  return normalized;
 }
 
 function summarizeTurnInput(input: CodexTurnInput[]) {
@@ -2761,14 +2726,6 @@ function mapThread(raw, includeTurns) {
     preview: typeof raw.preview === 'string' ? raw.preview : '',
     turns: includeTurns && Array.isArray(raw.turns) ? raw.turns.map(mapTurn) : [],
   };
-}
-
-function normalizeTimestamp(value) {
-  const numeric = Number(value || 0);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return 0;
-  }
-  return numeric < 10_000_000_000 ? numeric * 1000 : numeric;
 }
 
 function mapTurn(raw) {
@@ -3191,13 +3148,6 @@ const TERMINAL_TURN_STATUS_KEYS = new Set([
   'canceled',
   'aborted',
 ]);
-
-function normalizeTurnStatusKey(status) {
-  return String(status ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[\s_-]+/g, '');
-}
 
 function isTurnTerminal(status) {
   const normalized = normalizeTurnStatusKey(status);
