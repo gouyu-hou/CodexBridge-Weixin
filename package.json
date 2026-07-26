@@ -74,6 +74,10 @@
     "tsx": "^4.22.4",
     "zod": "^4.3.6"
   },
+  "overrides": {
+    "@hono/node-server": "2.0.11",
+    "body-parser": "2.3.0"
+  },
   "build": {
     "appId": "com.gouyu.codexbridge.weixin.admin",
     "productName": "CodexBridge Weixin Admin",
