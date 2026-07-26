@@ -213,7 +213,7 @@ export class ReplyRunManager {
   }
 
   private async execute(record: ReplyRunRecord, text: string) {
-    const { repoRoot, stateDir } = this.getPaths();
+    const { stateDir } = this.getPaths();
     const child = spawn(process.execPath, ['--import', 'tsx', this.scriptPath], {
       cwd: this.cwd,
       detached: process.platform !== 'win32',
@@ -424,7 +424,6 @@ export class ReplyRunManager {
 
       resetIdleTimer();
       child.stdin.end(JSON.stringify({
-        repoRoot,
         stateDir,
         text,
         threadId: record.snapshot.sourceThreadId,

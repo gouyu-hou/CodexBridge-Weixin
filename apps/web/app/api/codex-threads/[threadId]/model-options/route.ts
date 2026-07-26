@@ -15,7 +15,7 @@ export async function GET(
   }
 
   const scriptPath = path.join(process.cwd(), 'server', 'update-codex-thread-settings.ts');
-  const { repoRoot, stateDir } = getWebPaths();
+  const { stateDir } = getWebPaths();
 
   try {
     const parsed = await runTsxJsonWorker<Record<string, unknown>>({
@@ -23,7 +23,6 @@ export async function GET(
       input: {
         threadId,
         stateDir,
-        repoRoot,
       },
       scriptPath,
     });

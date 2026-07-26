@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { NextRequest, NextResponse } from 'next/server';
 import { clearWebQueryCaches } from '@/lib/server/queries';
+import { getWebPaths } from '@/lib/server/runtime';
 import { runTsxJsonWorker } from '@/server/tsx-json-worker';
 
 export const dynamic = 'force-dynamic';
@@ -18,8 +19,7 @@ export async function POST(request: NextRequest) {
   const reasoningEffort = typeof payload?.reasoningEffort === 'string' ? payload.reasoningEffort.trim() : '';
 
   const scriptPath = path.join(process.cwd(), 'server', 'create-codex-thread.ts');
-  const repoRoot = path.resolve(process.cwd(), '..', '..');
-  const stateDir = process.env.CODEXBRIDGE_STATE_DIR ?? path.join(process.env.HOME ?? '', '.codexbridge');
+  const { stateDir } = getWebPaths();
 
   const parsed = await runTsxJsonWorker<{
     ok?: boolean;
@@ -35,7 +35,6 @@ export async function POST(request: NextRequest) {
       permissionsMode: permissionsMode || null,
       reasoningEffort: reasoningEffort || null,
       stateDir,
-      repoRoot,
     },
     scriptPath,
   });

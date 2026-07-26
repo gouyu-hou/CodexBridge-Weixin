@@ -5,10 +5,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    externalDir: true,
-  },
-  outputFileTracingRoot: path.join(__dirname, '..', '..'),
+  outputFileTracingRoot: __dirname,
+  serverExternalPackages: ['@codexbridge/web-runtime'],
 };
 
 export default nextConfig;

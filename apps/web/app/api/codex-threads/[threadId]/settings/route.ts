@@ -41,7 +41,7 @@ export async function POST(
   }
 
   const scriptPath = path.join(process.cwd(), 'server', 'update-codex-thread-settings.ts');
-  const { repoRoot, stateDir } = getWebPaths();
+  const { stateDir } = getWebPaths();
 
   const parsed = await runTsxJsonWorker<Record<string, unknown>>({
     cwd: process.cwd(),
@@ -51,7 +51,6 @@ export async function POST(
       ...(hasModel ? { model } : {}),
       ...(hasReasoningEffort ? { reasoningEffort } : {}),
       stateDir,
-      repoRoot,
     },
     scriptPath,
   });

@@ -1,5 +1,6 @@
 import { stdin, stdout, stderr } from 'node:process';
 import { executeWebThreadReply } from './reply-executor';
+import { resolveWorkerRepoRoot } from './worker-runtime';
 
 type InputPayload = {
   threadId?: unknown;
@@ -34,9 +35,9 @@ async function main() {
   const threadId = normalizeText(payload.threadId);
   const text = normalizeText(payload.text);
   const stateDir = normalizeText(payload.stateDir);
-  const repoRoot = normalizeText(payload.repoRoot);
+  const repoRoot = resolveWorkerRepoRoot(payload.repoRoot);
 
-  if (!threadId || !text || !stateDir || !repoRoot) {
+  if (!threadId || !text || !stateDir) {
     throw new Error('invalid_request');
   }
 

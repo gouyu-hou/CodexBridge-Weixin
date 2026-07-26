@@ -7,6 +7,7 @@ import { OpenAINativeProviderPlugin } from '../../../src/providers/openai_native
 import { OpenAICompatibleProviderPlugin } from '../../../src/providers/openai_compatible/plugin.ts';
 import { CodexAccountManager } from '../../../src/providers/codex/account_manager.ts';
 import { CodexGoalManager } from '../../../src/providers/codex/goal_state.ts';
+import { resolveWorkerRepoRoot } from './worker-runtime';
 
 type InputPayload = {
   threadId?: unknown;
@@ -62,12 +63,12 @@ async function main() {
   const threadId = normalizeText(payload.threadId);
   const permissionsMode = normalizePermissionsMode(payload.permissionsMode);
   const stateDir = normalizeText(payload.stateDir);
-  const repoRoot = normalizeText(payload.repoRoot);
+  const repoRoot = resolveWorkerRepoRoot(payload.repoRoot);
   const hasPermissionsMode = hasOwn(payload, 'permissionsMode');
   const hasModel = hasOwn(payload, 'model');
   const hasReasoningEffort = hasOwn(payload, 'reasoningEffort');
 
-  if (!threadId || !stateDir || !repoRoot) {
+  if (!threadId || !stateDir) {
     throw new Error('invalid_request');
   }
   if (hasPermissionsMode && !permissionsMode) {

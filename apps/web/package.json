@@ -4,13 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev --hostname 0.0.0.0 --port 58888",
-    "build": "next build",
+    "dev": "pnpm --filter @codexbridge/web-runtime build && next dev --hostname 0.0.0.0 --port 58888",
+    "build": "pnpm --filter @codexbridge/web-runtime build && node scripts/next-build.mjs",
     "start": "next start --hostname 0.0.0.0 --port 58888",
     "typecheck": "tsc --noEmit",
-    "typecheck:server-strict": "tsc -p tsconfig.server-strict.json --noEmit"
+    "typecheck:server-strict": "pnpm --filter @codexbridge/web-runtime typecheck && tsc -p tsconfig.server-strict.json --noEmit"
   },
   "dependencies": {
+    "@codexbridge/web-runtime": "workspace:*",
     "next": "^16.0.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

@@ -25,10 +25,6 @@ export default async function RuntimePage() {
               <p>{status.runtimeDir}</p>
             </div>
             <div className="status-card">
-              <h3>Repo root</h3>
-              <p>{status.repoRoot}</p>
-            </div>
-            <div className="status-card">
               <h3>Default provider</h3>
               <p>{status.defaultProviderProfileId ?? '未配置'}</p>
             </div>

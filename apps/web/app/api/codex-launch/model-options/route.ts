@@ -10,7 +10,7 @@ export async function GET(request: NextRequest) {
   const model = searchParams.get('model')?.trim() || '';
   const reasoningEffort = searchParams.get('reasoningEffort')?.trim() || '';
   const scriptPath = path.join(process.cwd(), 'server', 'read-codex-launch-model-options.ts');
-  const { repoRoot, stateDir } = getWebPaths();
+  const { stateDir } = getWebPaths();
 
   try {
     const parsed = await runTsxJsonWorker<Record<string, unknown>>({
@@ -18,7 +18,6 @@ export async function GET(request: NextRequest) {
       input: {
         model: model || null,
         reasoningEffort: reasoningEffort || null,
-        repoRoot,
         stateDir,
       },
       scriptPath,

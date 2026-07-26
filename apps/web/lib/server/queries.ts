@@ -1,11 +1,19 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { buildPermissionsSettingsUpdate, resolvePermissionsState } from '../../../../src/core/permissions_mode';
-import type { ApprovalsReviewer, PermissionsMode } from '../../../../src/types/core';
+import type fsType from 'node:fs';
+import type { Dirent } from 'node:fs';
+import type pathType from 'node:path';
+import {
+  buildPermissionsSettingsUpdate,
+  resolvePermissionsState,
+  type WebApprovalsReviewer as ApprovalsReviewer,
+  type WebPermissionsMode as PermissionsMode,
+} from '@codexbridge/web-runtime';
 import { getWebPaths, readRuntimeJson } from './runtime';
 import type { WebCodexThreadMessage } from './thread-message';
 
 export type { WebCodexThreadMessage } from './thread-message';
+
+const fs = process.getBuiltinModule('node:fs') as typeof fsType;
+const path = process.getBuiltinModule('node:path') as typeof pathType;
 
 type StoredBridgeSession = {
   id: string;
@@ -425,7 +433,7 @@ function getStoredCodexSessionInventory(): CodexSessionInventory {
         continue;
       }
 
-      let entries: fs.Dirent[] = [];
+      let entries: Dirent[] = [];
       try {
         entries = fs.readdirSync(current, { withFileTypes: true });
       } catch {
@@ -1035,7 +1043,6 @@ export async function getWebRuntimeStatus() {
   return {
     stateDir: paths.stateDir,
     runtimeDir: paths.runtimeDir,
-    repoRoot: paths.repoRoot,
     sessionCount: sessions.length,
     activeAutomationCount: automations.filter((job) => job.status === 'active').length,
     activeRecordCount: records.filter((record) => record.status === 'active').length,

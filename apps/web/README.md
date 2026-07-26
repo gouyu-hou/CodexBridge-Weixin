@@ -11,8 +11,9 @@ reads and writes the same runtime state and provider-backed sessions.
 - Login URL: `http://YOUR_SERVER_IP:58888/login`
 - State directory: `CODEXBRIDGE_WEB_STATE_DIR` or `~/.codexbridge`
 
-The console resolves the repository root from its own location and reads the
-shared runtime data from `<state-directory>/runtime`.
+The console reads shared state from `<state-directory>/runtime`. Provider work
+runs in bounded child workers, which resolve their source runtime independently
+from the Next.js server bundle.
 
 ## Authentication
 
@@ -58,6 +59,7 @@ From the repository root:
 
 ```bash
 pnpm --dir apps/web install --frozen-lockfile
+pnpm --dir apps/web typecheck:server-strict
 pnpm --dir apps/web typecheck
 pnpm --dir apps/web build
 ```
@@ -70,8 +72,11 @@ pnpm web:build
 pnpm web:start
 ```
 
-CI runs the frozen-lockfile install, typecheck, and production build on both
-Ubuntu and Windows.
+The Web package is a pnpm workspace containing `@codexbridge/web-runtime`.
+Production builds compile that package before Next.js and keep dynamic state
+file access outside Next.js output tracing. CI runs the frozen-lockfile install,
+strict server check, complete typecheck, and production build on Ubuntu and
+Windows.
 
 ## Routes
 
