@@ -62,6 +62,26 @@ import {
   renderThreadPeek,
   renderThreadsPageMessage,
 } from './thread_view.js';
+import {
+  INSTRUCTIONS_COMMAND_SKILL_ACTIONS,
+  buildInstructionsCommandSkillPrompt,
+  buildInstructionsEditKey,
+  buildInstructionsOperation,
+  buildInstructionsOperationKey,
+  buildPendingInstructionsOperationFromSkillResult,
+  defaultInstructionsSummary,
+  extractInstructionsEditBody,
+  extractInstructionsInlineContent,
+  formatInstructionsContentPreview,
+  formatInstructionsProposalKind,
+  formatInstructionsStatus,
+  normalizeInstructionsDocumentContent,
+  parseInstructionsCommandSkillResult,
+  type InstructionsCommandSkillResult,
+  type PendingInstructionsCapture,
+  type PendingInstructionsOperation,
+} from './instructions_command.js';
+export { INSTRUCTIONS_COMMAND_SKILL_ACTIONS };
 import { NotFoundError } from './errors.js';
 import { ProviderUsageService } from './provider_usage_service.js';
 import {
@@ -183,7 +203,6 @@ const AUTO_COMMAND_SKILL_PATH = path.resolve('docs/command-skills/auto.md');
 const ASSISTANT_RECORD_COMMAND_SKILL_PATH = path.resolve('docs/command-skills/assistant-record.md');
 const AGENT_COMMAND_SKILL_PATH = path.resolve('docs/command-skills/agent.md');
 const REVIEW_COMMAND_SKILL_PATH = path.resolve('docs/command-skills/review.md');
-const INSTRUCTIONS_COMMAND_SKILL_PATH = path.resolve('docs/command-skills/instructions.md');
 const MAX_CLARIFY_CANDIDATES = 6;
 const REVIEW_PROGRESS_HEARTBEAT_MS = 20_000;
 const REVIEW_PROGRESS_HEARTBEAT_MAX_RUNS = 1;
@@ -226,16 +245,6 @@ export const AUTO_COMMAND_SKILL_ACTIONS = new Set([
 
 export const REVIEW_COMMAND_SKILL_ACTIONS = new Set([
   'run_review',
-  'clarify',
-  'reject',
-  'local_only',
-] as const);
-
-export const INSTRUCTIONS_COMMAND_SKILL_ACTIONS = new Set([
-  'propose_patch',
-  'propose_replace',
-  'propose_clear',
-  'update_pending_draft',
   'clarify',
   'reject',
   'local_only',
@@ -391,51 +400,6 @@ type AutomationCommandSkillResult =
     action: 'show_job';
     confidence: number;
     target: AutomationOperationTarget;
-  }
-  | {
-    action: 'clarify';
-    confidence: number;
-    question: string;
-    candidates: Array<Record<string, unknown>>;
-  }
-  | {
-    action: 'reject' | 'local_only';
-    confidence: number;
-    reason: string | null;
-  };
-
-type InstructionsProposalKind = 'patch' | 'replace' | 'clear';
-
-type PendingInstructionsCapture = {
-  startedAt: number;
-};
-
-type PendingInstructionsOperation = {
-  kind: InstructionsProposalKind;
-  createdAt: number;
-  rawInput: string;
-  summary: string;
-  changes: string[];
-  proposedContent: string;
-  baseContent: string;
-  normalizedBy: 'codex' | 'local';
-};
-
-type InstructionsCommandSkillResult =
-  | {
-    action: 'propose_patch' | 'propose_replace' | 'propose_clear';
-    confidence: number;
-    summary: string;
-    changes: string[];
-    proposedContent: string;
-  }
-  | {
-    action: 'update_pending_draft';
-    confidence: number;
-    proposalKind: InstructionsProposalKind;
-    summary: string;
-    changes: string[];
-    proposedContent: string;
   }
   | {
     action: 'clarify';
@@ -13206,71 +13170,6 @@ function formatReviewTargetTitle(target: ProviderReviewTarget, i18n: Translator)
   }
 }
 
-function buildInstructionsCommandSkillPrompt({
-  event,
-  subcommand,
-  userInput,
-  locale,
-  now,
-  cwd,
-  currentInstructions,
-  pendingDraft,
-}: {
-  event: InboundTextEvent;
-  subcommand: 'natural' | 'edit';
-  userInput: string;
-  locale: string | null;
-  now: number;
-  cwd: string | null;
-  currentInstructions: CodexInstructionsSnapshot;
-  pendingDraft: PendingInstructionsOperation | null;
-}): string {
-  const payload = {
-    command: 'instructions',
-    subcommand,
-    rawText: String(event.text ?? ''),
-    userInput,
-    now: new Date(now).toISOString(),
-    locale: normalizeLocale(locale) ?? 'zh-CN',
-    scope: {
-      platform: event.platform,
-      externalScopeId: event.externalScopeId,
-    },
-    cwd,
-    instructionsPath: currentInstructions.path,
-    currentInstructions: {
-      exists: currentInstructions.exists,
-      content: currentInstructions.content,
-    },
-    pendingDraft: pendingDraft
-      ? {
-        kind: pendingDraft.kind,
-        rawInput: pendingDraft.rawInput,
-        baseContent: pendingDraft.baseContent,
-        proposedContent: pendingDraft.proposedContent,
-        summary: pendingDraft.summary,
-        changes: pendingDraft.changes,
-      }
-      : null,
-    capabilities: {
-      supportedActions: [...INSTRUCTIONS_COMMAND_SKILL_ACTIONS],
-      supportedProposalKinds: ['patch', 'replace', 'clear'],
-    },
-    skillPath: INSTRUCTIONS_COMMAND_SKILL_PATH,
-  };
-  return [
-    'CodexBridge command skill invocation.',
-    '',
-    `Please read and follow this command skill file: ${INSTRUCTIONS_COMMAND_SKILL_PATH}`,
-    'Use it to interpret the /instructions command request below.',
-    'Return exactly one JSON object that matches the skill contract.',
-    'Do not use Markdown. Do not explain. Do not write files or execute anything.',
-    '',
-    'Invocation payload:',
-    JSON.stringify(payload, null, 2),
-  ].join('\n');
-}
-
 function buildReviewCommandSkillPrompt({
   event,
   userInput,
@@ -13366,75 +13265,6 @@ function parseReviewTargetArgs(args: readonly string[]): ReviewTargetParseResult
   return { status: 'unknown' };
 }
 
-function parseInstructionsCommandSkillResult(value: unknown): InstructionsCommandSkillResult | null {
-  const parsed = parseJsonObject(value);
-  if (!parsed) {
-    return null;
-  }
-  const action = normalizeInstructionsCommandSkillAction(parsed.action);
-  if (!action) {
-    return null;
-  }
-  const confidence = clampAssistantConfidence(Number(parsed.confidence ?? 0.8));
-  if (action === 'clarify') {
-    return {
-      action,
-      confidence,
-      question: compactWhitespace(parsed.question ?? parsed.message ?? ''),
-      candidates: Array.isArray(parsed.candidates) ? parsed.candidates.filter((entry) => entry && typeof entry === 'object') : [],
-    };
-  }
-  if (action === 'reject' || action === 'local_only') {
-    return {
-      action,
-      confidence,
-      reason: normalizeNullableText(parsed.reason ?? parsed.message),
-    };
-  }
-  const summary = compactWhitespace(parsed.summary ?? parsed.changeSummary ?? parsed.message ?? '');
-  const changes = normalizeStringArray(parsed.changes ?? parsed.changeList ?? parsed.change_list);
-  const proposedContent = action === 'propose_clear'
-    ? ''
-    : normalizeInstructionsDocumentContent(parsed.proposedContent ?? parsed.content ?? parsed.instructions ?? '');
-  if (!summary) {
-    return null;
-  }
-  if (action === 'update_pending_draft') {
-    const proposalKind = normalizeInstructionsProposalKind(parsed.proposalKind ?? parsed.kind ?? parsed.proposal_type);
-    if (!proposalKind) {
-      return null;
-    }
-    if (proposalKind !== 'clear' && !proposedContent) {
-      return null;
-    }
-    return {
-      action,
-      confidence,
-      proposalKind,
-      summary,
-      changes,
-      proposedContent: proposalKind === 'clear' ? '' : proposedContent,
-    };
-  }
-  if (action !== 'propose_clear' && !proposedContent) {
-    return null;
-  }
-  return {
-    action,
-    confidence,
-    summary,
-    changes,
-    proposedContent,
-  };
-}
-
-function normalizeInstructionsCommandSkillAction(value: unknown): InstructionsCommandSkillResult['action'] | null {
-  const normalized = compactWhitespace(value).toLowerCase();
-  return INSTRUCTIONS_COMMAND_SKILL_ACTIONS.has(normalized as InstructionsCommandSkillResult['action'])
-    ? normalized as InstructionsCommandSkillResult['action']
-    : null;
-}
-
 function parseReviewCommandSkillResult(value: unknown): ReviewCommandSkillResult | null {
   const parsed = parseJsonObject(value);
   if (!parsed) {
@@ -13527,152 +13357,6 @@ function parseReviewTargetFromSkill(value: unknown): ProviderReviewTarget | null
     };
   }
   return null;
-}
-
-function normalizeInstructionsDocumentContent(value: unknown): string {
-  return String(value ?? '').replace(/\r\n/g, '\n').trim();
-}
-
-function normalizeInstructionsProposalKind(value: unknown): InstructionsProposalKind | null {
-  const normalized = compactWhitespace(value).toLowerCase();
-  if (normalized === 'patch') return 'patch';
-  if (normalized === 'replace') return 'replace';
-  if (normalized === 'clear') return 'clear';
-  return null;
-}
-
-function buildInstructionsOperation({
-  kind,
-  createdAt,
-  rawInput,
-  summary,
-  changes,
-  proposedContent,
-  baseContent,
-  normalizedBy,
-}: PendingInstructionsOperation): PendingInstructionsOperation {
-  return {
-    kind,
-    createdAt,
-    rawInput,
-    summary: compactWhitespace(summary),
-    changes: normalizeStringArray(changes),
-    proposedContent: kind === 'clear' ? '' : normalizeInstructionsDocumentContent(proposedContent),
-    baseContent: String(baseContent ?? '').replace(/\r\n/g, '\n'),
-    normalizedBy,
-  };
-}
-
-function buildPendingInstructionsOperationFromSkillResult({
-  now,
-  rawInput,
-  result,
-  currentContent,
-  pendingDraft,
-}: {
-  now: number;
-  rawInput: string;
-  result: InstructionsCommandSkillResult;
-  currentContent: string;
-  pendingDraft: PendingInstructionsOperation | null;
-}): PendingInstructionsOperation | null {
-  const baseContent = pendingDraft?.baseContent ?? String(currentContent ?? '');
-  if (result.action === 'propose_patch') {
-    return buildInstructionsOperation({
-      kind: 'patch',
-      createdAt: now,
-      rawInput,
-      summary: result.summary,
-      changes: result.changes,
-      proposedContent: result.proposedContent,
-      baseContent,
-      normalizedBy: 'codex',
-    });
-  }
-  if (result.action === 'propose_replace') {
-    return buildInstructionsOperation({
-      kind: 'replace',
-      createdAt: now,
-      rawInput,
-      summary: result.summary,
-      changes: result.changes,
-      proposedContent: result.proposedContent,
-      baseContent: String(currentContent ?? ''),
-      normalizedBy: 'codex',
-    });
-  }
-  if (result.action === 'propose_clear') {
-    return buildInstructionsOperation({
-      kind: 'clear',
-      createdAt: now,
-      rawInput,
-      summary: result.summary,
-      changes: result.changes,
-      proposedContent: '',
-      baseContent: String(currentContent ?? ''),
-      normalizedBy: 'codex',
-    });
-  }
-  if (result.action === 'update_pending_draft') {
-    if (!pendingDraft) {
-      return null;
-    }
-    return buildInstructionsOperation({
-      kind: result.proposalKind,
-      createdAt: now,
-      rawInput: appendInstructionsDraftEditInput(pendingDraft.rawInput, rawInput),
-      summary: result.summary,
-      changes: result.changes,
-      proposedContent: result.proposalKind === 'clear' ? '' : result.proposedContent,
-      baseContent: pendingDraft.baseContent,
-      normalizedBy: 'codex',
-    });
-  }
-  return null;
-}
-
-function appendInstructionsDraftEditInput(rawInput: string, editInstruction: string): string {
-  const parts = [compactWhitespace(rawInput), compactWhitespace(editInstruction)].filter(Boolean);
-  return parts.join('\n');
-}
-
-function formatInstructionsProposalKind(kind: InstructionsProposalKind, i18n: Translator): string {
-  switch (kind) {
-    case 'patch':
-      return i18n.t('coordinator.instructions.kind.patch');
-    case 'replace':
-      return i18n.t('coordinator.instructions.kind.replace');
-    case 'clear':
-      return i18n.t('coordinator.instructions.kind.clear');
-    default:
-      return i18n.t('common.unknown');
-  }
-}
-
-function defaultInstructionsSummary(kind: InstructionsProposalKind, i18n: Translator): string {
-  switch (kind) {
-    case 'patch':
-      return i18n.t('coordinator.instructions.defaultSummary.patch');
-    case 'replace':
-      return i18n.t('coordinator.instructions.defaultSummary.replace');
-    case 'clear':
-      return i18n.t('coordinator.instructions.defaultSummary.clear');
-    default:
-      return i18n.t('coordinator.instructions.defaultSummary.patch');
-  }
-}
-
-function formatInstructionsContentPreview(content: string, i18n: Translator): string[] {
-  const normalized = normalizeInstructionsDocumentContent(content);
-  if (!normalized) {
-    return [i18n.t('coordinator.instructions.draftEmptyContent')];
-  }
-  const lines = normalized.split('\n');
-  const preview = lines.slice(0, 24);
-  if (lines.length > preview.length) {
-    preview.push('...');
-  }
-  return preview;
 }
 
 function shouldTranslateReviewOutput(text: string, locale: SupportedLocale): boolean {
@@ -20957,36 +20641,6 @@ function resolveExperimentalFeatureSelection(
   const lowered = normalized.toLowerCase();
   const feature = allFeatures.find((entry) => entry.name.toLowerCase() === lowered) ?? null;
   return feature ? { feature, index: null } : null;
-}
-
-function formatInstructionsStatus(hasInstructions: boolean, i18n: Translator) {
-  return hasInstructions ? i18n.t('common.enabled') : i18n.t('common.notSet');
-}
-
-function buildInstructionsOperationKey(scopeRef: PlatformScopeRef) {
-  return formatPlatformScopeKey(scopeRef.platform, scopeRef.externalScopeId);
-}
-
-function buildInstructionsEditKey(event) {
-  return buildInstructionsOperationKey(toScopeRef(event));
-}
-
-function extractInstructionsInlineContent(text: string) {
-  const raw = String(text ?? '');
-  const match = raw.match(/^\/(?:instructions|ins)\s+set(?:\s+|$)([\s\S]*)$/iu);
-  if (!match) {
-    return '';
-  }
-  return match[1] ?? '';
-}
-
-function extractInstructionsEditBody(text: string) {
-  const raw = String(text ?? '');
-  const match = raw.match(/^\/(?:instructions|ins)\s+edit(?:\s+|$)([\s\S]*)$/iu);
-  if (!match) {
-    return '';
-  }
-  return compactWhitespace(match[1] ?? '');
 }
 
 function parseWeiboCommandArgs(args): HandleWeiboCommandResult | null {
