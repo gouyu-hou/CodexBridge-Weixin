@@ -97,10 +97,24 @@ sub-second/second/millisecond timestamps, and Unicode config segments.
 Use `npm run codex-native-api:test`; expected failures must identify a specific
 normalization contract.
 
-- [ ] **Step 3: Migrate only helpers with identical current results**
+- [x] **Step 3: Migrate only helpers with identical current results**
 
 For any disagreement, document it in the test name and leave both local
 implementations in place for a later behavioral decision.
+
+Migrated in this step: the approval mapping domain (`mapPendingApproval`,
+approval request/decision builders, approved-execution tracking helpers), the
+thread/model mapping domain (`mapThread*`, `mapModel`, `mapAppServerRateLimits`
+plus usage-window helpers, `mergeModelCatalog`, `mapSandboxPolicy`,
+`isTurnTerminal`), the plugin/skill/app mapping domain (`mapSkill*`,
+`mapPlugin*`, `mapAppInfo`, `mapMcpServerStatus`), shared text/debug helpers
+(`truncateDebugText`, `isAgentDeltaNotificationMethod`,
+`extractTextCandidate`, `extractStructuredText`, `extractStructuredString`),
+and their byte-identical protocol type declarations (`PendingApproval`,
+`ApprovedExecution`, `CodexApp*`). Known divergent helpers
+(`serializeCollaborationMode`, `summarizeRpcParams`, `summarizeRpcResult`,
+`extractThreadIdFromNotification`, lifecycle/session-state code) stay local to
+both clients.
 
 - [x] **Step 4: Run the Task 1 verification matrix and commit**
 
