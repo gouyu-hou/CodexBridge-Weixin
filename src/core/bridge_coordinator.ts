@@ -31,16 +31,23 @@ import {
   type PluginSearchSynonymGroups,
 } from './plugin_search_text.js';
 import { parseSlashCommand } from './command_parser.js';
+import { parseJsonObject } from './json_object_parser.js';
 import {
+  THREAD_COMMAND_SKILL_ACTIONS,
+  isThreadItemEligibleForOperation,
+  parseThreadCommandSkillResult,
+  resolveSingleThreadSkillTarget,
   resolveThreadCommandRoute,
   resolveThreadSkillCandidateItems,
   skillActionToThreadOperationKind,
+  threadOperationKindToSkillAction,
   type PendingThreadCommandOperation,
   type ThreadCommandInventoryItem,
   type ThreadCommandOperationKind,
   type ThreadCommandSkillResult,
   type ThreadCommandSkillSubcommand,
 } from './thread_command.js';
+export { THREAD_COMMAND_SKILL_ACTIONS };
 import { NotFoundError } from './errors.js';
 import { ProviderUsageService } from './provider_usage_service.js';
 import {
@@ -222,24 +229,6 @@ export const INSTRUCTIONS_COMMAND_SKILL_ACTIONS = new Set([
   'propose_clear',
   'update_pending_draft',
   'clarify',
-  'reject',
-  'local_only',
-] as const);
-
-export const THREAD_COMMAND_SKILL_ACTIONS = new Set([
-  'show_default_threads',
-  'show_all_threads',
-  'show_pinned_threads',
-  'search_threads',
-  'open_thread',
-  'peek_thread',
-  'rename_thread',
-  'propose_archive_threads',
-  'propose_restore_threads',
-  'propose_pin_threads',
-  'propose_unpin_threads',
-  'clarify',
-  'no_match',
   'reject',
   'local_only',
 ] as const);
@@ -4104,7 +4093,7 @@ export class BridgeCoordinator {
     inventory: ThreadCommandInventoryItem[],
     candidateThreadIds: string[],
   ): ThreadCommandInventoryItem | null {
-    return this.resolveThreadSkillCandidateItems(inventory, candidateThreadIds)[0] ?? null;
+    return resolveSingleThreadSkillTarget(inventory, candidateThreadIds);
   }
 
   async handleResolvedThreadManagementResult(
@@ -13540,89 +13529,6 @@ function normalizeReviewCommandSkillAction(value: unknown): ReviewCommandSkillRe
     : null;
 }
 
-function parseThreadCommandSkillResult(value: unknown): ThreadCommandSkillResult | null {
-  const parsed = parseJsonObject(value);
-  if (!parsed) {
-    return null;
-  }
-  const action = normalizeThreadCommandSkillAction(parsed.action);
-  if (!action) {
-    return null;
-  }
-  const confidence = clampAssistantConfidence(Number(parsed.confidence ?? 0.8));
-  if (action === 'clarify') {
-    return {
-      action,
-      confidence,
-      question: compactWhitespace(parsed.question ?? parsed.message ?? ''),
-      candidates: Array.isArray(parsed.candidates) ? parsed.candidates.filter((entry) => entry && typeof entry === 'object') : [],
-    };
-  }
-  if (action === 'no_match' || action === 'reject' || action === 'local_only') {
-    return {
-      action,
-      confidence,
-      reason: normalizeNullableText(parsed.reason ?? parsed.message),
-    };
-  }
-  if (action === 'show_default_threads' || action === 'show_all_threads' || action === 'show_pinned_threads') {
-    return {
-      action,
-      confidence,
-      reason: normalizeNullableText(parsed.reason ?? parsed.message),
-    };
-  }
-  const candidateThreadIds = normalizeStringArray(
-    parsed.candidateThreadIds
-    ?? parsed.threadIds
-    ?? parsed.thread_ids
-    ?? parsed.targets,
-  );
-  if (candidateThreadIds.length === 0) {
-    return null;
-  }
-  if (action === 'search_threads' || action === 'open_thread' || action === 'peek_thread') {
-    return {
-      action,
-      confidence,
-      summary: normalizeNullableText(parsed.summary ?? parsed.reason ?? parsed.message),
-      candidateThreadIds,
-    };
-  }
-  if (action === 'rename_thread') {
-    const summary = compactWhitespace(parsed.summary ?? parsed.message ?? '');
-    const newName = compactWhitespace(parsed.newName ?? parsed.name ?? parsed.title ?? '');
-    if (!summary || !newName) {
-      return null;
-    }
-    return {
-      action,
-      confidence,
-      summary,
-      candidateThreadIds,
-      newName,
-    };
-  }
-  const summary = compactWhitespace(parsed.summary ?? parsed.message ?? '');
-  if (!summary) {
-    return null;
-  }
-  return {
-    action,
-    confidence,
-    summary,
-    reason: normalizeNullableText(parsed.reason),
-    candidateThreadIds,
-  };
-}
-
-function normalizeThreadCommandSkillAction(value: unknown): ThreadCommandSkillResult['action'] | null {
-  const normalized = compactWhitespace(value).toLowerCase();
-  return THREAD_COMMAND_SKILL_ACTIONS.has(normalized as ThreadCommandSkillResult['action'])
-    ? normalized as ThreadCommandSkillResult['action']
-    : null;
-}
-
 function parseReviewTargetFromSkill(value: unknown): ProviderReviewTarget | null {
   const parsed = value && typeof value === 'object' && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -14885,137 +14791,6 @@ function isAgentDraftSchemaPlaceholder(title: string, goal: string, expectedOutp
 function isAgentVerificationSchemaPlaceholder(summary: string): boolean {
   const normalized = summary.toLowerCase();
   return normalized === '简短结论' || normalized === 'short verdict';
-}
-
-function parseJsonObject(value: unknown): Record<string, any> | null {
-  if (value && typeof value === 'object' && !Array.isArray(value)) {
-    return value as Record<string, any>;
-  }
-  const text = normalizeJsonLikeText(String(value ?? ''));
-  if (!text) {
-    return null;
-  }
-  const fenced = normalizeJsonLikeText(text.match(/```(?:json)?\s*([\s\S]*?)```/iu)?.[1] ?? '');
-  const balanced = extractBalancedJsonObject(text);
-  const candidates = [fenced, balanced, text].filter(Boolean);
-  for (const candidate of candidates) {
-    const parsed = tryParseJsonObjectCandidate(candidate);
-    if (parsed) {
-      return parsed;
-    }
-  }
-  return null;
-}
-
-function normalizeJsonLikeText(value: string): string {
-  return String(value ?? '')
-    .replace(/\uFEFF/gu, '')
-    .replace(/[\u200B-\u200D\u2060]/gu, '')
-    .trim();
-}
-
-function extractBalancedJsonObject(text: string): string | null {
-  const source = normalizeJsonLikeText(text);
-  const start = source.indexOf('{');
-  if (start < 0) {
-    return null;
-  }
-  let depth = 0;
-  let inString = false;
-  let quote: '"' | '\'' | null = null;
-  for (let index = start; index < source.length; index += 1) {
-    const char = source[index]!;
-    if (inString) {
-      if (char === quote && !isEscapedJsonChar(source, index)) {
-        inString = false;
-        quote = null;
-      }
-      continue;
-    }
-    if ((char === '"' || char === '\'') && !isEscapedJsonChar(source, index)) {
-      inString = true;
-      quote = char;
-      continue;
-    }
-    if (char === '{') {
-      depth += 1;
-      continue;
-    }
-    if (char === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return source.slice(start, index + 1);
-      }
-    }
-  }
-  return null;
-}
-
-function isEscapedJsonChar(text: string, index: number): boolean {
-  let slashCount = 0;
-  for (let cursor = index - 1; cursor >= 0 && text[cursor] === '\\'; cursor -= 1) {
-    slashCount += 1;
-  }
-  return slashCount % 2 === 1;
-}
-
-function tryParseJsonObjectCandidate(candidate: string): Record<string, any> | null {
-  const base = normalizeJsonLikeText(candidate);
-  if (!base) {
-    return null;
-  }
-  const attempts = Array.from(new Set([
-    base,
-    normalizeJsonTypography(base),
-    stripTrailingCommas(base),
-    stripTrailingCommas(normalizeJsonTypography(base)),
-    escapeRawNewlinesInsideJsonStrings(stripTrailingCommas(normalizeJsonTypography(base))),
-  ]));
-  for (const attempt of attempts) {
-    try {
-      const parsed = JSON.parse(attempt);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as Record<string, any>;
-      }
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-
-function normalizeJsonTypography(text: string): string {
-  return text
-    .replace(/[“”]/gu, '"')
-    .replace(/[‘’]/gu, '\'')
-    .replace(/：/gu, ':')
-    .replace(/，/gu, ',');
-}
-
-function stripTrailingCommas(text: string): string {
-  return text.replace(/,\s*([}\]])/gu, '$1');
-}
-
-function escapeRawNewlinesInsideJsonStrings(text: string): string {
-  let output = '';
-  let inString = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index]!;
-    if (char === '"' && !isEscapedJsonChar(text, index)) {
-      inString = !inString;
-      output += char;
-      continue;
-    }
-    if (inString && (char === '\n' || char === '\r')) {
-      if (char === '\r' && text[index + 1] === '\n') {
-        index += 1;
-      }
-      output += '\\n';
-      continue;
-    }
-    output += char;
-  }
-  return output;
 }
 
 type AgentRepoContext = {
@@ -21514,32 +21289,6 @@ function formatInstructionsStatus(hasInstructions: boolean, i18n: Translator) {
 
 function buildThreadOperationKey(scopeRef: PlatformScopeRef) {
   return formatPlatformScopeKey(scopeRef.platform, scopeRef.externalScopeId);
-}
-
-function threadOperationKindToSkillAction(kind: ThreadCommandOperationKind): ThreadCommandSkillResult['action'] {
-  if (kind === 'archive') {
-    return 'propose_archive_threads';
-  }
-  if (kind === 'restore') {
-    return 'propose_restore_threads';
-  }
-  if (kind === 'pin') {
-    return 'propose_pin_threads';
-  }
-  return 'propose_unpin_threads';
-}
-
-function isThreadItemEligibleForOperation(item: ThreadCommandInventoryItem, kind: ThreadCommandOperationKind): boolean {
-  if (kind === 'archive') {
-    return typeof item.archivedAt !== 'number';
-  }
-  if (kind === 'restore') {
-    return typeof item.archivedAt === 'number';
-  }
-  if (kind === 'pin') {
-    return typeof item.archivedAt !== 'number' && typeof item.pinnedAt !== 'number';
-  }
-  return typeof item.pinnedAt === 'number';
 }
 
 function formatThreadOperationKind(kind: ThreadCommandOperationKind, i18n: Translator): string {

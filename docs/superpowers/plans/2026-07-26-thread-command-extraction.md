@@ -135,8 +135,9 @@ git commit -m "refactor: extract thread command domain"
 - [ ] **Step 1: Add failing inventory normalization tests**
 
 Use a real in-memory host fixture and assert archived, pinned, aliased, current,
-and duplicate records normalize to `ThreadCommandInventoryItem`. Assert the
-single-target helper returns `null` for zero or multiple unique candidates.
+and duplicate records normalize to `ThreadCommandInventoryItem`. Preserve the
+existing single-target behavior: return the first valid requested candidate,
+and return `null` only when no valid candidate exists.
 
 - [ ] **Step 2: Verify the tests fail for missing exports**
 
@@ -261,4 +262,3 @@ HTTP `200`, and both service endpoints stop cleanly.
 
 Push `main` to `gouyu`, identify the workflow run for the pushed commit, and
 wait until Ubuntu and Windows jobs both pass. Do not tag or publish.
-

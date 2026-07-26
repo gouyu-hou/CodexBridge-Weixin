@@ -114,6 +114,13 @@ export function resolveThreadSkillCandidateItems(
   return items;
 }
 
+export function resolveSingleThreadSkillTarget(
+  inventory: readonly ThreadCommandInventoryItem[],
+  candidateThreadIds: readonly string[],
+): ThreadCommandInventoryItem | null {
+  return resolveThreadSkillCandidateItems(inventory, candidateThreadIds)[0] ?? null;
+}
+
 export function skillActionToThreadOperationKind(
   action: ThreadCommandSkillResult['action'],
 ): ThreadCommandOperationKind | null {
@@ -132,6 +139,115 @@ export function skillActionToThreadOperationKind(
   return null;
 }
 
+export function threadOperationKindToSkillAction(
+  kind: ThreadCommandOperationKind,
+): ThreadCommandSkillResult['action'] {
+  if (kind === 'archive') {
+    return 'propose_archive_threads';
+  }
+  if (kind === 'restore') {
+    return 'propose_restore_threads';
+  }
+  if (kind === 'pin') {
+    return 'propose_pin_threads';
+  }
+  return 'propose_unpin_threads';
+}
+
+export function isThreadItemEligibleForOperation(
+  item: ThreadCommandInventoryItem,
+  kind: ThreadCommandOperationKind,
+): boolean {
+  if (kind === 'archive') {
+    return typeof item.archivedAt !== 'number';
+  }
+  if (kind === 'restore') {
+    return typeof item.archivedAt === 'number';
+  }
+  if (kind === 'pin') {
+    return typeof item.archivedAt !== 'number' && typeof item.pinnedAt !== 'number';
+  }
+  return typeof item.pinnedAt === 'number';
+}
+
+export function parseThreadCommandSkillResult(value: unknown): ThreadCommandSkillResult | null {
+  const parsed = parseJsonObject(value);
+  if (!parsed) {
+    return null;
+  }
+  const action = normalizeThreadCommandSkillAction(parsed.action);
+  if (!action) {
+    return null;
+  }
+  const confidence = clampConfidence(Number(parsed.confidence ?? 0.8));
+  if (action === 'clarify') {
+    return {
+      action,
+      confidence,
+      question: compactWhitespace(parsed.question ?? parsed.message ?? ''),
+      candidates: Array.isArray(parsed.candidates)
+        ? parsed.candidates.filter((entry) => entry && typeof entry === 'object')
+        : [],
+    };
+  }
+  if (action === 'no_match' || action === 'reject' || action === 'local_only') {
+    return {
+      action,
+      confidence,
+      reason: normalizeNullableText(parsed.reason ?? parsed.message),
+    };
+  }
+  if (action === 'show_default_threads' || action === 'show_all_threads' || action === 'show_pinned_threads') {
+    return {
+      action,
+      confidence,
+      reason: normalizeNullableText(parsed.reason ?? parsed.message),
+    };
+  }
+  const candidateThreadIds = normalizeStringArray(
+    parsed.candidateThreadIds
+    ?? parsed.threadIds
+    ?? parsed.thread_ids
+    ?? parsed.targets,
+  );
+  if (candidateThreadIds.length === 0) {
+    return null;
+  }
+  if (action === 'search_threads' || action === 'open_thread' || action === 'peek_thread') {
+    return {
+      action,
+      confidence,
+      summary: normalizeNullableText(parsed.summary ?? parsed.reason ?? parsed.message),
+      candidateThreadIds,
+    };
+  }
+  if (action === 'rename_thread') {
+    const summary = compactWhitespace(parsed.summary ?? parsed.message ?? '');
+    const newName = compactWhitespace(parsed.newName ?? parsed.name ?? parsed.title ?? '');
+    if (!summary || !newName) {
+      return null;
+    }
+    return {
+      action,
+      confidence,
+      summary,
+      candidateThreadIds,
+      newName,
+    };
+  }
+  const summary = compactWhitespace(parsed.summary ?? parsed.message ?? '');
+  if (!summary) {
+    return null;
+  }
+  return {
+    action,
+    confidence,
+    summary,
+    reason: normalizeNullableText(parsed.reason),
+    candidateThreadIds,
+  };
+}
+
 function normalizeThreadOperation(action: string): ThreadCommandOperationKind | null {
   if (action === 'del' || action === 'delete' || action === 'archive') {
     return 'archive';
@@ -141,3 +257,51 @@ function normalizeThreadOperation(action: string): ThreadCommandOperationKind | 
   }
   return null;
 }
+
+function normalizeThreadCommandSkillAction(value: unknown): ThreadCommandSkillResult['action'] | null {
+  const normalized = compactWhitespace(value).toLowerCase();
+  return THREAD_COMMAND_SKILL_ACTIONS.has(normalized as ThreadCommandSkillResult['action'])
+    ? normalized as ThreadCommandSkillResult['action']
+    : null;
+}
+
+function clampConfidence(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0.8;
+  }
+  return Math.max(0, Math.min(1, value));
+}
+
+function compactWhitespace(value: unknown): string {
+  return String(value ?? '').replace(/\s+/gu, ' ').trim();
+}
+
+function normalizeNullableText(value: unknown): string | null {
+  const normalized = compactWhitespace(value);
+  return normalized || null;
+}
+
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((entry) => compactWhitespace(entry)).filter(Boolean).slice(0, 12)
+    : [];
+}
+import { parseJsonObject } from './json_object_parser.js';
+
+export const THREAD_COMMAND_SKILL_ACTIONS = new Set([
+  'show_default_threads',
+  'show_all_threads',
+  'show_pinned_threads',
+  'search_threads',
+  'open_thread',
+  'peek_thread',
+  'rename_thread',
+  'propose_archive_threads',
+  'propose_restore_threads',
+  'propose_pin_threads',
+  'propose_unpin_threads',
+  'clarify',
+  'no_match',
+  'reject',
+  'local_only',
+] as const);
