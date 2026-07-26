@@ -110,7 +110,7 @@ The smoke launcher also strips `ELECTRON_RUN_AS_NODE` / `NODE_OPTIONS` so
 Node-mode shells (agent sandboxes, VS Code tasks) cannot force the packaged
 Electron binary to parse argv as Node CLI flags.
 
-- [ ] **Step 3: Run complete verification**
+- [x] **Step 3: Run complete verification**
 
 Run `npm run verify:release`, `npm run weixin:electron:dist`,
 `node scripts/release/smoke_packaged.mjs`, `npm audit --omit=dev`, and

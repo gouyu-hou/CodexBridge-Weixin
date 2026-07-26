@@ -82,6 +82,20 @@ import {
   type PendingInstructionsOperation,
 } from './instructions_command.js';
 export { INSTRUCTIONS_COMMAND_SKILL_ACTIONS };
+import {
+  findModelByIndexToken,
+  findModelByToken,
+  formatModelEffortSourceLabel,
+  formatModelSourceLabel,
+  formatReasoningEffortLabel,
+  formatSupportedEfforts,
+  parseConcatenatedModelEffortToken,
+  renderModelLines,
+  resolveEffectiveModelSelection,
+  resolveEffortForModel,
+  resolveSessionModelForEffort,
+  type EffectiveModelState,
+} from './model_command.js';
 import { NotFoundError } from './errors.js';
 import { ProviderUsageService } from './provider_usage_service.js';
 import {
@@ -4540,11 +4554,12 @@ export class BridgeCoordinator {
       this.t('coordinator.models.listTitle', { providerProfileId: providerProfile.id }),
       this.t('coordinator.model.current', { value: effectiveModelState.modelValue }),
       this.t('coordinator.model.currentSource', {
-        value: this.formatModelSourceLabel(effectiveModelState.modelSource),
+        value: formatModelSourceLabel(effectiveModelState.modelSource, this.currentI18n),
       }),
       this.t('coordinator.models.helpHeader'),
-      ...(models.length === 0 ? [this.t('coordinator.models.empty')] : this.renderModelLines(models, {
+      ...(models.length === 0 ? [this.t('coordinator.models.empty')] : renderModelLines(models, {
         activeModelId: effectiveModelState.modelId,
+        i18n: this.currentI18n,
       })),
       this.t('coordinator.model.usageHint'),
     ], this.resolveScopedSessionMeta(scopeRef));
@@ -4565,7 +4580,7 @@ export class BridgeCoordinator {
         this.t('coordinator.model.providerProfile', { value: providerProfile.id }),
         this.t('coordinator.model.current', { value: effectiveModelState.modelValue }),
         this.t('coordinator.model.currentSource', {
-          value: this.formatModelSourceLabel(effectiveModelState.modelSource),
+          value: formatModelSourceLabel(effectiveModelState.modelSource, this.currentI18n),
         }),
       ];
       if (effectiveModelState.description) {
@@ -4575,15 +4590,15 @@ export class BridgeCoordinator {
       }
       lines.push(
         this.t('coordinator.model.currentEffort', {
-          value: this.formatReasoningEffortLabel(effectiveModelState.effortValue),
+          value: formatReasoningEffortLabel(effectiveModelState.effortValue),
         }),
         this.t('coordinator.model.currentEffortSource', {
-          value: this.formatModelEffortSourceLabel(effectiveModelState.effortSource),
+          value: formatModelEffortSourceLabel(effectiveModelState.effortSource, this.currentI18n),
         }),
       );
       if (effectiveModelState.defaultReasoningEffort) {
         lines.push(this.t('coordinator.model.defaultEffort', {
-          value: this.formatReasoningEffortLabel(effectiveModelState.defaultReasoningEffort),
+          value: formatReasoningEffortLabel(effectiveModelState.defaultReasoningEffort),
         }));
       }
       lines.push(
@@ -4624,7 +4639,7 @@ export class BridgeCoordinator {
     const normalizedModel = requestedModel.toLowerCase();
     const normalizedEffort = requestedEffort.trim().toLowerCase();
     const sessionSettings = pendingNewSession?.settings ?? (session ? this.bridgeSessions.getSessionSettings(session.id) : null);
-    const currentModel = this.resolveSessionModelForEffort(models, sessionSettings?.model);
+    const currentModel = resolveSessionModelForEffort(models, sessionSettings?.model);
     const sessionMeta = session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event);
 
     if (['default', 'reset', 'clear', 'none', '默认', '重置'].includes(normalizedModel)) {
@@ -4634,18 +4649,18 @@ export class BridgeCoordinator {
       };
       const messages = [this.t('coordinator.model.reset')];
       if (normalizedEffort) {
-        const resolvedEffort = this.resolveEffortForModel(currentModel, normalizedEffort);
+        const resolvedEffort = resolveEffortForModel(currentModel, normalizedEffort);
         if (!resolvedEffort) {
           return messageResponse([
             this.t('coordinator.model.unsupportedEffort', {
               effort: requestedEffort,
-              supported: this.formatSupportedEfforts(currentModel),
+              supported: formatSupportedEfforts(currentModel, this.currentI18n),
             }),
           ], sessionMeta);
         }
         updates.reasoningEffort = resolvedEffort;
         messages.push(this.t('coordinator.model.effortUpdated', {
-          value: this.formatReasoningEffortLabel(resolvedEffort),
+          value: formatReasoningEffortLabel(resolvedEffort),
         }));
       }
       if (pendingNewSession) {
@@ -4660,10 +4675,10 @@ export class BridgeCoordinator {
       }
       return messageResponse([...messages, this.t('coordinator.permissions.nextTurn')], sessionMeta);
     }
-    const matchedModel = this.findModelByToken(models, requestedModel)
-      ?? this.findModelByIndexToken(models, requestedModel);
+    const matchedModel = findModelByToken(models, requestedModel)
+      ?? findModelByIndexToken(models, requestedModel);
     if (!matchedModel && normalizedArgs.length === 1) {
-      const mergedInput = this.parseConcatenatedModelEffortToken(normalizedModel, models);
+      const mergedInput = parseConcatenatedModelEffortToken(normalizedModel, models);
       if (mergedInput) {
         return messageResponse([
           this.t('coordinator.model.missingEffortSeparator', {
@@ -4672,7 +4687,7 @@ export class BridgeCoordinator {
           }),
         ], sessionMeta);
       }
-      const resolvedEffort = this.resolveEffortForModel(currentModel, normalizedModel);
+      const resolvedEffort = resolveEffortForModel(currentModel, normalizedModel);
       if (!resolvedEffort) {
         return messageResponse([
           this.t('coordinator.model.unknown', { name: requestedModel }),
@@ -4691,7 +4706,7 @@ export class BridgeCoordinator {
       }
       return messageResponse([
         this.t('coordinator.model.effortUpdated', {
-          value: this.formatReasoningEffortLabel(resolvedEffort),
+          value: formatReasoningEffortLabel(resolvedEffort),
         }),
         this.t('coordinator.permissions.nextTurn'),
       ], sessionMeta);
@@ -4703,7 +4718,7 @@ export class BridgeCoordinator {
       ], sessionMeta);
     }
     const resolvedEffort = requestedEffort
-      ? this.resolveEffortForModel(
+      ? resolveEffortForModel(
           matchedModel ?? currentModel,
           normalizedEffort,
         )
@@ -4713,7 +4728,7 @@ export class BridgeCoordinator {
       return messageResponse([
         this.t('coordinator.model.unsupportedEffort', {
           effort: requestedEffort,
-          supported: this.formatSupportedEfforts(modelForEffort),
+          supported: formatSupportedEfforts(modelForEffort, this.currentI18n),
         }),
       ], sessionMeta);
     }
@@ -4729,7 +4744,7 @@ export class BridgeCoordinator {
     if (requestedEffort) {
       updates.reasoningEffort = resolvedEffort;
       messages.push(this.t('coordinator.model.effortUpdated', {
-        value: this.formatReasoningEffortLabel(resolvedEffort),
+        value: formatReasoningEffortLabel(resolvedEffort),
       }));
     }
     if (messages.length === 0) {
@@ -5632,32 +5647,11 @@ export class BridgeCoordinator {
     ], buildSessionMeta(session));
   }
 
-  resolveSessionModelForEffort(models, requestedModel) {
-    if (requestedModel) {
-      const matched = this.findModelByToken(models, requestedModel);
-      if (matched) {
-        return matched;
-      }
-    }
-    return models.find((model) => model.isDefault) ?? models[0] ?? null;
-  }
-
   async resolveEffectiveModelState(
     providerProfile,
     settings,
-    availableModels = null,
-  ): Promise<{
-    models: ProviderModelInfo[];
-    modelInfo: ProviderModelInfo | null;
-    modelId: string | null;
-    modelValue: string;
-    modelSource: 'session' | 'profile_default' | 'provider_default' | 'provider_first' | 'unset';
-    description: string;
-    effortValue: string;
-    effortSource: 'session' | 'model_default' | 'unset';
-    defaultReasoningEffort: string | null;
-    supportedEffortsText: string;
-  }> {
+    availableModels: ProviderModelInfo[] | null = null,
+  ): Promise<EffectiveModelState> {
     const providerPlugin = this.providerRegistry.getProvider(providerProfile.providerKind);
     let models = Array.isArray(availableModels) ? availableModels : [];
     if (!Array.isArray(availableModels) && typeof providerPlugin?.listModels === 'function') {
@@ -5670,208 +5664,12 @@ export class BridgeCoordinator {
         models = [];
       }
     }
-
-    const explicitModel = this.normalizeConfiguredModelToken(settings?.model);
-    const profileDefaultModel = this.resolveProviderProfileDefaultModel(providerProfile);
-    const providerDefaultModel = models.find((model) => model?.isDefault) ?? models[0] ?? null;
-
-    let modelInfo: ProviderModelInfo | null = null;
-    let modelSource: 'session' | 'profile_default' | 'provider_default' | 'provider_first' | 'unset' = 'unset';
-    if (explicitModel) {
-      modelInfo = this.findModelByToken(models, explicitModel) ?? this.buildSyntheticModelInfo(explicitModel);
-      modelSource = 'session';
-    } else if (profileDefaultModel) {
-      modelInfo = this.findModelByToken(models, profileDefaultModel) ?? this.buildSyntheticModelInfo(profileDefaultModel);
-      modelSource = 'profile_default';
-    } else if (providerDefaultModel?.isDefault) {
-      modelInfo = providerDefaultModel;
-      modelSource = 'provider_default';
-    } else if (providerDefaultModel) {
-      modelInfo = providerDefaultModel;
-      modelSource = 'provider_first';
-    }
-
-    const modelId = this.resolveModelIdentifier(modelInfo);
-    const modelValue = modelId ?? this.t('coordinator.model.currentDefault');
-    const description = modelInfo ? this.resolveModelDescription(modelInfo, modelId ?? undefined) : '';
-    const explicitEffort = this.normalizeConfiguredModelToken(settings?.reasoningEffort);
-    const defaultReasoningEffort = this.normalizeConfiguredModelToken(modelInfo?.defaultReasoningEffort);
-    const effortValue = explicitEffort ?? defaultReasoningEffort ?? this.t('common.default');
-    const effortSource: 'session' | 'model_default' | 'unset' = explicitEffort
-      ? 'session'
-      : defaultReasoningEffort
-        ? 'model_default'
-        : 'unset';
-
-    return {
+    return resolveEffectiveModelSelection({
       models,
-      modelInfo,
-      modelId,
-      modelValue,
-      modelSource,
-      description,
-      effortValue,
-      effortSource,
-      defaultReasoningEffort,
-      supportedEffortsText: this.formatSupportedEfforts(modelInfo),
-    };
-  }
-
-  resolveProviderProfileDefaultModel(providerProfile) {
-    const configured = providerProfile?.config && typeof providerProfile.config === 'object'
-      ? providerProfile.config.defaultModel
-      : null;
-    return this.normalizeConfiguredModelToken(configured);
-  }
-
-  normalizeConfiguredModelToken(value) {
-    const normalized = String(value ?? '').trim();
-    return normalized ? normalized : null;
-  }
-
-  buildSyntheticModelInfo(modelId): ProviderModelInfo {
-    const resolvedModelId = String(modelId ?? '').trim();
-    return {
-      id: resolvedModelId,
-      model: resolvedModelId,
-      displayName: resolvedModelId,
-      description: '',
-      isDefault: false,
-      supportedReasoningEfforts: [],
-      defaultReasoningEffort: null,
-    };
-  }
-
-  resolveModelIdentifier(model) {
-    const resolved = String(model?.model ?? model?.id ?? '').trim();
-    return resolved ? resolved : null;
-  }
-
-  formatModelSourceLabel(source) {
-    switch (source) {
-      case 'session':
-        return this.t('coordinator.model.source.session');
-      case 'profile_default':
-        return this.t('coordinator.model.source.profileDefault');
-      case 'provider_default':
-        return this.t('coordinator.model.source.providerDefault');
-      case 'provider_first':
-        return this.t('coordinator.model.source.providerFirst');
-      default:
-        return this.t('coordinator.model.source.unset');
-    }
-  }
-
-  formatModelEffortSourceLabel(source) {
-    switch (source) {
-      case 'session':
-        return this.t('coordinator.model.source.session');
-      case 'model_default':
-        return this.t('coordinator.model.source.modelDefault');
-      default:
-        return this.t('coordinator.model.source.unset');
-    }
-  }
-
-  resolveEffortForModel(model, requestedEffort) {
-    if (!requestedEffort) {
-      return null;
-    }
-    const supportedEfforts = Array.isArray(model?.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
-    if (supportedEfforts.length === 0) {
-      return null;
-    }
-    const normalized = String(requestedEffort).trim().toLowerCase();
-    const matched = supportedEfforts.find((effort) => String(effort ?? '').trim().toLowerCase() === normalized);
-    return matched ? String(matched) : null;
-  }
-
-  formatSupportedEfforts(model) {
-    const supportedEfforts = Array.isArray(model?.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
-    return supportedEfforts.length > 0
-      ? supportedEfforts.map((effort) => this.formatReasoningEffortLabel(effort)).join(', ')
-      : this.t('coordinator.model.unsupportedEffortFallback');
-  }
-
-  formatReasoningEffortLabel(effort) {
-    const raw = String(effort ?? '').trim();
-    if (!raw) {
-      return raw;
-    }
-    const normalized = raw.toLowerCase();
-    const labels = {
-      none: '关闭',
-      minimal: '极低',
-      low: '低',
-      medium: '中',
-      high: '高',
-      xhigh: '超高',
-      max: '超高',
-      auto: '自动',
-    };
-    const label = labels[normalized];
-    return label ? `${label}（${raw}）` : raw;
-  }
-
-  findModelByToken(models, request) {
-    const normalized = String(request ?? '').trim();
-    const lowered = normalized.toLowerCase();
-    return models.find((model) => {
-      const modelId = String(model.model ?? '');
-      const modelDisplayName = String(model.displayName ?? '');
-      const modelConfigId = String(model.id ?? '');
-      const normalizedModelId = modelId.toLowerCase();
-      const normalizedDisplayName = modelDisplayName.toLowerCase();
-      const normalizedConfigId = modelConfigId.toLowerCase();
-      return modelId === normalized
-        || normalizedModelId === lowered
-        || modelDisplayName === normalized
-        || normalizedDisplayName === lowered
-        || modelConfigId === normalized
-        || normalizedConfigId === lowered;
-    }) ?? null;
-  }
-
-  findModelByIndexToken(models, request) {
-    const normalized = String(request ?? '').trim();
-    if (!/^[1-9]\d*$/.test(normalized)) {
-      return null;
-    }
-    const index = Number.parseInt(normalized, 10) - 1;
-    return models[index] ?? null;
-  }
-
-  parseConcatenatedModelEffortToken(token, models) {
-    const normalizedToken = String(token ?? '').trim().toLowerCase();
-    if (!normalizedToken) {
-      return null;
-    }
-    for (const model of models) {
-      const supportedEfforts = Array.isArray(model?.supportedReasoningEfforts) ? model.supportedReasoningEfforts : [];
-      if (supportedEfforts.length === 0) {
-        continue;
-      }
-      const modelTokens = [
-        String(model.id ?? ''),
-        String(model.model ?? ''),
-        String(model.displayName ?? ''),
-      ].map((value) => value.trim().toLowerCase()).filter(Boolean);
-      for (const effort of supportedEfforts) {
-        const normalizedEffort = String(effort ?? '').trim().toLowerCase();
-        if (!normalizedEffort || !normalizedToken.endsWith(normalizedEffort)) {
-          continue;
-        }
-        const modelPart = normalizedToken.slice(0, -normalizedEffort.length);
-        if (!modelPart || !modelTokens.includes(modelPart)) {
-          continue;
-        }
-        return {
-          model: String(model.model ?? model.id ?? model.displayName ?? ''),
-          effort: String(effort),
-        };
-      }
-    }
-    return null;
+      settings,
+      providerProfile,
+      i18n: this.currentI18n,
+    });
   }
 
   async handleRenameCommand(event, args) {
@@ -11225,42 +11023,6 @@ export class BridgeCoordinator {
       status: 'not_found' as const,
       value: matchText || token,
     };
-  }
-
-  renderModelLines(models, {
-    activeModelId = null,
-  }: {
-    activeModelId?: string | null;
-  } = {}) {
-    return models.map((model, index) => {
-      const modelId = String(model.model ?? model.id ?? '').trim();
-      const displayName = String(model.displayName ?? '').trim();
-      const reasonings = Array.isArray(model.supportedReasoningEfforts) && model.supportedReasoningEfforts.length > 0
-        ? ` (${model.supportedReasoningEfforts.join(', ')})`
-        : '';
-      const description = this.resolveModelDescription(model, modelId);
-      const currentMarker = activeModelId && modelId === activeModelId
-        ? ` ${this.t('coordinator.models.currentSuffix')}`
-        : '';
-      const defaultMarker = model.isDefault ? ` ${this.t('coordinator.models.defaultSuffix')}` : '';
-      if (!displayName || displayName === modelId) {
-        return `${index + 1}. ${modelId}${currentMarker}${defaultMarker}${reasonings}${description ? ` - ${description}` : ''}`;
-      }
-      return `${index + 1}. ${modelId}${currentMarker}${defaultMarker} ${displayName}${reasonings}${description ? ` - ${description}` : ''}`;
-    });
-  }
-
-  resolveModelDescription(model, modelId) {
-    const resolvedModelId = String(modelId ?? model?.model ?? model?.id ?? '').trim();
-    if (!resolvedModelId) {
-      return String(model?.description ?? '').trim();
-    }
-    const key = `coordinator.models.description.${resolvedModelId}`;
-    const localized = this.t(key);
-    if (localized === key) {
-      return String(model?.description ?? '').trim();
-    }
-    return localized;
   }
 
   async resolveProviderUsage(providerProfile) {

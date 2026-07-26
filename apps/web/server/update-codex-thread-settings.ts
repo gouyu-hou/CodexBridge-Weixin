@@ -2,11 +2,18 @@ import path from 'node:path';
 import { stdin, stdout, stderr } from 'node:process';
 import { createCodexBridgeRuntime } from '../../../src/runtime/bootstrap.ts';
 import { buildPermissionsSettingsUpdate, normalizePermissionsMode, resolvePermissionsState } from '../../../src/core/permissions_mode.ts';
+import {
+  findModelByIndexToken,
+  findModelByToken,
+  resolveEffortForModel,
+  resolveSessionModelForEffort,
+} from '../../../src/core/model_command.ts';
 import { createFileJsonRepositories } from '../../../src/store/file_json/create_file_json_repositories.ts';
 import { OpenAINativeProviderPlugin } from '../../../src/providers/openai_native/plugin.ts';
 import { OpenAICompatibleProviderPlugin } from '../../../src/providers/openai_compatible/plugin.ts';
 import { CodexAccountManager } from '../../../src/providers/codex/account_manager.ts';
 import { CodexGoalManager } from '../../../src/providers/codex/goal_state.ts';
+import type { ProviderProfile } from '../../../src/types/provider.ts';
 import { resolveWorkerRepoRoot } from './worker-runtime';
 
 type InputPayload = {
@@ -40,7 +47,7 @@ function inferNativeProviderProfileId(
 ): string {
   const nativeProfiles = runtime.repositories.providerProfiles
     .list()
-    .filter((profile) => profile.providerKind === 'openai-native');
+    .filter((profile: ProviderProfile) => profile.providerKind === 'openai-native');
 
   for (const profile of nativeProfiles) {
     if (runtime.services.bridgeSessions.findSessionByProviderThread(profile.id, threadId)) {
@@ -48,7 +55,7 @@ function inferNativeProviderProfileId(
     }
   }
 
-  return nativeProfiles.find((profile) => profile.id === 'openai-default')?.id
+  return nativeProfiles.find((profile: ProviderProfile) => profile.id === 'openai-default')?.id
     ?? nativeProfiles[0]?.id
     ?? 'openai-default';
 }
@@ -121,7 +128,7 @@ async function main() {
     : null;
   const nextUpdates: Record<string, unknown> = {};
 
-  if (hasPermissionsMode) {
+  if (hasPermissionsMode && permissionsMode) {
     Object.assign(nextUpdates, buildPermissionsSettingsUpdate(permissionsMode));
   }
 
@@ -135,15 +142,15 @@ async function main() {
         nextUpdates.reasoningEffort = null;
       }
     } else {
-      matchedModel = runtime.services.bridgeCoordinator.findModelByToken(models, normalizedModel)
-        ?? runtime.services.bridgeCoordinator.findModelByIndexToken(models, normalizedModel);
+      matchedModel = findModelByToken(models, normalizedModel)
+        ?? findModelByIndexToken(models, normalizedModel);
       if (!matchedModel) {
         throw new Error('unknown_model');
       }
       nextUpdates.model = String(matchedModel.model ?? matchedModel.id);
       if (!hasReasoningEffort) {
         const currentEffort = normalizeText(sessionSettings?.reasoningEffort ?? null);
-        if (currentEffort && !runtime.services.bridgeCoordinator.resolveEffortForModel(matchedModel, currentEffort)) {
+        if (currentEffort && !resolveEffortForModel(matchedModel, currentEffort)) {
           nextUpdates.reasoningEffort = null;
         }
       }
@@ -159,11 +166,11 @@ async function main() {
         ...(sessionSettings ?? {}),
         ...nextUpdates,
       };
-      const modelForEffort = runtime.services.bridgeCoordinator.resolveSessionModelForEffort(
+      const modelForEffort = resolveSessionModelForEffort(
         models,
         typeof previewSettings.model === 'string' ? previewSettings.model : null,
       );
-      const resolvedEffort = runtime.services.bridgeCoordinator.resolveEffortForModel(
+      const resolvedEffort = resolveEffortForModel(
         modelForEffort,
         rawEffort,
       );
@@ -185,7 +192,7 @@ async function main() {
   }
 
   const resolved = resolvePermissionsState(
-    sessionSettings ?? (hasPermissionsMode ? buildPermissionsSettingsUpdate(permissionsMode) : buildPermissionsSettingsUpdate('default-permissions')),
+    sessionSettings ?? (permissionsMode ? buildPermissionsSettingsUpdate(permissionsMode) : buildPermissionsSettingsUpdate('default-permissions')),
   );
   const effectiveModelState = await runtime.services.bridgeCoordinator.resolveEffectiveModelState(
     providerProfile,
