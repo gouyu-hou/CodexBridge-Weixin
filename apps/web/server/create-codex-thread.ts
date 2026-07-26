@@ -7,6 +7,7 @@ import { OpenAINativeProviderPlugin } from '../../../src/providers/openai_native
 import { OpenAICompatibleProviderPlugin } from '../../../src/providers/openai_compatible/plugin.ts';
 import { CodexAccountManager } from '../../../src/providers/codex/account_manager.ts';
 import { CodexGoalManager } from '../../../src/providers/codex/goal_state.ts';
+import type { ProviderProfile } from '../../../src/types/provider.ts';
 import { resolveWorkerRepoRoot } from './worker-runtime';
 
 type InputPayload = {
@@ -39,9 +40,9 @@ function resolveNativeProviderProfileId(
 ): string {
   const nativeProfiles = runtime.repositories.providerProfiles
     .list()
-    .filter((profile) => profile.providerKind === 'openai-native');
+    .filter((profile: ProviderProfile) => profile.providerKind === 'openai-native');
 
-  return nativeProfiles.find((profile) => profile.id === 'openai-default')?.id
+  return nativeProfiles.find((profile: ProviderProfile) => profile.id === 'openai-default')?.id
     ?? nativeProfiles[0]?.id
     ?? 'openai-default';
 }

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { createCodexBridgeRuntime } from '../../../src/runtime/bootstrap.ts';
 import { createFileJsonRepositories } from '../../../src/store/file_json/create_file_json_repositories.ts';
+import type { ProviderProfile } from '../../../src/types/provider.ts';
 import { OpenAINativeProviderPlugin } from '../../../src/providers/openai_native/plugin.ts';
 import { OpenAICompatibleProviderPlugin } from '../../../src/providers/openai_compatible/plugin.ts';
 import { CodexAccountManager } from '../../../src/providers/codex/account_manager.ts';
@@ -67,7 +68,7 @@ function inferNativeProviderProfileId(
 ): string {
   const nativeProfiles = runtime.repositories.providerProfiles
     .list()
-    .filter((profile) => profile.providerKind === 'openai-native');
+    .filter((profile: ProviderProfile) => profile.providerKind === 'openai-native');
 
   for (const profile of nativeProfiles) {
     if (runtime.services.bridgeSessions.findSessionByProviderThread(profile.id, threadId)) {
@@ -75,7 +76,7 @@ function inferNativeProviderProfileId(
     }
   }
 
-  return nativeProfiles.find((profile) => profile.id === 'openai-default')?.id
+  return nativeProfiles.find((profile: ProviderProfile) => profile.id === 'openai-default')?.id
     ?? nativeProfiles[0]?.id
     ?? 'openai-default';
 }
@@ -173,7 +174,7 @@ export async function executeWebThreadReply({
           await onApprovalRequest(request);
         }
       },
-      onProgress: async (progress) => {
+      onProgress: async (progress: { outputKind?: string | null; text?: unknown } | null | undefined) => {
         if (progress?.outputKind === 'commentary') {
           const commentaryText = sanitizeCommentaryText(progress.text);
           if (!commentaryText || commentaryText === lastCommentaryText) {

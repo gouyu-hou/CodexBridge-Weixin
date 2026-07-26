@@ -9,9 +9,13 @@
     ]
   },
   "files": [
+    "lib/server/auth.ts",
+    "lib/server/queries.ts",
+    "lib/server/runtime.ts",
     "lib/server/thread-message.ts",
     "server/reply-run-manager.ts",
-    "server/tsx-json-worker.ts"
+    "server/tsx-json-worker.ts",
+    "server/worker-runtime.ts"
   ],
   "include": [],
   "exclude": [
