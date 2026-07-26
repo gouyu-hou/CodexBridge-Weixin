@@ -141,6 +141,50 @@ export function resolveThreadCommandRoute(args: readonly unknown[]): ThreadComma
   return { kind: 'natural', args: [...args] };
 }
 
+export interface ThreadInventorySourceItem {
+  threadId: string;
+  title?: unknown;
+  preview?: unknown;
+  updatedAt?: unknown;
+  archivedAt?: unknown;
+  pinnedAt?: unknown;
+}
+
+export interface ThreadInventoryHost {
+  listThreads(options: {
+    limit: number;
+    includeArchived: boolean;
+    onlyPinned: boolean;
+  }): Promise<{ items: readonly ThreadInventorySourceItem[] }>;
+  getThreadAlias(threadId: string): string | null;
+  isCurrentThread(threadId: string): boolean;
+}
+
+export async function listThreadInventoryForCommand(
+  host: ThreadInventoryHost,
+  {
+    limit,
+    includeArchived = true,
+    onlyPinned = false,
+  }: {
+    limit: number;
+    includeArchived?: boolean;
+    onlyPinned?: boolean;
+  },
+): Promise<ThreadCommandInventoryItem[]> {
+  const result = await host.listThreads({ limit, includeArchived, onlyPinned });
+  return result.items.map((item) => ({
+    threadId: item.threadId,
+    title: normalizeNullableText(item.title),
+    alias: normalizeNullableText(host.getThreadAlias(item.threadId)),
+    preview: normalizeNullableText(truncateText(String(item.preview ?? '').trim(), 160)),
+    updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : null,
+    archivedAt: typeof item.archivedAt === 'number' ? item.archivedAt : null,
+    pinnedAt: typeof item.pinnedAt === 'number' ? item.pinnedAt : null,
+    isCurrent: host.isCurrentThread(item.threadId),
+  }));
+}
+
 export function resolveThreadSkillCandidateItems(
   inventory: readonly ThreadCommandInventoryItem[],
   candidateThreadIds: readonly string[],
@@ -328,6 +372,14 @@ function compactWhitespace(value: unknown): string {
 function normalizeNullableText(value: unknown): string | null {
   const normalized = compactWhitespace(value);
   return normalized || null;
+}
+
+function truncateText(value: unknown, limit: number): string {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) {
+    return '';
+  }
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized;
 }
 
 function normalizeStringArray(value: unknown): string[] {

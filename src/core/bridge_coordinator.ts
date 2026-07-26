@@ -36,6 +36,7 @@ import {
   THREAD_COMMAND_SKILL_ACTIONS,
   ThreadCommandService,
   isThreadItemEligibleForOperation,
+  listThreadInventoryForCommand,
   parseThreadCommandSkillResult,
   resolveSingleThreadSkillTarget,
   resolveThreadSkillCandidateItems,
@@ -4048,25 +4049,24 @@ export class BridgeCoordinator {
   ): Promise<ThreadCommandInventoryItem[]> {
     const scopeRef = toScopeRef(event);
     const current = this.bridgeSessions.resolveScopeSession(scopeRef);
-    const result = await this.bridgeSessions.listProviderThreads(providerProfileId, {
+    return listThreadInventoryForCommand({
+      listThreads: (options) => this.bridgeSessions.listProviderThreads(providerProfileId, {
+        limit: options.limit,
+        cursor: null,
+        searchTerm: null,
+        includeArchived: options.includeArchived,
+        onlyPinned: options.onlyPinned,
+      }),
+      getThreadAlias: (threadId) => this.bridgeSessions.getThreadMetadata(providerProfileId, threadId)?.alias ?? null,
+      isCurrentThread: (threadId) => Boolean(
+        current
+        && current.providerProfileId === providerProfileId
+        && current.codexThreadId === threadId,
+      ),
+    }, {
       limit: THREAD_COMMAND_SKILL_LIST_LIMIT,
-      cursor: null,
-      searchTerm: null,
       includeArchived,
       onlyPinned,
-    });
-    return result.items.map((item) => {
-      const metadata = this.bridgeSessions.getThreadMetadata(providerProfileId, item.threadId);
-      return {
-        threadId: item.threadId,
-        title: normalizeNullableText(item.title),
-        alias: normalizeNullableText(metadata?.alias),
-        preview: normalizeNullableText(truncateText(String(item.preview ?? '').trim(), 160)),
-        updatedAt: typeof item.updatedAt === 'number' ? item.updatedAt : null,
-        archivedAt: typeof item.archivedAt === 'number' ? item.archivedAt : null,
-        pinnedAt: typeof item.pinnedAt === 'number' ? item.pinnedAt : null,
-        isCurrent: Boolean(current && current.providerProfileId === providerProfileId && current.codexThreadId === item.threadId),
-      };
     });
   }
 

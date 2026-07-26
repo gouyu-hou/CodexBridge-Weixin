@@ -35,7 +35,7 @@
 - Produces: `resolveThreadSkillCandidateItems(inventory, candidateThreadIds)`.
 - Produces: `skillActionToThreadOperationKind(action)`.
 
-- [ ] **Step 1: Write failing pure-boundary tests**
+- [x] **Step 1: Write failing pure-boundary tests**
 
 Create table-driven tests asserting that empty, `all`, `pinned`, `confirm`,
 `cancel`, aliases `del`/`delete`, archive/restore/pin/unpin, and natural input
@@ -63,7 +63,7 @@ assert.deepEqual(
 );
 ```
 
-- [ ] **Step 2: Run the tests and verify the missing-module failure**
+- [x] **Step 2: Run the tests and verify the missing-module failure**
 
 Run:
 
@@ -73,7 +73,7 @@ npm test -- test/core/thread_command.test.ts
 
 Expected: FAIL because `src/core/thread_command.ts` does not exist.
 
-- [ ] **Step 3: Implement the pure module**
+- [x] **Step 3: Implement the pure module**
 
 Define the exported route union and deterministic router:
 
@@ -90,14 +90,14 @@ candidate matching with an inventory map and output-ID set so caller order is
 preserved and duplicates are removed. Return `null` from
 `skillActionToThreadOperationKind` for non-management skill actions.
 
-- [ ] **Step 4: Delegate coordinator routing to the pure module**
+- [x] **Step 4: Delegate coordinator routing to the pure module**
 
 Import the exported types and functions. Replace the branch chain in
 `handleThreadsCommand` with a switch on `resolveThreadCommandRoute(args)`.
 Replace the coordinator candidate helper body and operation mapping helper with
 the imported functions, then remove local duplicate type declarations.
 
-- [ ] **Step 5: Run focused tests and type checking**
+- [x] **Step 5: Run focused tests and type checking**
 
 Run:
 
@@ -108,7 +108,7 @@ npm run typecheck
 
 Expected: all commands exit `0`.
 
-- [ ] **Step 6: Review and commit the boundary**
+- [x] **Step 6: Review and commit the boundary**
 
 Run `git diff --check`, confirm no response text changed, and commit:
 
@@ -132,19 +132,19 @@ git commit -m "refactor: extract thread command domain"
 - Produces: `listThreadInventoryForCommand(host, options)` and
   `resolveSingleThreadSkillTarget(inventory, candidateThreadIds)`.
 
-- [ ] **Step 1: Add failing inventory normalization tests**
+- [x] **Step 1: Add failing inventory normalization tests**
 
 Use a real in-memory host fixture and assert archived, pinned, aliased, current,
 and duplicate records normalize to `ThreadCommandInventoryItem`. Preserve the
 existing single-target behavior: return the first valid requested candidate,
 and return `null` only when no valid candidate exists.
 
-- [ ] **Step 2: Verify the tests fail for missing exports**
+- [x] **Step 2: Verify the tests fail for missing exports**
 
 Run `npm test -- test/core/thread_command.test.ts` and expect missing-export
 failures.
 
-- [ ] **Step 3: Implement inventory helpers behind `ThreadInventoryHost`**
+- [x] **Step 3: Implement inventory helpers behind `ThreadInventoryHost`**
 
 The host contract exposes callbacks rather than coordinator state:
 
@@ -158,12 +158,12 @@ Keep filtering, ordering, deduplication, and result limits in the module. Keep
 provider access and session repository implementation in the coordinator host
 adapter.
 
-- [ ] **Step 4: Replace coordinator helper bodies with delegation**
+- [x] **Step 4: Replace coordinator helper bodies with delegation**
 
 Construct the host from existing coordinator methods and preserve method names
 as wrappers. Remove only code now covered by the extracted helpers.
 
-- [ ] **Step 5: Run focused tests, typecheck, and commit**
+- [x] **Step 5: Run focused tests, typecheck, and commit**
 
 Run the Task 1 focused commands plus `git diff --check`; commit with
 `refactor: extract thread inventory resolution`.

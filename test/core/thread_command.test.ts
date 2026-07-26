@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   ThreadCommandService,
   isThreadItemEligibleForOperation,
+  listThreadInventoryForCommand,
   parseThreadCommandSkillResult,
   resolveSingleThreadSkillTarget,
   resolveThreadCommandRoute,
@@ -10,6 +11,7 @@ import {
   skillActionToThreadOperationKind,
   threadOperationKindToSkillAction,
   type ThreadCommandInventoryItem,
+  type ThreadInventoryHost,
 } from '../../src/core/thread_command.js';
 
 test('ThreadCommandService dispatches views and management through its host', async () => {
@@ -184,6 +186,76 @@ test('parseThreadCommandSkillResult rejects incomplete or unsupported results', 
     candidateThreadIds: ['thread-1'],
     summary: 'rename it',
   }), null);
+});
+
+test('listThreadInventoryForCommand normalizes source records through the host', async () => {
+  const listCalls: unknown[] = [];
+  const host: ThreadInventoryHost = {
+    listThreads: async (options) => {
+      listCalls.push(options);
+      return {
+        items: [
+          {
+            threadId: 't1',
+            title: '  Hello  world  ',
+            preview: `  ${'p'.repeat(200)}  `,
+            updatedAt: 5,
+            archivedAt: null,
+            pinnedAt: 9,
+          },
+          {
+            threadId: 't2',
+            title: '',
+            preview: ' a \n b ',
+            updatedAt: 'x',
+            archivedAt: 3,
+          },
+        ],
+      };
+    },
+    getThreadAlias: (threadId) => (threadId === 't1' ? '  alias  ' : null),
+    isCurrentThread: (threadId) => threadId === 't2',
+  };
+
+  const items = await listThreadInventoryForCommand(host, { limit: 7, onlyPinned: true });
+  assert.deepEqual(listCalls, [{ limit: 7, includeArchived: true, onlyPinned: true }]);
+  assert.deepEqual(items, [
+    {
+      threadId: 't1',
+      title: 'Hello world',
+      alias: 'alias',
+      preview: `${'p'.repeat(159)}…`,
+      updatedAt: 5,
+      archivedAt: null,
+      pinnedAt: 9,
+      isCurrent: false,
+    },
+    {
+      threadId: 't2',
+      title: null,
+      alias: null,
+      preview: 'a b',
+      updatedAt: null,
+      archivedAt: 3,
+      pinnedAt: null,
+      isCurrent: true,
+    },
+  ]);
+});
+
+test('listThreadInventoryForCommand forwards explicit visibility options', async () => {
+  const listCalls: unknown[] = [];
+  const host: ThreadInventoryHost = {
+    listThreads: async (options) => {
+      listCalls.push(options);
+      return { items: [] };
+    },
+    getThreadAlias: () => null,
+    isCurrentThread: () => false,
+  };
+
+  assert.deepEqual(await listThreadInventoryForCommand(host, { limit: 3, includeArchived: false }), []);
+  assert.deepEqual(listCalls, [{ limit: 3, includeArchived: false, onlyPinned: false }]);
 });
 
 function makeInventoryItem(threadId: string): ThreadCommandInventoryItem {
