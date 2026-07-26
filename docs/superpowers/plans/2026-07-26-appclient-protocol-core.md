@@ -130,16 +130,21 @@ exit `0`.
 - Produces: one canonical pure protocol core with both clients retaining
   independent runtime ownership.
 
-- [ ] **Step 1: Run complete root verification**
+- [x] **Step 1: Run complete root verification**
 
 Run `npm run verify:release` and expect exit `0`.
 
-- [ ] **Step 2: Confirm duplication reduction**
+- [x] **Step 2: Confirm duplication reduction**
 
 Compare local function lists and verify no migrated helper declaration remains
 in either AppClient.
 
-- [ ] **Step 3: Commit any verification-only correction**
+- [x] **Step 3: Commit any verification-only correction**
 
 Use a focused commit and do not tag, publish, or modify version state.
+
+Result: `verify:release` exited `0` on the first run after the Step 3
+migration; no verification-only correction was needed. Both AppClients now
+import 46 shared mapping/text helpers and 23 protocol type declarations from
+`codex_app_protocol.ts` (~1,035 duplicated lines removed per client).
 
