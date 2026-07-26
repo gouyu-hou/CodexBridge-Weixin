@@ -3,6 +3,9 @@ import path from 'node:path';
 import { buildPermissionsSettingsUpdate, resolvePermissionsState } from '../../../../src/core/permissions_mode';
 import type { ApprovalsReviewer, PermissionsMode } from '../../../../src/types/core';
 import { getWebPaths, readRuntimeJson } from './runtime';
+import type { WebCodexThreadMessage } from './thread-message';
+
+export type { WebCodexThreadMessage } from './thread-message';
 
 type StoredBridgeSession = {
   id: string;
@@ -253,18 +256,6 @@ export type WebCodexThreadModelOptions = {
   effectiveReasoningEffortSource: 'session' | 'model_default' | 'unset';
   defaultReasoningEffort: string | null;
   availableModels: WebCodexThreadModelOption[];
-};
-
-export type WebCodexThreadMessage = {
-  id: string;
-  role: 'user' | 'assistant';
-  text: string;
-  timestamp: string | null;
-  failed?: boolean;
-  pending?: boolean;
-  processPending?: boolean;
-  processText?: string | null;
-  source?: 'history' | 'local' | 'stream';
 };
 
 type CodexSessionInventory = {

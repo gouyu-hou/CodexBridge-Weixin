@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { getWebPaths } from '../lib/server/runtime';
-import type { WebCodexThreadMessage } from '../lib/server/queries';
+import type { WebCodexThreadMessage } from '../lib/server/thread-message';
 
 type ReplyRunStatus = 'queued' | 'running' | 'completed' | 'failed';
 

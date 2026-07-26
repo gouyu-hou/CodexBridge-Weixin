@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "strict": true,
+    "noEmit": true,
+    "types": [
+      "node"
+    ]
+  },
+  "files": [
+    "lib/server/thread-message.ts",
+    "server/reply-run-manager.ts",
+    "server/tsx-json-worker.ts"
+  ],
+  "include": [],
+  "exclude": [
+    "node_modules"
+  ]
+}
