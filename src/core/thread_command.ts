@@ -82,6 +82,68 @@ export type ThreadCommandSkillResult =
     reason: string | null;
   };
 
+export type ThreadSearchSkillDecision =
+  | { kind: 'local' }
+  | { kind: 'results'; items: ThreadCommandInventoryItem[] }
+  | { kind: 'clarify'; question: string; candidates: Array<Record<string, unknown>> }
+  | { kind: 'message'; reason: string | null };
+
+export type ThreadNaturalSkillDecision =
+  | { kind: 'view'; includeArchived: boolean; onlyPinned: boolean }
+  | { kind: 'search'; items: ThreadCommandInventoryItem[] }
+  | { kind: 'target'; action: 'open' | 'peek'; target: ThreadCommandInventoryItem }
+  | { kind: 'target'; action: 'rename'; target: ThreadCommandInventoryItem; newName: string }
+  | { kind: 'clarify'; question: string; candidates: Array<Record<string, unknown>> }
+  | { kind: 'no_match'; reason: string | null }
+  | { kind: 'skill_failed'; reason: string | null; includeHelp: boolean }
+  | { kind: 'manage'; operation: ThreadCommandOperationKind; result: ThreadCommandSkillResult };
+
+export type ThreadManagementSkillDecision =
+  | { kind: 'clarify'; question: string; candidates: Array<Record<string, unknown>> }
+  | { kind: 'no_match'; reason: string | null }
+  | { kind: 'skill_failed'; reason: string | null }
+  | { kind: 'resolve'; result: ThreadCommandSkillResult };
+
+export type ThreadManagementProposalDecision =
+  | { kind: 'skill_failed' }
+  | { kind: 'no_match' }
+  | {
+    kind: 'proposal';
+    summary: string;
+    reason: string | null;
+    threads: ThreadCommandInventoryItem[];
+  };
+
+export type ThreadPageRequest = {
+  providerProfileId: string;
+  cursor: string | null;
+  previousCursors: Array<string | null>;
+  searchTerm: string | null;
+  pageNumber: number;
+  includeArchived: boolean;
+  onlyPinned: boolean;
+};
+
+export type ThreadPageResult<Item> = {
+  items: readonly Item[];
+  nextCursor: string | null;
+};
+
+export type ThreadPageDecision<Item> =
+  | { kind: 'retry'; request: ThreadPageRequest }
+  | { kind: 'empty_search' }
+  | { kind: 'empty' }
+  | {
+    kind: 'render';
+    state: ThreadPageRequest & {
+      nextCursor: string | null;
+      items: Item[];
+    };
+    items: Item[];
+    hasPreviousPage: boolean;
+    hasNextPage: boolean;
+  };
+
 export type ThreadCommandRoute =
   | { kind: 'home'; includeArchived: boolean; onlyPinned: boolean }
   | { kind: 'confirm' }
@@ -234,6 +296,169 @@ export function resolveSingleThreadSkillTarget(
   candidateThreadIds: readonly string[],
 ): ThreadCommandInventoryItem | null {
   return resolveThreadSkillCandidateItems(inventory, candidateThreadIds)[0] ?? null;
+}
+
+export function resolveThreadSearchSkillDecision(
+  result: ThreadCommandSkillResult | null,
+  inventory: readonly ThreadCommandInventoryItem[],
+  resultLimit: number,
+): ThreadSearchSkillDecision {
+  if (!result || result.action === 'local_only') {
+    return { kind: 'local' };
+  }
+  if (result.action === 'search_threads') {
+    return {
+      kind: 'results',
+      items: resolveThreadSkillCandidateItems(inventory, result.candidateThreadIds).slice(0, resultLimit),
+    };
+  }
+  if (result.action === 'clarify') {
+    return {
+      kind: 'clarify',
+      question: result.question,
+      candidates: result.candidates,
+    };
+  }
+  return {
+    kind: 'message',
+    reason: 'reason' in result ? result.reason : null,
+  };
+}
+
+export function resolveThreadNaturalSkillDecision(
+  result: ThreadCommandSkillResult | null,
+  inventory: readonly ThreadCommandInventoryItem[],
+  resultLimit: number,
+): ThreadNaturalSkillDecision {
+  if (!result) {
+    return { kind: 'skill_failed', reason: null, includeHelp: true };
+  }
+  if (result.action === 'show_default_threads') {
+    return { kind: 'view', includeArchived: false, onlyPinned: false };
+  }
+  if (result.action === 'show_all_threads') {
+    return { kind: 'view', includeArchived: true, onlyPinned: false };
+  }
+  if (result.action === 'show_pinned_threads') {
+    return { kind: 'view', includeArchived: false, onlyPinned: true };
+  }
+  if (result.action === 'search_threads') {
+    return {
+      kind: 'search',
+      items: resolveThreadSkillCandidateItems(inventory, result.candidateThreadIds).slice(0, resultLimit),
+    };
+  }
+  if (result.action === 'open_thread' || result.action === 'peek_thread' || result.action === 'rename_thread') {
+    const target = resolveSingleThreadSkillTarget(inventory, result.candidateThreadIds);
+    if (!target) {
+      return { kind: 'no_match', reason: null };
+    }
+    if (result.action === 'rename_thread') {
+      return { kind: 'target', action: 'rename', target, newName: result.newName };
+    }
+    return {
+      kind: 'target',
+      action: result.action === 'open_thread' ? 'open' : 'peek',
+      target,
+    };
+  }
+  if (result.action === 'clarify') {
+    return {
+      kind: 'clarify',
+      question: result.question,
+      candidates: result.candidates,
+    };
+  }
+  if (result.action === 'no_match') {
+    return { kind: 'no_match', reason: result.reason };
+  }
+  if (result.action === 'reject' || result.action === 'local_only') {
+    return { kind: 'skill_failed', reason: result.reason, includeHelp: false };
+  }
+  const operation = skillActionToThreadOperationKind(result.action);
+  return operation
+    ? { kind: 'manage', operation, result }
+    : { kind: 'skill_failed', reason: null, includeHelp: false };
+}
+
+export function resolveThreadManagementSkillDecision(
+  result: ThreadCommandSkillResult | null,
+): ThreadManagementSkillDecision {
+  if (!result) {
+    return { kind: 'skill_failed', reason: null };
+  }
+  if (result.action === 'clarify') {
+    return {
+      kind: 'clarify',
+      question: result.question,
+      candidates: result.candidates,
+    };
+  }
+  if (result.action === 'no_match') {
+    return { kind: 'no_match', reason: result.reason };
+  }
+  if (result.action === 'reject' || result.action === 'local_only') {
+    return { kind: 'skill_failed', reason: result.reason };
+  }
+  return { kind: 'resolve', result };
+}
+
+export function resolveThreadManagementProposal(
+  operation: ThreadCommandOperationKind,
+  result: ThreadCommandSkillResult,
+  inventory: readonly ThreadCommandInventoryItem[],
+  resultLimit: number,
+): ThreadManagementProposalDecision {
+  if (result.action !== threadOperationKindToSkillAction(operation)) {
+    return { kind: 'skill_failed' };
+  }
+  if (!('candidateThreadIds' in result) || !('summary' in result)) {
+    return { kind: 'skill_failed' };
+  }
+  const threads = resolveThreadSkillCandidateItems(inventory, result.candidateThreadIds)
+    .filter((item) => isThreadItemEligibleForOperation(item, operation))
+    .slice(0, resultLimit);
+  if (threads.length === 0) {
+    return { kind: 'no_match' };
+  }
+  return {
+    kind: 'proposal',
+    summary: result.summary,
+    reason: 'reason' in result ? result.reason : null,
+    threads,
+  };
+}
+
+export function resolveThreadPageResult<Item>(
+  request: ThreadPageRequest,
+  result: ThreadPageResult<Item>,
+): ThreadPageDecision<Item> {
+  if (result.items.length === 0 && request.previousCursors.length > 0) {
+    return {
+      kind: 'retry',
+      request: {
+        ...request,
+        cursor: request.previousCursors.at(-1) ?? null,
+        previousCursors: request.previousCursors.slice(0, -1),
+        pageNumber: Math.max(1, request.pageNumber - 1),
+      },
+    };
+  }
+  if (result.items.length === 0) {
+    return { kind: request.searchTerm ? 'empty_search' : 'empty' };
+  }
+  const items = [...result.items];
+  return {
+    kind: 'render',
+    state: {
+      ...request,
+      nextCursor: result.nextCursor,
+      items,
+    },
+    items,
+    hasPreviousPage: request.previousCursors.length > 0,
+    hasNextPage: Boolean(result.nextCursor),
+  };
 }
 
 export function skillActionToThreadOperationKind(

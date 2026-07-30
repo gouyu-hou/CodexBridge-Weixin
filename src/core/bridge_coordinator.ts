@@ -36,17 +36,19 @@ import {
   THREAD_COMMAND_SKILL_ACTIONS,
   ThreadCommandService,
   executeThreadOperation,
-  isThreadItemEligibleForOperation,
   listThreadInventoryForCommand,
   parseThreadCommandSkillResult,
-  resolveSingleThreadSkillTarget,
-  resolveThreadSkillCandidateItems,
+  resolveThreadManagementProposal,
+  resolveThreadManagementSkillDecision,
+  resolveThreadNaturalSkillDecision,
+  resolveThreadPageResult,
+  resolveThreadSearchSkillDecision,
   skillActionToThreadOperationKind,
-  threadOperationKindToSkillAction,
   type PendingThreadCommandOperation,
   type ResolvedThreadOperationTarget,
   type ThreadCommandInventoryItem,
   type ThreadCommandOperationKind,
+  type ThreadPageRequest,
   type ThreadOperationOutcome,
   type ThreadCommandSkillResult,
   type ThreadCommandSkillSubcommand,
@@ -3616,7 +3618,12 @@ export class BridgeCoordinator {
       userInput: searchTerm,
       inventory,
     });
-    if (!commandResult) {
+    const decision = resolveThreadSearchSkillDecision(
+      commandResult,
+      inventory,
+      THREAD_COMMAND_SKILL_RESULT_LIMIT,
+    );
+    if (decision.kind === 'local') {
       return this.renderThreadsPage(event, {
         providerProfileId,
         cursor: null,
@@ -3627,72 +3634,20 @@ export class BridgeCoordinator {
         onlyPinned: false,
       });
     }
-    if (commandResult.action === 'search_threads') {
-      const candidateItems = this.resolveThreadSkillCandidateItems(inventory, commandResult.candidateThreadIds)
-        .slice(0, THREAD_COMMAND_SKILL_RESULT_LIMIT);
-      if (candidateItems.length === 0) {
-        return textResponse([
-          this.t('coordinator.threadList.title', { providerProfileId: providerProfile.id }),
-          this.t('coordinator.threadList.search', { term: searchTerm }),
-          '',
-          this.t('coordinator.threadList.noMatch'),
-          this.t('coordinator.threadList.viewAll'),
-        ].join('\n'), current ? buildSessionMeta(current) : undefined);
-      }
-      const items = candidateItems.map((item) => ({
-        threadId: item.threadId,
-        title: item.alias ?? item.title,
-        preview: item.preview ?? '',
-        updatedAt: item.updatedAt,
-        archivedAt: item.archivedAt,
-        pinnedAt: item.pinnedAt,
-      }));
-      this.setThreadBrowserState(event, {
-        providerProfileId: providerProfile.id,
-        cursor: null,
-        previousCursors: [],
-        nextCursor: null,
-        searchTerm,
-        pageNumber: 1,
-        items,
-        includeArchived: items.some((item) => typeof item.archivedAt === 'number'),
-        onlyPinned: false,
-        updatedAt: this.now(),
-      });
-      return textResponse(renderThreadsPageMessage({
-        i18n: this.currentI18n,
+    if (decision.kind === 'results') {
+      return this.renderThreadSkillSearchResults(
+        event,
+        current,
         providerProfile,
-        currentSession: current,
-        items,
-        pageNumber: 1,
         searchTerm,
-        includeArchived: items.some((item) => typeof item.archivedAt === 'number'),
-        onlyPinned: false,
-        hasPreviousPage: false,
-        hasNextPage: false,
-      }), current ? buildSessionMeta(current) : undefined);
+        decision.items,
+      );
     }
-    if (commandResult.action === 'clarify') {
-      return this.renderThreadCommandClarifyResponse(event, inventory, commandResult.question, commandResult.candidates);
-    }
-    if (commandResult.action === 'no_match') {
-      return messageResponse([
-        commandResult.reason || this.t('coordinator.threadList.noMatch'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    if (commandResult.action === 'local_only') {
-      return this.renderThreadsPage(event, {
-        providerProfileId,
-        cursor: null,
-        previousCursors: [],
-        searchTerm,
-        pageNumber: 1,
-        includeArchived: false,
-        onlyPinned: false,
-      });
+    if (decision.kind === 'clarify') {
+      return this.renderThreadCommandClarifyResponse(event, inventory, decision.question, decision.candidates);
     }
     return messageResponse([
-      ('reason' in commandResult ? commandResult.reason : null) || this.t('coordinator.threadList.noMatch'),
+      decision.reason || this.t('coordinator.threadList.noMatch'),
     ], this.buildScopedSessionMeta(event));
   }
 
@@ -3717,71 +3672,57 @@ export class BridgeCoordinator {
       userInput,
       inventory,
     });
-    if (!commandResult) {
-      return messageResponse([
-        this.t('coordinator.threads.skillFailed'),
-        this.t('coordinator.threads.help'),
-      ], this.buildScopedSessionMeta(event));
+    const decision = resolveThreadNaturalSkillDecision(
+      commandResult,
+      inventory,
+      THREAD_COMMAND_SKILL_RESULT_LIMIT,
+    );
+    if (decision.kind === 'view') {
+      return this.renderThreadsHomePage(event, decision);
     }
-    if (commandResult.action === 'show_default_threads') {
-      return this.renderThreadsHomePage(event, { includeArchived: false, onlyPinned: false });
+    if (decision.kind === 'search') {
+      return this.renderThreadSkillSearchResults(
+        event,
+        current,
+        providerProfile,
+        userInput,
+        decision.items,
+      );
     }
-    if (commandResult.action === 'show_all_threads') {
-      return this.renderThreadsHomePage(event, { includeArchived: true, onlyPinned: false });
-    }
-    if (commandResult.action === 'show_pinned_threads') {
-      return this.renderThreadsHomePage(event, { includeArchived: false, onlyPinned: true });
-    }
-    if (commandResult.action === 'search_threads') {
-      return this.renderThreadSkillSearchResults(event, current, providerProfile, userInput, inventory, commandResult.candidateThreadIds);
-    }
-    if (commandResult.action === 'open_thread') {
-      const target = this.resolveSingleThreadSkillTarget(inventory, commandResult.candidateThreadIds);
-      if (!target) {
-        return messageResponse([
-          this.t('coordinator.threadList.noMatch'),
-        ], this.buildScopedSessionMeta(event));
+    if (decision.kind === 'target') {
+      if (decision.action === 'rename') {
+        return this.handleRenameCommand(event, [decision.target.threadId, decision.newName]);
       }
-      return this.handleOpenCommand(event, [target.threadId]);
-    }
-    if (commandResult.action === 'peek_thread') {
-      const target = this.resolveSingleThreadSkillTarget(inventory, commandResult.candidateThreadIds);
-      if (!target) {
-        return messageResponse([
-          this.t('coordinator.threadList.noMatch'),
-        ], this.buildScopedSessionMeta(event));
+      if (decision.action === 'open') {
+        return this.handleOpenCommand(event, [decision.target.threadId]);
       }
-      return this.handlePeekCommand(event, [target.threadId]);
+      return this.handlePeekCommand(event, [decision.target.threadId]);
     }
-    if (commandResult.action === 'rename_thread') {
-      const target = this.resolveSingleThreadSkillTarget(inventory, commandResult.candidateThreadIds);
-      if (!target) {
-        return messageResponse([
-          this.t('coordinator.threadList.noMatch'),
-        ], this.buildScopedSessionMeta(event));
+    if (decision.kind === 'clarify') {
+      return this.renderThreadCommandClarifyResponse(event, inventory, decision.question, decision.candidates);
+    }
+    if (decision.kind === 'no_match') {
+      return messageResponse([
+        decision.reason || this.t('coordinator.threadList.noMatch'),
+      ], this.buildScopedSessionMeta(event));
+    }
+    if (decision.kind === 'skill_failed') {
+      const lines = [decision.reason || this.t('coordinator.threads.skillFailed')];
+      if (decision.includeHelp) {
+        lines.push(this.t('coordinator.threads.help'));
       }
-      return this.handleRenameCommand(event, [target.threadId, commandResult.newName]);
-    }
-    if (commandResult.action === 'clarify') {
-      return this.renderThreadCommandClarifyResponse(event, inventory, commandResult.question, commandResult.candidates);
-    }
-    if (commandResult.action === 'no_match') {
       return messageResponse([
-        commandResult.reason || this.t('coordinator.threadList.noMatch'),
+        ...lines,
       ], this.buildScopedSessionMeta(event));
     }
-    if (commandResult.action === 'reject' || commandResult.action === 'local_only') {
-      return messageResponse([
-        commandResult.reason || this.t('coordinator.threads.skillFailed'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    const kind = skillActionToThreadOperationKind(commandResult.action);
-    if (!kind) {
-      return messageResponse([
-        this.t('coordinator.threads.skillFailed'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    return this.handleResolvedThreadManagementResult(event, scopeRef, providerProfile, inventory, kind, commandResult);
+    return this.handleResolvedThreadManagementResult(
+      event,
+      scopeRef,
+      providerProfile,
+      inventory,
+      decision.operation,
+      decision.result,
+    );
   }
 
   async handleThreadNaturalManagementCommand(event, kind: ThreadCommandOperationKind, args: unknown[]) {
@@ -3812,25 +3753,21 @@ export class BridgeCoordinator {
       userInput,
       inventory,
     });
-    if (!commandResult) {
+    const decision = resolveThreadManagementSkillDecision(commandResult);
+    if (decision.kind === 'skill_failed') {
       return messageResponse([
-        this.t('coordinator.threads.skillFailed'),
+        decision.reason || this.t('coordinator.threads.skillFailed'),
       ], this.buildScopedSessionMeta(event));
     }
-    if (commandResult.action === 'clarify') {
-      return this.renderThreadCommandClarifyResponse(event, inventory, commandResult.question, commandResult.candidates);
+    if (decision.kind === 'clarify') {
+      return this.renderThreadCommandClarifyResponse(event, inventory, decision.question, decision.candidates);
     }
-    if (commandResult.action === 'no_match') {
+    if (decision.kind === 'no_match') {
       return messageResponse([
-        commandResult.reason || this.t('coordinator.threadList.noMatch'),
+        decision.reason || this.t('coordinator.threadList.noMatch'),
       ], this.buildScopedSessionMeta(event));
     }
-    if (commandResult.action === 'reject' || commandResult.action === 'local_only') {
-      return messageResponse([
-        commandResult.reason || this.t('coordinator.threads.skillFailed'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    return this.handleResolvedThreadManagementResult(event, scopeRef, providerProfile, inventory, kind, commandResult);
+    return this.handleResolvedThreadManagementResult(event, scopeRef, providerProfile, inventory, kind, decision.result);
   }
 
   async handleThreadsConfirmCommand(event) {
@@ -4017,20 +3954,6 @@ export class BridgeCoordinator {
     });
   }
 
-  resolveThreadSkillCandidateItems(
-    inventory: ThreadCommandInventoryItem[],
-    candidateThreadIds: string[],
-  ): ThreadCommandInventoryItem[] {
-    return resolveThreadSkillCandidateItems(inventory, candidateThreadIds);
-  }
-
-  resolveSingleThreadSkillTarget(
-    inventory: ThreadCommandInventoryItem[],
-    candidateThreadIds: string[],
-  ): ThreadCommandInventoryItem | null {
-    return resolveSingleThreadSkillTarget(inventory, candidateThreadIds);
-  }
-
   async handleResolvedThreadManagementResult(
     event,
     scopeRef: PlatformScopeRef,
@@ -4039,21 +3962,18 @@ export class BridgeCoordinator {
     kind: ThreadCommandOperationKind,
     commandResult: ThreadCommandSkillResult,
   ) {
-    const expectedAction = threadOperationKindToSkillAction(kind);
-    if (commandResult.action !== expectedAction) {
+    const decision = resolveThreadManagementProposal(
+      kind,
+      commandResult,
+      inventory,
+      THREAD_COMMAND_SKILL_RESULT_LIMIT,
+    );
+    if (decision.kind === 'skill_failed') {
       return messageResponse([
         this.t('coordinator.threads.skillFailed'),
       ], this.buildScopedSessionMeta(event));
     }
-    if (!('candidateThreadIds' in commandResult) || !('summary' in commandResult)) {
-      return messageResponse([
-        this.t('coordinator.threads.skillFailed'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    const threads = this.resolveThreadSkillCandidateItems(inventory, commandResult.candidateThreadIds)
-      .filter((item) => isThreadItemEligibleForOperation(item, kind))
-      .slice(0, THREAD_COMMAND_SKILL_RESULT_LIMIT);
-    if (threads.length === 0) {
+    if (decision.kind === 'no_match') {
       return messageResponse([
         this.t('coordinator.threadList.noMatch'),
       ], this.buildScopedSessionMeta(event));
@@ -4063,9 +3983,9 @@ export class BridgeCoordinator {
       createdAt: this.now(),
       rawInput: String(event.text ?? ''),
       providerProfileId: providerProfile.id,
-      summary: commandResult.summary,
-      reason: 'reason' in commandResult ? commandResult.reason : null,
-      threads,
+      summary: decision.summary,
+      reason: decision.reason,
+      threads: decision.threads,
     };
     this.setPendingThreadOperation(scopeRef, operation);
     return messageResponse(
@@ -4079,11 +3999,8 @@ export class BridgeCoordinator {
     current,
     providerProfile,
     searchTerm: string,
-    inventory: ThreadCommandInventoryItem[],
-    candidateThreadIds: string[],
+    candidateItems: ThreadCommandInventoryItem[],
   ) {
-    const candidateItems = this.resolveThreadSkillCandidateItems(inventory, candidateThreadIds)
-      .slice(0, THREAD_COMMAND_SKILL_RESULT_LIMIT);
     if (candidateItems.length === 0) {
       return textResponse([
         this.t('coordinator.threadList.title', { providerProfileId: providerProfile.id }),
@@ -9130,15 +9047,16 @@ export class BridgeCoordinator {
     ], this.buildScopedSessionMeta(event));
   }
 
-  async renderThreadsPage(event, {
-    providerProfileId,
-    cursor,
-    previousCursors,
-    searchTerm,
-    pageNumber,
-    includeArchived,
-    onlyPinned,
-  }) {
+  async renderThreadsPage(event, request: ThreadPageRequest) {
+    const {
+      providerProfileId,
+      cursor,
+      previousCursors,
+      searchTerm,
+      pageNumber,
+      includeArchived,
+      onlyPinned,
+    } = request;
     const scopeRef = toScopeRef(event);
     const current = this.bridgeSessions.resolveScopeSession(scopeRef);
     const providerProfile = this.requireProviderProfile(providerProfileId);
@@ -9149,31 +9067,22 @@ export class BridgeCoordinator {
       includeArchived,
       onlyPinned,
     });
-    if (result.items.length === 0 && previousCursors.length > 0) {
-      const fallbackPreviousCursors = previousCursors.slice(0, -1);
-      const fallbackCursor = previousCursors.at(-1) ?? null;
-      return this.renderThreadsPage(event, {
-        providerProfileId,
-        cursor: fallbackCursor,
-        previousCursors: fallbackPreviousCursors,
-        searchTerm,
-        pageNumber: Math.max(1, pageNumber - 1),
-        includeArchived,
-        onlyPinned,
-      });
+    const decision = resolveThreadPageResult(request, result);
+    if (decision.kind === 'retry') {
+      return this.renderThreadsPage(event, decision.request);
     }
-    if (result.items.length === 0) {
-      if (searchTerm) {
-        return textResponse([
-          this.t('coordinator.threadList.title', { providerProfileId: providerProfile.id }),
-          this.t('coordinator.threadList.search', { term: searchTerm }),
-          ...(includeArchived ? [this.t('coordinator.threadList.includeArchived')] : []),
-          ...(onlyPinned ? [this.t('coordinator.threadList.onlyPinned')] : []),
-          '',
-          this.t('coordinator.threadList.noMatch'),
-          this.t('coordinator.threadList.viewAll'),
-        ].join('\n'), current ? buildSessionMeta(current) : undefined);
-      }
+    if (decision.kind === 'empty_search') {
+      return textResponse([
+        this.t('coordinator.threadList.title', { providerProfileId: providerProfile.id }),
+        this.t('coordinator.threadList.search', { term: searchTerm }),
+        ...(includeArchived ? [this.t('coordinator.threadList.includeArchived')] : []),
+        ...(onlyPinned ? [this.t('coordinator.threadList.onlyPinned')] : []),
+        '',
+        this.t('coordinator.threadList.noMatch'),
+        this.t('coordinator.threadList.viewAll'),
+      ].join('\n'), current ? buildSessionMeta(current) : undefined);
+    }
+    if (decision.kind === 'empty') {
       return textResponse([
         this.t('coordinator.threadList.title', { providerProfileId: providerProfile.id }),
         ...(includeArchived ? [this.t('coordinator.threadList.includeArchived')] : []),
@@ -9185,28 +9094,20 @@ export class BridgeCoordinator {
     }
 
     this.setThreadBrowserState(event, {
-      providerProfileId: providerProfile.id,
-      cursor,
-      previousCursors,
-      nextCursor: result.nextCursor,
-      searchTerm,
-      pageNumber,
-      items: result.items,
-      includeArchived,
-      onlyPinned,
+      ...decision.state,
       updatedAt: this.now(),
     });
     return textResponse(renderThreadsPageMessage({
       i18n: this.currentI18n,
       providerProfile,
       currentSession: current,
-      items: result.items,
+      items: decision.items,
       pageNumber,
       searchTerm,
       includeArchived,
       onlyPinned,
-      hasPreviousPage: previousCursors.length > 0,
-      hasNextPage: Boolean(result.nextCursor),
+      hasPreviousPage: decision.hasPreviousPage,
+      hasNextPage: decision.hasNextPage,
     }), current ? buildSessionMeta(current) : undefined);
   }
 

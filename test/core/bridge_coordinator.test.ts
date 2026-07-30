@@ -7254,6 +7254,62 @@ test('/next and /prev paginate the current thread browser page', async () => {
   assert.match(previousPage.messages[0]?.text ?? '', /新线程00021/);
 });
 
+test('thread page fallback samples the browser timestamp only when state is persisted', async () => {
+  const { runtime } = makeRuntime();
+  const coordinator = runtime.services.bridgeCoordinator;
+  const originalListProviderThreads = runtime.services.bridgeSessions.listProviderThreads;
+  let listCalls = 0;
+  let nowCalls = 0;
+  runtime.services.bridgeSessions.listProviderThreads = async () => {
+    listCalls += 1;
+    return listCalls === 1
+      ? { items: [], nextCursor: null }
+      : {
+        items: [{
+          threadId: 'fallback-thread',
+          title: 'Fallback thread',
+          cwd: null,
+          preview: 'Fallback preview',
+          turns: [],
+          bridgeSessionId: null,
+          updatedAt: 100,
+          archivedAt: null,
+          pinnedAt: null,
+        }],
+        nextCursor: null,
+      };
+  };
+  coordinator.now = () => {
+    nowCalls += 1;
+    return 500 + nowCalls;
+  };
+
+  try {
+    await coordinator.renderThreadsPage({
+      platform: 'weixin',
+      externalScopeId: 'wx-thread-page-fallback-clock',
+      text: '/prev',
+    }, {
+      providerProfileId: 'openai-default',
+      cursor: 'empty-cursor',
+      previousCursors: [null],
+      searchTerm: null,
+      pageNumber: 2,
+      includeArchived: false,
+      onlyPinned: false,
+    });
+
+    assert.equal(listCalls, 2);
+    assert.equal(nowCalls, 1);
+    assert.equal(coordinator.getThreadBrowserState({
+      platform: 'weixin',
+      externalScopeId: 'wx-thread-page-fallback-clock',
+    })?.updatedAt, 501);
+  } finally {
+    runtime.services.bridgeSessions.listProviderThreads = originalListProviderThreads;
+  }
+});
+
 test('/search filters the thread browser by preview or title', async () => {
   const { runtime } = makeRuntime();
 

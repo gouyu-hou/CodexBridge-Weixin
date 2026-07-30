@@ -8,6 +8,11 @@ import {
   parseThreadCommandSkillResult,
   resolveSingleThreadSkillTarget,
   resolveThreadCommandRoute,
+  resolveThreadManagementProposal,
+  resolveThreadManagementSkillDecision,
+  resolveThreadNaturalSkillDecision,
+  resolveThreadPageResult,
+  resolveThreadSearchSkillDecision,
   resolveThreadSkillCandidateItems,
   skillActionToThreadOperationKind,
   threadOperationKindToSkillAction,
@@ -300,6 +305,276 @@ test('parseThreadCommandSkillResult rejects incomplete or unsupported results', 
     candidateThreadIds: ['thread-1'],
     summary: 'rename it',
   }), null);
+});
+
+test('resolveThreadSearchSkillDecision classifies local, result, clarify, and message paths', () => {
+  const inventory = [makeInventoryItem('thread-1'), makeInventoryItem('thread-2')];
+
+  assert.deepEqual(resolveThreadSearchSkillDecision(null, inventory, 3), { kind: 'local' });
+  assert.deepEqual(resolveThreadSearchSkillDecision({
+    action: 'local_only',
+    confidence: 0.9,
+    reason: 'use local search',
+  }, inventory, 3), { kind: 'local' });
+  assert.deepEqual(resolveThreadSearchSkillDecision({
+    action: 'search_threads',
+    confidence: 0.9,
+    summary: 'matches',
+    candidateThreadIds: ['thread-2', 'missing', 'thread-2', 'thread-1'],
+  }, inventory, 1), {
+    kind: 'results',
+    items: [inventory[1]],
+  });
+  assert.deepEqual(resolveThreadSearchSkillDecision({
+    action: 'clarify',
+    confidence: 0.7,
+    question: 'Which project?',
+    candidates: [{ label: 'A' }],
+  }, inventory, 3), {
+    kind: 'clarify',
+    question: 'Which project?',
+    candidates: [{ label: 'A' }],
+  });
+  assert.deepEqual(resolveThreadSearchSkillDecision({
+    action: 'no_match',
+    confidence: 0.8,
+    reason: 'nothing found',
+  }, inventory, 3), {
+    kind: 'message',
+    reason: 'nothing found',
+  });
+});
+
+test('resolveThreadNaturalSkillDecision maps views, targets, searches, and operations', () => {
+  const inventory = [makeInventoryItem('thread-1'), makeInventoryItem('thread-2')];
+
+  assert.deepEqual(resolveThreadNaturalSkillDecision({
+    action: 'show_all_threads',
+    confidence: 0.9,
+    reason: null,
+  }, inventory, 3), {
+    kind: 'view',
+    includeArchived: true,
+    onlyPinned: false,
+  });
+  assert.deepEqual(resolveThreadNaturalSkillDecision({
+    action: 'open_thread',
+    confidence: 0.9,
+    summary: 'open it',
+    candidateThreadIds: ['missing', 'thread-2'],
+  }, inventory, 3), {
+    kind: 'target',
+    action: 'open',
+    target: inventory[1],
+  });
+  assert.deepEqual(resolveThreadNaturalSkillDecision({
+    action: 'rename_thread',
+    confidence: 0.9,
+    summary: 'rename it',
+    candidateThreadIds: ['thread-1'],
+    newName: 'Planning',
+  }, inventory, 3), {
+    kind: 'target',
+    action: 'rename',
+    target: inventory[0],
+    newName: 'Planning',
+  });
+  assert.deepEqual(resolveThreadNaturalSkillDecision({
+    action: 'search_threads',
+    confidence: 0.9,
+    summary: 'matches',
+    candidateThreadIds: ['thread-2', 'thread-1'],
+  }, inventory, 1), {
+    kind: 'search',
+    items: [inventory[1]],
+  });
+  const proposal = {
+    action: 'propose_pin_threads' as const,
+    confidence: 0.9,
+    summary: 'pin it',
+    reason: null,
+    candidateThreadIds: ['thread-1'],
+  };
+  assert.deepEqual(resolveThreadNaturalSkillDecision(proposal, inventory, 3), {
+    kind: 'manage',
+    operation: 'pin',
+    result: proposal,
+  });
+  assert.deepEqual(resolveThreadNaturalSkillDecision({
+    action: 'peek_thread',
+    confidence: 0.9,
+    summary: 'peek',
+    candidateThreadIds: ['missing'],
+  }, inventory, 3), {
+    kind: 'no_match',
+    reason: null,
+  });
+});
+
+test('resolveThreadNaturalSkillDecision preserves clarify and failure reasons', () => {
+  const inventory = [makeInventoryItem('thread-1')];
+
+  assert.deepEqual(resolveThreadNaturalSkillDecision(null, inventory, 3), {
+    kind: 'skill_failed',
+    reason: null,
+    includeHelp: true,
+  });
+  assert.deepEqual(resolveThreadNaturalSkillDecision({
+    action: 'clarify',
+    confidence: 0.8,
+    question: 'Which thread?',
+    candidates: [],
+  }, inventory, 3), {
+    kind: 'clarify',
+    question: 'Which thread?',
+    candidates: [],
+  });
+  assert.deepEqual(resolveThreadNaturalSkillDecision({
+    action: 'reject',
+    confidence: 0.8,
+    reason: 'not a thread request',
+  }, inventory, 3), {
+    kind: 'skill_failed',
+    reason: 'not a thread request',
+    includeHelp: false,
+  });
+  assert.deepEqual(resolveThreadNaturalSkillDecision({
+    action: 'no_match',
+    confidence: 0.8,
+    reason: 'none',
+  }, inventory, 3), {
+    kind: 'no_match',
+    reason: 'none',
+  });
+});
+
+test('resolveThreadManagementSkillDecision preserves management-only result routing', () => {
+  const proposal = {
+    action: 'propose_archive_threads' as const,
+    confidence: 0.9,
+    summary: 'archive old threads',
+    reason: null,
+    candidateThreadIds: ['thread-1'],
+  };
+
+  assert.deepEqual(resolveThreadManagementSkillDecision(null), {
+    kind: 'skill_failed',
+    reason: null,
+  });
+  assert.deepEqual(resolveThreadManagementSkillDecision({
+    action: 'clarify',
+    confidence: 0.8,
+    question: 'Which threads?',
+    candidates: [],
+  }), {
+    kind: 'clarify',
+    question: 'Which threads?',
+    candidates: [],
+  });
+  assert.deepEqual(resolveThreadManagementSkillDecision({
+    action: 'no_match',
+    confidence: 0.8,
+    reason: 'none',
+  }), {
+    kind: 'no_match',
+    reason: 'none',
+  });
+  assert.deepEqual(resolveThreadManagementSkillDecision({
+    action: 'reject',
+    confidence: 0.8,
+    reason: 'not allowed',
+  }), {
+    kind: 'skill_failed',
+    reason: 'not allowed',
+  });
+  assert.deepEqual(resolveThreadManagementSkillDecision(proposal), {
+    kind: 'resolve',
+    result: proposal,
+  });
+});
+
+test('resolveThreadManagementProposal validates action and selects eligible targets', () => {
+  const active = makeInventoryItem('active');
+  const archived = { ...makeInventoryItem('archived'), archivedAt: 10 };
+  const result = {
+    action: 'propose_archive_threads' as const,
+    confidence: 0.9,
+    summary: 'archive old threads',
+    reason: 'old work',
+    candidateThreadIds: ['archived', 'active', 'active'],
+  };
+
+  assert.deepEqual(resolveThreadManagementProposal('archive', result, [active, archived], 3), {
+    kind: 'proposal',
+    summary: 'archive old threads',
+    reason: 'old work',
+    threads: [active],
+  });
+  assert.deepEqual(resolveThreadManagementProposal('pin', result, [active, archived], 3), {
+    kind: 'skill_failed',
+  });
+  assert.deepEqual(resolveThreadManagementProposal('restore', {
+    ...result,
+    action: 'propose_restore_threads',
+    candidateThreadIds: ['active'],
+  }, [active, archived], 3), {
+    kind: 'no_match',
+  });
+});
+
+test('resolveThreadPageResult handles fallback, empty, and render states', () => {
+  const request = {
+    providerProfileId: 'profile-1',
+    cursor: 'cursor-2',
+    previousCursors: [null, 'cursor-1'],
+    searchTerm: null,
+    pageNumber: 3,
+    includeArchived: false,
+    onlyPinned: false,
+  };
+
+  assert.deepEqual(resolveThreadPageResult(request, { items: [], nextCursor: null }), {
+    kind: 'retry',
+    request: {
+      ...request,
+      cursor: 'cursor-1',
+      previousCursors: [null],
+      pageNumber: 2,
+    },
+  });
+  assert.deepEqual(resolveThreadPageResult({
+    ...request,
+    cursor: null,
+    previousCursors: [],
+    searchTerm: 'planning',
+    pageNumber: 1,
+  }, { items: [], nextCursor: null }), {
+    kind: 'empty_search',
+  });
+  assert.deepEqual(resolveThreadPageResult({
+    ...request,
+    cursor: null,
+    previousCursors: [],
+    pageNumber: 1,
+    onlyPinned: true,
+  }, { items: [], nextCursor: null }), {
+    kind: 'empty',
+  });
+  const item = { threadId: 'thread-1', title: 'Planning' };
+  assert.deepEqual(resolveThreadPageResult(request, {
+    items: [item],
+    nextCursor: 'cursor-3',
+  }), {
+    kind: 'render',
+    state: {
+      ...request,
+      nextCursor: 'cursor-3',
+      items: [item],
+    },
+    items: [item],
+    hasPreviousPage: true,
+    hasNextPage: true,
+  });
 });
 
 test('listThreadInventoryForCommand normalizes source records through the host', async () => {
