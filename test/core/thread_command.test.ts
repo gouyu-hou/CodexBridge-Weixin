@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   ThreadCommandService,
+  executeThreadOperation,
   isThreadItemEligibleForOperation,
   listThreadInventoryForCommand,
   parseThreadCommandSkillResult,
@@ -152,6 +153,76 @@ test('thread operation helpers map skill actions and eligibility', () => {
   assert.equal(isThreadItemEligibleForOperation(active, 'unpin'), false);
 });
 
+test('executeThreadOperation deduplicates targets and reports archive outcomes', async () => {
+  const archiveCalls: Array<{ providerProfileId: string; threadId: string; archived: boolean }> = [];
+  const applied: string[] = [];
+  const result = await executeThreadOperation('archive', [
+    { ok: false, message: 'missing thread' },
+    makeOperationTarget('thread-1'),
+    makeOperationTarget('thread-1'),
+    { ...makeOperationTarget('thread-2'), archivedAt: 10 },
+    makeOperationTarget('thread-3'),
+  ], {
+    updateArchive: async (providerProfileId, threadId, archived) => {
+      archiveCalls.push({ providerProfileId, threadId, archived });
+      if (threadId === 'thread-3') {
+        throw new Error('archive unavailable');
+      }
+    },
+    setPinned: () => assert.fail('archive must not update pin state'),
+    onApplied: (_operation, target) => {
+      applied.push(target.threadId);
+    },
+  });
+
+  assert.deepEqual(result, {
+    appliedCount: 1,
+    outcomes: [
+      { status: 'resolution_error', message: 'missing thread' },
+      { status: 'applied', operation: 'archive', providerProfileId: 'profile-1', threadId: 'thread-1' },
+      { status: 'already_archived', providerProfileId: 'profile-1', threadId: 'thread-2' },
+      { status: 'archive_failed', providerProfileId: 'profile-1', threadId: 'thread-3', error: 'archive unavailable' },
+    ],
+  });
+  assert.deepEqual(archiveCalls, [
+    { providerProfileId: 'profile-1', threadId: 'thread-1', archived: true },
+    { providerProfileId: 'profile-1', threadId: 'thread-3', archived: true },
+  ]);
+  assert.deepEqual(applied, ['thread-1']);
+});
+
+test('executeThreadOperation applies restore, pin, and unpin state transitions', async () => {
+  const archiveCalls: string[] = [];
+  const pinCalls: string[] = [];
+  const host = {
+    updateArchive: async (_providerProfileId: string, threadId: string, archived: boolean) => {
+      archiveCalls.push(`${threadId}:${archived}`);
+    },
+    setPinned: (_providerProfileId: string, threadId: string, pinned: boolean) => {
+      pinCalls.push(`${threadId}:${pinned}`);
+    },
+  };
+
+  const restore = await executeThreadOperation('restore', [
+    makeOperationTarget('active'),
+    { ...makeOperationTarget('archived'), archivedAt: 10 },
+  ], host);
+  const pin = await executeThreadOperation('pin', [
+    { ...makeOperationTarget('pinned'), pinnedAt: 10 },
+    makeOperationTarget('unpinned'),
+  ], host);
+  const unpin = await executeThreadOperation('unpin', [
+    makeOperationTarget('unpinned'),
+    { ...makeOperationTarget('pinned'), pinnedAt: 10 },
+  ], host);
+
+  assert.deepEqual(restore.outcomes.map((outcome) => outcome.status), ['not_archived', 'applied']);
+  assert.deepEqual(pin.outcomes.map((outcome) => outcome.status), ['already_pinned', 'applied']);
+  assert.deepEqual(unpin.outcomes.map((outcome) => outcome.status), ['not_pinned', 'applied']);
+  assert.deepEqual(archiveCalls, ['archived:false']);
+  assert.deepEqual(pinCalls, ['unpinned:true', 'pinned:false']);
+});
+
 test('parseThreadCommandSkillResult normalizes supported result shapes', () => {
   assert.deepEqual(parseThreadCommandSkillResult(JSON.stringify({
     action: 'open_thread',
@@ -268,5 +339,15 @@ function makeInventoryItem(threadId: string): ThreadCommandInventoryItem {
     archivedAt: null,
     pinnedAt: null,
     isCurrent: false,
+  };
+}
+
+function makeOperationTarget(threadId: string) {
+  return {
+    ok: true as const,
+    providerProfileId: 'profile-1',
+    threadId,
+    archivedAt: null,
+    pinnedAt: null,
   };
 }

@@ -184,25 +184,29 @@ Run the Task 1 focused commands plus `git diff --check`; commit with
   `handleUnpin`, and `renderPage`.
 - Consumes: existing provider profile, scope, response, and translator types.
 
-- [ ] **Step 1: Add failing service delegation tests**
+- [x] **Step 1: Add failing service delegation tests**
 
 Create a recording `ThreadCommandHost`; assert `handleThreads(['all'])` calls
 the home renderer with `{ includeArchived: true, onlyPinned: false }`, and a
 management route calls explicit or natural management based on the host's
 `areExplicitTargets` result.
 
-- [ ] **Step 2: Verify missing-service failures**
+- [x] **Step 2: Verify missing-service failures**
 
 Run `npm test -- test/core/thread_command.test.ts` and expect
 `ThreadCommandService` to be missing.
 
-- [ ] **Step 3: Implement the narrow host and route orchestration**
+- [x] **Step 3: Implement the narrow host and route orchestration**
 
 Use method-shaped callbacks with concrete parameter and promise return types.
 The service may call host capabilities but must not import or cast to
 `BridgeCoordinator`.
 
 - [ ] **Step 4: Move stateful thread methods in behavior-preserving groups**
+
+Progress: route delegation and the shared archive/restore/pin/unpin executor
+are complete. Search/natural normalization and page rendering still remain in
+the coordinator.
 
 Move confirmation/cancellation first, then archive/restore/pin/unpin, then
 search/natural normalization and page rendering. After each group, retain a

@@ -35,6 +35,7 @@ import { parseJsonObject } from './json_object_parser.js';
 import {
   THREAD_COMMAND_SKILL_ACTIONS,
   ThreadCommandService,
+  executeThreadOperation,
   isThreadItemEligibleForOperation,
   listThreadInventoryForCommand,
   parseThreadCommandSkillResult,
@@ -45,6 +46,7 @@ import {
   type PendingThreadCommandOperation,
   type ThreadCommandInventoryItem,
   type ThreadCommandOperationKind,
+  type ThreadOperationOutcome,
   type ThreadCommandSkillResult,
   type ThreadCommandSkillSubcommand,
 } from './thread_command.js';
@@ -3842,72 +3844,20 @@ export class BridgeCoordinator {
         this.t('coordinator.threads.noPendingOperation'),
       ], this.buildScopedSessionMeta(event));
     }
-    const lines: string[] = [];
-    for (const thread of operation.threads) {
-      if (operation.kind === 'archive') {
-        if (typeof thread.archivedAt === 'number') {
-          lines.push(this.t('coordinator.thread.archiveAlreadyArchived', { threadId: thread.threadId }));
-          continue;
-        }
-        try {
-          await this.bridgeSessions.updateProviderThreadArchiveState(operation.providerProfileId, thread.threadId, true);
-        } catch (error) {
-          lines.push(this.t('coordinator.thread.archiveFailed', {
-            threadId: thread.threadId,
-            error: error instanceof Error ? error.message : String(error),
-          }));
-          continue;
-        }
-        this.patchThreadBrowserArchiveStatus(event, operation.providerProfileId, thread.threadId, true);
-        lines.push(this.t('coordinator.thread.archived', { threadId: thread.threadId }));
-        continue;
-      }
-      if (operation.kind === 'restore') {
-        if (typeof thread.archivedAt !== 'number') {
-          lines.push(this.t('coordinator.thread.restoreNotArchived', { threadId: thread.threadId }));
-          continue;
-        }
-        try {
-          await this.bridgeSessions.updateProviderThreadArchiveState(operation.providerProfileId, thread.threadId, false);
-        } catch (error) {
-          lines.push(this.t('coordinator.thread.restoreFailed', {
-            threadId: thread.threadId,
-            error: error instanceof Error ? error.message : String(error),
-          }));
-          continue;
-        }
-        this.patchThreadBrowserArchiveStatus(event, operation.providerProfileId, thread.threadId, false);
-        lines.push(this.t('coordinator.thread.restored', { threadId: thread.threadId }));
-        continue;
-      }
-      if (operation.kind === 'pin') {
-        if (typeof thread.pinnedAt === 'number') {
-          lines.push(this.t('coordinator.thread.pinAlreadyPinned', { threadId: thread.threadId }));
-          continue;
-        }
-        this.bridgeSessions.setProviderThreadPinned(operation.providerProfileId, thread.threadId, true);
-        this.patchThreadBrowserPinStatus(event, operation.providerProfileId, thread.threadId, true);
-        lines.push(this.t('coordinator.thread.pinned', { threadId: thread.threadId }));
-        continue;
-      }
-      if (typeof thread.pinnedAt !== 'number') {
-        lines.push(this.t('coordinator.thread.unpinNotPinned', { threadId: thread.threadId }));
-        continue;
-      }
-      this.bridgeSessions.setProviderThreadPinned(operation.providerProfileId, thread.threadId, false);
-      this.patchThreadBrowserPinStatus(event, operation.providerProfileId, thread.threadId, false);
-      lines.push(this.t('coordinator.thread.unpinned', { threadId: thread.threadId }));
+    let lines: string[];
+    try {
+      const result = await this.executeResolvedThreadOperation(event, operation.kind, operation.threads.map((thread) => ({
+        ok: true as const,
+        providerProfileId: operation.providerProfileId,
+        threadId: thread.threadId,
+        archivedAt: thread.archivedAt,
+        pinnedAt: thread.pinnedAt,
+      })));
+      lines = result.lines;
+    } finally {
+      this.clearPendingThreadOperation(scopeRef);
     }
-    this.clearPendingThreadOperation(scopeRef);
-    if (operation.kind === 'archive') {
-      lines.push(this.t('coordinator.thread.archiveActions'));
-    } else if (operation.kind === 'restore') {
-      lines.push(this.t('coordinator.thread.restoreActions'));
-    } else if (operation.kind === 'pin') {
-      lines.push(this.t('coordinator.thread.pinActions'));
-    } else {
-      lines.push(this.t('coordinator.thread.unpinActions'));
-    }
+    lines.push(this.threadOperationActionLine(operation.kind));
     return messageResponse(lines, this.buildScopedSessionMeta(event));
   }
 
@@ -4281,160 +4231,22 @@ export class BridgeCoordinator {
   }
 
   async handleThreadsArchiveCommand(event, args) {
-    const activeResponse = await this.rejectIfActiveTurnForCommand(event, 'threads');
-    if (activeResponse) {
-      return activeResponse;
-    }
-    const targets = args.map((item) => String(item ?? '').trim()).filter(Boolean);
-    if (!targets.length) {
-      return messageResponse([
-        this.t('coordinator.threads.delUsage'),
-        this.t('coordinator.threads.help'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    const resolvedThreads = await this.resolveRequestedThreads(event, targets);
-    const dedupedThreadIds = new Set();
-    const lines = [];
-    let archivedCount = 0;
-
-    for (const resolvedThread of resolvedThreads) {
-      if (!resolvedThread.ok) {
-        lines.push(resolvedThread.message);
-        continue;
-      }
-      const dedupeKey = `${resolvedThread.providerProfileId}:${resolvedThread.threadId}`;
-      if (dedupedThreadIds.has(dedupeKey)) {
-        continue;
-      }
-      dedupedThreadIds.add(dedupeKey);
-      if (typeof resolvedThread.archivedAt === 'number') {
-        lines.push(this.t('coordinator.thread.archiveAlreadyArchived', { threadId: resolvedThread.threadId }));
-        continue;
-      }
-      try {
-        await this.bridgeSessions.updateProviderThreadArchiveState(resolvedThread.providerProfileId, resolvedThread.threadId, true);
-      } catch (error) {
-        lines.push(this.t('coordinator.thread.archiveFailed', {
-          threadId: resolvedThread.threadId,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-        continue;
-      }
-      this.patchThreadBrowserArchiveStatus(event, resolvedThread.providerProfileId, resolvedThread.threadId, true);
-      lines.push(this.t('coordinator.thread.archived', { threadId: resolvedThread.threadId }));
-      archivedCount += 1;
-    }
-
-    if (archivedCount > 0) {
-      lines.push(this.t('coordinator.thread.archiveActions'));
-    }
-
-    return messageResponse(lines, this.buildScopedSessionMeta(event));
+    return this.handleExplicitThreadOperationCommand(event, args, 'archive');
   }
 
   async handleThreadsRestoreCommand(event, args) {
-    const activeResponse = await this.rejectIfActiveTurnForCommand(event, 'threads');
-    if (activeResponse) {
-      return activeResponse;
-    }
-    const targets = args.map((item) => String(item ?? '').trim()).filter(Boolean);
-    if (!targets.length) {
-      return messageResponse([
-        this.t('coordinator.threads.restoreUsage'),
-        this.t('coordinator.threads.help'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    const state = this.getThreadBrowserState(event);
-    if (!state || !state.includeArchived) {
-      return messageResponse([
-        this.t('coordinator.thread.restoreNeedAll'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    const resolvedThreads = await this.resolveRequestedThreads(event, targets);
-    const dedupedThreadIds = new Set();
-    const lines = [];
-    let restoredCount = 0;
-
-    for (const resolvedThread of resolvedThreads) {
-      if (!resolvedThread.ok) {
-        lines.push(resolvedThread.message);
-        continue;
-      }
-      const dedupeKey = `${resolvedThread.providerProfileId}:${resolvedThread.threadId}`;
-      if (dedupedThreadIds.has(dedupeKey)) {
-        continue;
-      }
-      dedupedThreadIds.add(dedupeKey);
-      if (typeof resolvedThread.archivedAt !== 'number') {
-        lines.push(this.t('coordinator.thread.restoreNotArchived', { threadId: resolvedThread.threadId }));
-        continue;
-      }
-      try {
-        await this.bridgeSessions.updateProviderThreadArchiveState(resolvedThread.providerProfileId, resolvedThread.threadId, false);
-      } catch (error) {
-        lines.push(this.t('coordinator.thread.restoreFailed', {
-          threadId: resolvedThread.threadId,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-        continue;
-      }
-      this.patchThreadBrowserArchiveStatus(event, resolvedThread.providerProfileId, resolvedThread.threadId, false);
-      lines.push(this.t('coordinator.thread.restored', { threadId: resolvedThread.threadId }));
-      restoredCount += 1;
-    }
-
-    if (restoredCount > 0) {
-      lines.push(this.t('coordinator.thread.restoreActions'));
-    }
-
-    return messageResponse(lines, this.buildScopedSessionMeta(event));
+    return this.handleExplicitThreadOperationCommand(event, args, 'restore');
   }
 
   async handleThreadsPinCommand(event, args) {
-    const activeResponse = await this.rejectIfActiveTurnForCommand(event, 'threads');
-    if (activeResponse) {
-      return activeResponse;
-    }
-    const targets = args.map((item) => String(item ?? '').trim()).filter(Boolean);
-    if (!targets.length) {
-      return messageResponse([
-        this.t('coordinator.threads.pinUsage'),
-        this.t('coordinator.threads.help'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    const resolvedThreads = await this.resolveRequestedThreads(event, targets);
-    const dedupedThreadIds = new Set();
-    const lines = [];
-    let pinnedCount = 0;
-
-    for (const resolvedThread of resolvedThreads) {
-      if (!resolvedThread.ok) {
-        lines.push(resolvedThread.message);
-        continue;
-      }
-      const dedupeKey = `${resolvedThread.providerProfileId}:${resolvedThread.threadId}`;
-      if (dedupedThreadIds.has(dedupeKey)) {
-        continue;
-      }
-      dedupedThreadIds.add(dedupeKey);
-      if (typeof resolvedThread.pinnedAt === 'number') {
-        lines.push(this.t('coordinator.thread.pinAlreadyPinned', { threadId: resolvedThread.threadId }));
-        continue;
-      }
-      this.bridgeSessions.setProviderThreadPinned(resolvedThread.providerProfileId, resolvedThread.threadId, true);
-      this.patchThreadBrowserPinStatus(event, resolvedThread.providerProfileId, resolvedThread.threadId, true);
-      lines.push(this.t('coordinator.thread.pinned', { threadId: resolvedThread.threadId }));
-      pinnedCount += 1;
-    }
-
-    if (pinnedCount > 0) {
-      lines.push(this.t('coordinator.thread.pinActions'));
-    }
-
-    return messageResponse(lines, this.buildScopedSessionMeta(event));
+    return this.handleExplicitThreadOperationCommand(event, args, 'pin');
   }
 
   async handleThreadsUnpinCommand(event, args) {
+    return this.handleExplicitThreadOperationCommand(event, args, 'unpin');
+  }
+
+  async handleExplicitThreadOperationCommand(event, args, operation: ThreadCommandOperationKind) {
     const activeResponse = await this.rejectIfActiveTurnForCommand(event, 'threads');
     if (activeResponse) {
       return activeResponse;
@@ -4442,40 +4254,104 @@ export class BridgeCoordinator {
     const targets = args.map((item) => String(item ?? '').trim()).filter(Boolean);
     if (!targets.length) {
       return messageResponse([
-        this.t('coordinator.threads.unpinUsage'),
+        this.threadOperationUsageLine(operation),
         this.t('coordinator.threads.help'),
       ], this.buildScopedSessionMeta(event));
     }
+    if (operation === 'restore') {
+      const state = this.getThreadBrowserState(event);
+      if (!state || !state.includeArchived) {
+        return messageResponse([
+          this.t('coordinator.thread.restoreNeedAll'),
+        ], this.buildScopedSessionMeta(event));
+      }
+    }
     const resolvedThreads = await this.resolveRequestedThreads(event, targets);
-    const dedupedThreadIds = new Set();
-    const lines = [];
-    let unpinnedCount = 0;
-
-    for (const resolvedThread of resolvedThreads) {
-      if (!resolvedThread.ok) {
-        lines.push(resolvedThread.message);
-        continue;
-      }
-      const dedupeKey = `${resolvedThread.providerProfileId}:${resolvedThread.threadId}`;
-      if (dedupedThreadIds.has(dedupeKey)) {
-        continue;
-      }
-      dedupedThreadIds.add(dedupeKey);
-      if (typeof resolvedThread.pinnedAt !== 'number') {
-        lines.push(this.t('coordinator.thread.unpinNotPinned', { threadId: resolvedThread.threadId }));
-        continue;
-      }
-      this.bridgeSessions.setProviderThreadPinned(resolvedThread.providerProfileId, resolvedThread.threadId, false);
-      this.patchThreadBrowserPinStatus(event, resolvedThread.providerProfileId, resolvedThread.threadId, false);
-      lines.push(this.t('coordinator.thread.unpinned', { threadId: resolvedThread.threadId }));
-      unpinnedCount += 1;
+    const result = await this.executeResolvedThreadOperation(event, operation, resolvedThreads);
+    if (result.appliedCount > 0) {
+      result.lines.push(this.threadOperationActionLine(operation));
     }
+    return messageResponse(result.lines, this.buildScopedSessionMeta(event));
+  }
 
-    if (unpinnedCount > 0) {
-      lines.push(this.t('coordinator.thread.unpinActions'));
+  async executeResolvedThreadOperation(event, operation: ThreadCommandOperationKind, targets) {
+    const result = await executeThreadOperation(operation, targets, {
+      updateArchive: (providerProfileId, threadId, archived) => (
+        this.bridgeSessions.updateProviderThreadArchiveState(providerProfileId, threadId, archived)
+      ),
+      setPinned: (providerProfileId, threadId, pinned) => (
+        this.bridgeSessions.setProviderThreadPinned(providerProfileId, threadId, pinned)
+      ),
+      onApplied: (appliedOperation, target) => {
+        if (appliedOperation === 'archive' || appliedOperation === 'restore') {
+          this.patchThreadBrowserArchiveStatus(
+            event,
+            target.providerProfileId,
+            target.threadId,
+            appliedOperation === 'archive',
+          );
+          return;
+        }
+        this.patchThreadBrowserPinStatus(
+          event,
+          target.providerProfileId,
+          target.threadId,
+          appliedOperation === 'pin',
+        );
+      },
+    });
+    return {
+      appliedCount: result.appliedCount,
+      lines: result.outcomes.map((outcome) => this.threadOperationOutcomeLine(outcome)),
+    };
+  }
+
+  threadOperationOutcomeLine(outcome: ThreadOperationOutcome): string {
+    if (outcome.status === 'resolution_error') {
+      return outcome.message;
     }
+    if (outcome.status === 'already_archived') {
+      return this.t('coordinator.thread.archiveAlreadyArchived', { threadId: outcome.threadId });
+    }
+    if (outcome.status === 'not_archived') {
+      return this.t('coordinator.thread.restoreNotArchived', { threadId: outcome.threadId });
+    }
+    if (outcome.status === 'already_pinned') {
+      return this.t('coordinator.thread.pinAlreadyPinned', { threadId: outcome.threadId });
+    }
+    if (outcome.status === 'not_pinned') {
+      return this.t('coordinator.thread.unpinNotPinned', { threadId: outcome.threadId });
+    }
+    if (outcome.status === 'archive_failed') {
+      return this.t('coordinator.thread.archiveFailed', { threadId: outcome.threadId, error: outcome.error });
+    }
+    if (outcome.status === 'restore_failed') {
+      return this.t('coordinator.thread.restoreFailed', { threadId: outcome.threadId, error: outcome.error });
+    }
+    if (outcome.status === 'applied') {
+      if (outcome.operation === 'archive') {
+        return this.t('coordinator.thread.archived', { threadId: outcome.threadId });
+      }
+      if (outcome.operation === 'restore') {
+        return this.t('coordinator.thread.restored', { threadId: outcome.threadId });
+      }
+      if (outcome.operation === 'pin') {
+        return this.t('coordinator.thread.pinned', { threadId: outcome.threadId });
+      }
+      return this.t('coordinator.thread.unpinned', { threadId: outcome.threadId });
+    }
+    throw new Error(`Unhandled thread operation outcome: ${outcome.status}`);
+  }
 
-    return messageResponse(lines, this.buildScopedSessionMeta(event));
+  threadOperationUsageLine(operation: ThreadCommandOperationKind): string {
+    if (operation === 'archive') {
+      return this.t('coordinator.threads.delUsage');
+    }
+    return this.t(`coordinator.threads.${operation}Usage`);
+  }
+
+  threadOperationActionLine(operation: ThreadCommandOperationKind): string {
+    return this.t(`coordinator.thread.${operation}Actions`);
   }
 
   async handleOpenCommand(event, args) {

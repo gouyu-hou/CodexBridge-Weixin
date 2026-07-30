@@ -22,6 +22,28 @@ export type PendingThreadCommandOperation = {
   threads: ThreadCommandInventoryItem[];
 };
 
+export type ResolvedThreadOperationTarget =
+  | { ok: false; message: string }
+  | {
+    ok: true;
+    providerProfileId: string;
+    threadId: string;
+    archivedAt: number | null;
+    pinnedAt: number | null;
+  };
+
+export type ThreadOperationOutcome =
+  | { status: 'resolution_error'; message: string }
+  | { status: 'already_archived' | 'not_archived' | 'already_pinned' | 'not_pinned'; providerProfileId: string; threadId: string }
+  | { status: 'archive_failed' | 'restore_failed'; providerProfileId: string; threadId: string; error: string }
+  | { status: 'applied'; operation: ThreadCommandOperationKind; providerProfileId: string; threadId: string };
+
+export interface ThreadOperationHost {
+  updateArchive(providerProfileId: string, threadId: string, archived: boolean): Promise<void>;
+  setPinned(providerProfileId: string, threadId: string, pinned: boolean): void | Promise<void>;
+  onApplied?(operation: ThreadCommandOperationKind, target: Extract<ResolvedThreadOperationTarget, { ok: true }>): void | Promise<void>;
+}
+
 export type ThreadCommandSkillResult =
   | {
     action: 'show_default_threads' | 'show_all_threads' | 'show_pinned_threads';
@@ -261,6 +283,81 @@ export function isThreadItemEligibleForOperation(
     return typeof item.archivedAt !== 'number' && typeof item.pinnedAt !== 'number';
   }
   return typeof item.pinnedAt === 'number';
+}
+
+export async function executeThreadOperation(
+  operation: ThreadCommandOperationKind,
+  targets: readonly ResolvedThreadOperationTarget[],
+  host: ThreadOperationHost,
+): Promise<{ appliedCount: number; outcomes: ThreadOperationOutcome[] }> {
+  const seen = new Set<string>();
+  const outcomes: ThreadOperationOutcome[] = [];
+  let appliedCount = 0;
+
+  for (const target of targets) {
+    if (target.ok === false) {
+      outcomes.push({ status: 'resolution_error', message: target.message });
+      continue;
+    }
+    const key = `${target.providerProfileId}:${target.threadId}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+
+    const blockedStatus = resolveBlockedThreadOperationStatus(operation, target);
+    if (blockedStatus) {
+      outcomes.push({
+        status: blockedStatus,
+        providerProfileId: target.providerProfileId,
+        threadId: target.threadId,
+      });
+      continue;
+    }
+
+    if (operation === 'archive' || operation === 'restore') {
+      try {
+        await host.updateArchive(target.providerProfileId, target.threadId, operation === 'archive');
+      } catch (error) {
+        outcomes.push({
+          status: operation === 'archive' ? 'archive_failed' : 'restore_failed',
+          providerProfileId: target.providerProfileId,
+          threadId: target.threadId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        continue;
+      }
+    } else {
+      await host.setPinned(target.providerProfileId, target.threadId, operation === 'pin');
+    }
+
+    await host.onApplied?.(operation, target);
+    outcomes.push({
+      status: 'applied',
+      operation,
+      providerProfileId: target.providerProfileId,
+      threadId: target.threadId,
+    });
+    appliedCount += 1;
+  }
+
+  return { appliedCount, outcomes };
+}
+
+function resolveBlockedThreadOperationStatus(
+  operation: ThreadCommandOperationKind,
+  target: Extract<ResolvedThreadOperationTarget, { ok: true }>,
+): 'already_archived' | 'not_archived' | 'already_pinned' | 'not_pinned' | null {
+  if (operation === 'archive') {
+    return typeof target.archivedAt === 'number' ? 'already_archived' : null;
+  }
+  if (operation === 'restore') {
+    return typeof target.archivedAt === 'number' ? null : 'not_archived';
+  }
+  if (operation === 'pin') {
+    return typeof target.pinnedAt === 'number' ? 'already_pinned' : null;
+  }
+  return typeof target.pinnedAt === 'number' ? null : 'not_pinned';
 }
 
 export function parseThreadCommandSkillResult(value: unknown): ThreadCommandSkillResult | null {
