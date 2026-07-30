@@ -44,6 +44,7 @@ import {
   skillActionToThreadOperationKind,
   threadOperationKindToSkillAction,
   type PendingThreadCommandOperation,
+  type ResolvedThreadOperationTarget,
   type ThreadCommandInventoryItem,
   type ThreadCommandOperationKind,
   type ThreadOperationOutcome,
@@ -3844,19 +3845,15 @@ export class BridgeCoordinator {
         this.t('coordinator.threads.noPendingOperation'),
       ], this.buildScopedSessionMeta(event));
     }
-    let lines: string[];
-    try {
-      const result = await this.executeResolvedThreadOperation(event, operation.kind, operation.threads.map((thread) => ({
-        ok: true as const,
-        providerProfileId: operation.providerProfileId,
-        threadId: thread.threadId,
-        archivedAt: thread.archivedAt,
-        pinnedAt: thread.pinnedAt,
-      })));
-      lines = result.lines;
-    } finally {
-      this.clearPendingThreadOperation(scopeRef);
-    }
+    const result = await this.executeResolvedThreadOperation(event, operation.kind, operation.threads.map((thread) => ({
+      ok: true as const,
+      providerProfileId: operation.providerProfileId,
+      threadId: thread.threadId,
+      archivedAt: thread.archivedAt,
+      pinnedAt: thread.pinnedAt,
+    })));
+    const lines = result.lines;
+    this.clearPendingThreadOperation(scopeRef);
     lines.push(this.threadOperationActionLine(operation.kind));
     return messageResponse(lines, this.buildScopedSessionMeta(event));
   }
@@ -4274,7 +4271,11 @@ export class BridgeCoordinator {
     return messageResponse(result.lines, this.buildScopedSessionMeta(event));
   }
 
-  async executeResolvedThreadOperation(event, operation: ThreadCommandOperationKind, targets) {
+  async executeResolvedThreadOperation(
+    event,
+    operation: ThreadCommandOperationKind,
+    targets: readonly ResolvedThreadOperationTarget[],
+  ) {
     const result = await executeThreadOperation(operation, targets, {
       updateArchive: (providerProfileId, threadId, archived) => (
         this.bridgeSessions.updateProviderThreadArchiveState(providerProfileId, threadId, archived)

@@ -8100,6 +8100,11 @@ test('/threads del natural language creates a pending batch draft and /threads c
   const confirmedText = confirmed.messages.map((message) => message.text ?? '').join('\n');
   assert.match(confirmedText, new RegExp(`已归档线程：${invoiceOne.session?.codexThreadId}`));
   assert.match(confirmedText, new RegExp(`已归档线程：${invoiceTwo.session?.codexThreadId}`));
+  assert.match(confirmedText, /操作：\/threads/u);
+  assert.equal(runtime.services.bridgeCoordinator.getPendingThreadOperation({
+    platform: 'weixin',
+    externalScopeId: 'wx-thread-skill-browser',
+  }), null);
   assert.deepEqual(openai.archiveThreadCalls.map((call: any) => call.threadId).sort(), [
     invoiceOne.session?.codexThreadId,
     invoiceTwo.session?.codexThreadId,
@@ -8124,6 +8129,50 @@ test('/threads del natural language creates a pending batch draft and /threads c
   assert.match(allText, /视图：全部（含已归档）/);
   assert.match(allText, /新线程00001 \[已归档\]/);
   assert.match(allText, /新线程00002 \[已归档\]/);
+});
+
+test('/threads confirm retains a pending pin operation when persistence throws', async () => {
+  const { runtime } = makeRuntime();
+  const coordinator = runtime.services.bridgeCoordinator;
+  const scopeRef = {
+    platform: 'weixin' as const,
+    externalScopeId: 'wx-thread-confirm-pin-failure',
+  };
+  coordinator.setPendingThreadOperation(scopeRef, {
+    kind: 'pin',
+    createdAt: Date.now(),
+    rawInput: 'pin this thread',
+    providerProfileId: 'openai-default',
+    summary: 'Pin selected thread',
+    reason: null,
+    threads: [{
+      threadId: 'thread-pin-failure',
+      title: 'Pinned later',
+      alias: null,
+      preview: null,
+      updatedAt: null,
+      archivedAt: null,
+      pinnedAt: null,
+      isCurrent: false,
+    }],
+  });
+  const originalSetPinned = runtime.services.bridgeSessions.setProviderThreadPinned;
+  runtime.services.bridgeSessions.setProviderThreadPinned = () => {
+    throw new Error('pin persistence unavailable');
+  };
+
+  try {
+    await assert.rejects(() => coordinator.handleThreadsConfirmCommand({
+      ...scopeRef,
+      text: '/threads confirm',
+    }), /pin persistence unavailable/u);
+    assert.equal(
+      coordinator.getPendingThreadOperation(scopeRef)?.threads[0]?.threadId,
+      'thread-pin-failure',
+    );
+  } finally {
+    runtime.services.bridgeSessions.setProviderThreadPinned = originalSetPinned;
+  }
 });
 
 test('/threads cancel clears a pending natural-language batch draft', async () => {

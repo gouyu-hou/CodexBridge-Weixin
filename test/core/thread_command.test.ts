@@ -223,6 +223,49 @@ test('executeThreadOperation applies restore, pin, and unpin state transitions',
   assert.deepEqual(pinCalls, ['unpinned:true', 'pinned:false']);
 });
 
+test('executeThreadOperation continues after a restore failure', async () => {
+  const result = await executeThreadOperation('restore', [
+    { ...makeOperationTarget('restore-failed'), archivedAt: 10 },
+    { ...makeOperationTarget('restore-applied'), archivedAt: 10 },
+  ], {
+    updateArchive: async (_providerProfileId, threadId) => {
+      if (threadId === 'restore-failed') {
+        throw new Error('restore unavailable');
+      }
+    },
+    setPinned: () => assert.fail('restore must not update pin state'),
+  });
+
+  assert.deepEqual(result, {
+    appliedCount: 1,
+    outcomes: [
+      {
+        status: 'restore_failed',
+        providerProfileId: 'profile-1',
+        threadId: 'restore-failed',
+        error: 'restore unavailable',
+      },
+      {
+        status: 'applied',
+        operation: 'restore',
+        providerProfileId: 'profile-1',
+        threadId: 'restore-applied',
+      },
+    ],
+  });
+});
+
+test('executeThreadOperation propagates pin persistence failures', async () => {
+  await assert.rejects(() => executeThreadOperation('pin', [
+    makeOperationTarget('pin-failed'),
+  ], {
+    updateArchive: async () => assert.fail('pin must not update archive state'),
+    setPinned: () => {
+      throw new Error('pin unavailable');
+    },
+  }), /pin unavailable/u);
+});
+
 test('parseThreadCommandSkillResult normalizes supported result shapes', () => {
   assert.deepEqual(parseThreadCommandSkillResult(JSON.stringify({
     action: 'open_thread',
