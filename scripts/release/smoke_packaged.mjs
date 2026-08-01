@@ -28,6 +28,8 @@ export function assertPackagedRuntimeBoundary(rootDir) {
     path.join('runtime-app', 'scripts', 'service', 'run-weixin-service.mjs'),
     path.join('runtime-app', 'src', 'cli.ts'),
     path.join('runtime-app', 'node_modules', 'tsx', 'dist', 'loader.mjs'),
+    path.join('runtime-app', 'assets', 'weixin-admin', 'admin.css'),
+    path.join('runtime-app', 'assets', 'weixin-admin', 'admin.js'),
   ];
   for (const relativePath of requiredFiles) {
     const candidate = path.join(resourcesDir, relativePath);

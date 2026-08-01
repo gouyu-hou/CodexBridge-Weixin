@@ -177,6 +177,20 @@ test('packaged smoke preflight reports incomplete ASAR runtime boundaries', () =
       fs.writeFileSync(target, 'test', 'utf8');
     }
 
+    assert.throws(
+      () => assertPackagedRuntimeBoundary(tempRoot),
+      /weixin admin asset|admin\.css|admin\.js/iu,
+    );
+
+    for (const relativePath of [
+      path.join('runtime-app', 'assets', 'weixin-admin', 'admin.css'),
+      path.join('runtime-app', 'assets', 'weixin-admin', 'admin.js'),
+    ]) {
+      const target = path.join(resourcesDir, relativePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, 'test', 'utf8');
+    }
+
     assert.doesNotThrow(() => assertPackagedRuntimeBoundary(tempRoot));
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
