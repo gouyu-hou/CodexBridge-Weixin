@@ -7,6 +7,16 @@ const sourceDir = path.join(rootDir, 'src', 'platforms', 'weixin', 'admin_browse
 
 export const ADMIN_BROWSER_SOURCES = Object.freeze([
   '00_bootstrap.js',
+  '10_api_client.js',
+  '20_updates.js',
+  '30_runtime_metrics.js',
+  '40_sessions.js',
+  '50_setup_runtime.js',
+  '60_accounts.js',
+  '70_provider.js',
+  '80_logs_backup.js',
+  '90_pairing_setup.js',
+  '99_events.js',
 ]);
 
 export async function buildAdminBrowser({
@@ -16,7 +26,7 @@ export async function buildAdminBrowser({
     const source = await fs.readFile(path.join(sourceDir, filename), 'utf8');
     return normalizeSource(source);
   }));
-  const output = `${parts.join('\n')}\n`;
+  const output = `${parts.join('').replace(/\n*$/u, '')}\n`;
   const resolvedOutputPath = path.resolve(outputPath);
   const tempPath = `${resolvedOutputPath}.tmp-${process.pid}`;
   await fs.mkdir(path.dirname(resolvedOutputPath), { recursive: true });
@@ -32,8 +42,7 @@ export async function buildAdminBrowser({
 function normalizeSource(source) {
   return source
     .replace(/^\uFEFF/u, '')
-    .replace(/\r\n/gu, '\n')
-    .replace(/\n+$/u, '');
+    .replace(/\r\n/gu, '\n');
 }
 
 const invokedPath = process.argv[1]
