@@ -38,6 +38,7 @@ type QrLoginImpl = typeof officialQrLogin;
 interface WeixinAdminServerOptions {
   accountStore: WeixinAccountStore;
   stateDir: string;
+  adminAssetDir?: string;
   env?: NodeJS.ProcessEnv | Record<string, unknown>;
   host?: string;
   port?: number;
@@ -264,10 +265,20 @@ const ADMIN_FAVICON_PATH = path.resolve(process.cwd(), 'assets', 'windows', 'cod
 const ADMIN_FAVICON_PNG_PATH = path.resolve(process.cwd(), 'assets', 'windows', 'codexbridge-weixin.png');
 const ADMIN_DONATE_QR_PATH = path.resolve(process.cwd(), 'assets', 'donate', 'wechat-reward.png');
 
+function isMissingFileError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'code' in error
+    && error.code === 'ENOENT'
+  );
+}
+
 export class WeixinAdminServer {
   constructor({
     accountStore,
     stateDir,
+    adminAssetDir = path.resolve(process.cwd(), 'assets', 'weixin-admin'),
     env = process.env,
     host = DEFAULT_ADMIN_HOST,
     port = DEFAULT_ADMIN_PORT,
@@ -283,6 +294,7 @@ export class WeixinAdminServer {
   }: WeixinAdminServerOptions) {
     this.accountStore = accountStore;
     this.stateDir = stateDir;
+    this.adminAssetDir = adminAssetDir;
     this.env = env;
     this.host = host;
     this.port = port;
@@ -311,6 +323,7 @@ export class WeixinAdminServer {
 
   accountStore: WeixinAccountStore;
   stateDir: string;
+  adminAssetDir: string;
   env: NodeJS.ProcessEnv | Record<string, unknown>;
   host: string;
   port: number;
@@ -426,6 +439,10 @@ export class WeixinAdminServer {
 
     if (req.method === 'GET' && pathname === '/') {
       this.writeHtml(res, renderAdminHtml(this.adminToken, this.cspNonce));
+      return;
+    }
+    if (req.method === 'GET' && pathname === '/admin/admin.css') {
+      this.writeAdminAsset(res, 'admin.css', 'text/css; charset=utf-8');
       return;
     }
     if (req.method === 'GET' && pathname === '/favicon.ico') {
@@ -3099,6 +3116,27 @@ export class WeixinAdminServer {
       'content-length': Buffer.byteLength(html),
     });
     res.end(html);
+  }
+
+  private writeAdminAsset(
+    res: ServerResponse,
+    filename: 'admin.css' | 'admin.js',
+    contentType: 'text/css; charset=utf-8' | 'text/javascript; charset=utf-8',
+  ) {
+    try {
+      const body = fs.readFileSync(path.join(this.adminAssetDir, filename));
+      res.writeHead(200, {
+        ...this.securityHeaders(),
+        'content-type': contentType,
+        'cache-control': 'no-store',
+        'content-length': body.length,
+      });
+      res.end(body);
+    } catch (error) {
+      this.writeJson(res, isMissingFileError(error) ? 404 : 500, {
+        error: isMissingFileError(error) ? 'admin asset not found' : 'admin asset unavailable',
+      });
+    }
   }
 
   private async handleRetryDeliveryOutbox(res: ServerResponse) {

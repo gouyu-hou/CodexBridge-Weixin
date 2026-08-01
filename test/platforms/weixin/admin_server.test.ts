@@ -14,6 +14,11 @@ import {
 } from '../../../src/platforms/weixin/official/context_tokens.js';
 import { createFileJsonRepositories } from '../../../src/store/file_json/create_file_json_repositories.js';
 
+const adminCss = fs.readFileSync(
+  path.join(process.cwd(), 'assets', 'weixin-admin', 'admin.css'),
+  'utf8',
+);
+
 function makeTempStateDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-weixin-admin-'));
 }
@@ -1220,10 +1225,10 @@ test('WeixinAdminServer protects browser mutations with same-origin token checks
     assert.match(pageResponse.headers.get('content-security-policy') ?? '', /default-src 'self'/u);
     const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
     assert.ok(token.length >= 32);
-    const styleNonce = html.match(/<style nonce="([^"]+)">/u)?.[1] ?? '';
+    const scriptNonce = html.match(/<script nonce="([^"]+)">/u)?.[1] ?? '';
     const csp = pageResponse.headers.get('content-security-policy') ?? '';
-    assert.ok(styleNonce);
-    assert.ok(csp.includes(`style-src-elem 'self' 'nonce-${styleNonce}'`));
+    assert.ok(scriptNonce);
+    assert.ok(csp.includes(`script-src 'nonce-${scriptNonce}'`));
 
     const foreignOrigin = await fetch(`${binding.url}/api/pairing/cancel`, {
       method: 'POST',
@@ -1250,6 +1255,25 @@ test('WeixinAdminServer protects browser mutations with same-origin token checks
       },
     });
     assert.equal(authorized.status, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer serves the fixed admin stylesheet with security headers', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const server = new WeixinAdminServer({ accountStore, stateDir, port: 0 });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/admin/admin.css`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'text/css; charset=utf-8');
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(await response.text(), /\.provider-usage-toolbar/u);
   } finally {
     await server.stop();
   }
@@ -1904,7 +1928,7 @@ test('WeixinAdminServer renders separated Z Token and official provider presets'
     assert.match(html, /models: \['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-6'\]/u);
     assert.match(html, /capabilities: 'claude'/u);
     assert.match(html, /id="refresh-btn">刷新列表<\/button>/u);
-    assert.match(html, /\.refresh-spin/u);
+    assert.match(adminCss, /\.refresh-spin/u);
     assert.match(html, /function runRefreshList\(\)/u);
     assert.match(html, /刷新中\.\.\./u);
   } finally {
@@ -2488,8 +2512,8 @@ test('WeixinAdminServer admin page enables shutdown-on-close by default', async 
     assert.match(html, /account-model-refresh/u);
     assert.match(html, /id="delivery-retry-now"/u);
     assert.match(html, /\/api\/delivery-outbox\/retry/u);
-    assert.match(html, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*34px/u);
-    assert.match(html, /\.table-wrap\s*\{[^}]*max-width:\s*100%;[^}]*overflow-x:\s*auto;/su);
+    assert.match(adminCss, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*34px/u);
+    assert.match(adminCss, /\.table-wrap\s*\{[^}]*max-width:\s*100%;[^}]*overflow-x:\s*auto;/su);
     assert.match(html, /if\s*\(provider\.value\s*!==\s*requestedProviderProfileId\)\s*return/u);
     assert.match(html, /setAttribute\('aria-label',\s*'刷新模型'\)/u);
     for (const visibleText of [
