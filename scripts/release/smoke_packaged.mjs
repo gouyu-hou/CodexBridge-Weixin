@@ -74,6 +74,26 @@ export async function waitForCondition(check, {
   }
 }
 
+export async function fetchPackagedAdminAssets(fetchFn, baseUrl) {
+  const styleResponse = await tryFetch(
+    fetchFn,
+    `${baseUrl}/admin/admin.css`,
+    'admin-css',
+  );
+  const scriptResponse = await tryFetch(
+    fetchFn,
+    `${baseUrl}/admin/admin.js`,
+    'admin-script',
+  );
+  if (!styleResponse || !scriptResponse) {
+    return null;
+  }
+  return {
+    scriptStatus: scriptResponse.status,
+    styleStatus: styleResponse.status,
+  };
+}
+
 export async function runPackagedSmoke({
   rootDir = process.cwd(),
   timeoutMs = 60_000,
@@ -165,6 +185,15 @@ export async function runPackagedSmoke({
       },
     );
 
+    const adminAssets = await waitForCondition(
+      () => fetchPackagedAdminAssets(fetchFn, baseUrl),
+      {
+        timeoutMs: Math.min(timeoutMs, 10_000),
+        intervalMs: 25,
+        description: 'packaged Weixin admin assets',
+      },
+    );
+
     await waitForCondition(async () => {
       const response = await tryFetch(fetchFn, `${baseUrl}/api/state`, 'status');
       return response ? null : true;
@@ -192,8 +221,10 @@ export async function runPackagedSmoke({
     return {
       endpointStopped: true,
       pageStatus: pageResponse.status,
+      scriptStatus: adminAssets.scriptStatus,
       selfStopped: true,
       stateStatus: stateResponse.status,
+      styleStatus: adminAssets.styleStatus,
     };
   } finally {
     if (!success) {
@@ -219,6 +250,19 @@ async function tryFetch(fetchFn, url, kind) {
     } else if (kind === 'html') {
       const content = await response.text();
       if (!/<!doctype html>/iu.test(content)) {
+        return null;
+      }
+    } else if (kind === 'admin-css') {
+      const contentType = response.headers.get('content-type') ?? '';
+      const content = await response.text();
+      if (!/^text\/css(?:;|$)/iu.test(contentType) || !/\.provider-usage-toolbar/u.test(content)) {
+        return null;
+      }
+    } else if (kind === 'admin-script') {
+      const contentType = response.headers.get('content-type') ?? '';
+      const content = await response.text();
+      if (!/^(?:application|text)\/javascript(?:;|$)/iu.test(contentType)
+        || !/function loadProviderUsage/u.test(content)) {
         return null;
       }
     }

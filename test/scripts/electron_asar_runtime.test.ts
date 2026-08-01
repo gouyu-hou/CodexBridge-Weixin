@@ -31,6 +31,10 @@ type RuntimeStageModule = {
 
 type PackagedSmokeModule = typeof packagedSmoke & {
   assertPackagedRuntimeBoundary: (rootDir: string) => void;
+  fetchPackagedAdminAssets?: (
+    fetchFn: typeof fetch,
+    baseUrl: string,
+  ) => Promise<{ scriptStatus: number; styleStatus: number } | null>;
 };
 
 test('Electron build stores the staged service runtime outside ASAR', () => {
@@ -207,6 +211,42 @@ test('packaged smoke launches Electron in app mode even under Node-mode shells',
   assert.match(smokeSource, /NODE_OPTIONS:\s*_nodeOptions/u);
   assert.match(smokeSource, /\.\.\.inheritedEnv/u);
   assert.doesNotMatch(smokeSource, /\.\.\.process\.env/u);
+});
+
+test('packaged smoke loads and validates both Weixin admin assets', async () => {
+  const { fetchPackagedAdminAssets } = packagedSmoke as PackagedSmokeModule;
+  assert.equal(typeof fetchPackagedAdminAssets, 'function');
+
+  const requestedUrls: string[] = [];
+  const fetchFn = (async (input: string | URL | Request) => {
+    const url = String(input);
+    requestedUrls.push(url);
+    if (url.endsWith('/admin/admin.css')) {
+      return new Response('.provider-usage-toolbar {}', {
+        headers: { 'content-type': 'text/css; charset=utf-8' },
+      });
+    }
+    return new Response('function loadProviderUsage() {}', {
+      headers: { 'content-type': 'text/javascript; charset=utf-8' },
+    });
+  }) as typeof fetch;
+
+  assert.deepEqual(
+    await fetchPackagedAdminAssets!(fetchFn, 'http://127.0.0.1:19291'),
+    { scriptStatus: 200, styleStatus: 200 },
+  );
+  assert.deepEqual(requestedUrls, [
+    'http://127.0.0.1:19291/admin/admin.css',
+    'http://127.0.0.1:19291/admin/admin.js',
+  ]);
+
+  const invalidFetch = (async () => new Response('wrong body', {
+    headers: { 'content-type': 'text/plain' },
+  })) as typeof fetch;
+  assert.equal(
+    await fetchPackagedAdminAssets!(invalidFetch, 'http://127.0.0.1:19291'),
+    null,
+  );
 });
 
 test('Electron runtime boundary scripts are covered by JavaScript typechecking', () => {

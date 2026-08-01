@@ -1304,6 +1304,52 @@ test('WeixinAdminServer serves the fixed admin script with security headers', as
   }
 });
 
+test('WeixinAdminServer keeps admin asset routing fixed and sanitizes file failures', async () => {
+  const stateDir = makeTempStateDir();
+  const missingAssetDir = path.join(stateDir, 'missing-admin-assets');
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const server = new WeixinAdminServer({
+    accountStore,
+    adminAssetDir: missingAssetDir,
+    stateDir,
+    port: 0,
+  });
+  const binding = await server.start();
+  try {
+    const unknownResponse = await fetch(`${binding.url}/admin/admin.js.map`);
+    assert.equal(unknownResponse.status, 404);
+
+    const missingResponse = await fetch(`${binding.url}/admin/admin.css`);
+    assert.equal(missingResponse.status, 404);
+    const missingBody = await missingResponse.text();
+    assert.deepEqual(JSON.parse(missingBody), { error: 'admin asset not found' });
+    assert.doesNotMatch(missingBody, /missing-admin-assets|ENOENT|CodexBridge/iu);
+  } finally {
+    await server.stop();
+  }
+
+  const blockedAssetPath = path.join(stateDir, 'blocked-admin-assets');
+  fs.mkdirSync(path.join(blockedAssetPath, 'admin.js'), { recursive: true });
+  const blockedServer = new WeixinAdminServer({
+    accountStore,
+    adminAssetDir: blockedAssetPath,
+    stateDir,
+    port: 0,
+  });
+  const blockedBinding = await blockedServer.start();
+  try {
+    const response = await fetch(`${blockedBinding.url}/admin/admin.js`);
+    assert.equal(response.status, 500);
+    const body = await response.text();
+    assert.deepEqual(JSON.parse(body), { error: 'admin asset unavailable' });
+    assert.doesNotMatch(body, /blocked-admin-assets|ENOTDIR|CodexBridge/iu);
+  } finally {
+    await blockedServer.stop();
+  }
+});
+
 test('WeixinAdminServer accepts browser mutations on the IPv4 loopback range', async () => {
   const stateDir = makeTempStateDir();
   const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
