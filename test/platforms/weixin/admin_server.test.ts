@@ -18,6 +18,10 @@ const adminCss = fs.readFileSync(
   path.join(process.cwd(), 'assets', 'weixin-admin', 'admin.css'),
   'utf8',
 );
+const adminScript = fs.readFileSync(
+  path.join(process.cwd(), 'assets', 'weixin-admin', 'admin.js'),
+  'utf8',
+);
 
 function makeTempStateDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-weixin-admin-'));
@@ -1225,7 +1229,9 @@ test('WeixinAdminServer protects browser mutations with same-origin token checks
     assert.match(pageResponse.headers.get('content-security-policy') ?? '', /default-src 'self'/u);
     const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
     assert.ok(token.length >= 32);
-    const scriptNonce = html.match(/<script nonce="([^"]+)">/u)?.[1] ?? '';
+    const scriptNonce = html.match(
+      /<script nonce="([^"]+)" src="\/admin\/admin\.js\?v=\d+"><\/script>/u,
+    )?.[1] ?? '';
     const csp = pageResponse.headers.get('content-security-policy') ?? '';
     assert.ok(scriptNonce);
     assert.ok(csp.includes(`script-src 'nonce-${scriptNonce}'`));
@@ -1274,6 +1280,25 @@ test('WeixinAdminServer serves the fixed admin stylesheet with security headers'
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
     assert.match(await response.text(), /\.provider-usage-toolbar/u);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminServer serves the fixed admin script with security headers', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({
+    rootDir: path.join(stateDir, 'weixin', 'accounts'),
+  });
+  const server = new WeixinAdminServer({ accountStore, stateDir, port: 0 });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/admin/admin.js`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'text/javascript; charset=utf-8');
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.match(await response.text(), /function loadProviderUsage/u);
   } finally {
     await server.stop();
   }
@@ -1920,17 +1945,18 @@ test('WeixinAdminServer renders separated Z Token and official provider presets'
     const response = await fetch(binding.url);
     assert.equal(response.status, 200);
     const html = await response.text();
+    const pageSource = `${html}\n${adminScript}`;
     assert.match(html, /<option value="default">Z Token - Codex<\/option>/u);
     assert.match(html, /<option value="ztoken-claude">Z Token - Claude<\/option>/u);
     assert.match(html, /<option value="official-codex">官网 Codex<\/option>/u);
     assert.match(html, /<option value="official-claude-code">官网 Claude Code<\/option>/u);
-    assert.match(html, /models: \['gpt-5\.6-sol', 'gpt-5\.6-terra', 'gpt-5\.6-luna', 'gpt-5\.5', 'gpt-5\.4', 'gpt-5\.4-mini', 'gpt-5\.3-codex', 'gpt-5\.2'\]/u);
-    assert.match(html, /models: \['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-6'\]/u);
-    assert.match(html, /capabilities: 'claude'/u);
+    assert.match(pageSource, /models: \['gpt-5\.6-sol', 'gpt-5\.6-terra', 'gpt-5\.6-luna', 'gpt-5\.5', 'gpt-5\.4', 'gpt-5\.4-mini', 'gpt-5\.3-codex', 'gpt-5\.2'\]/u);
+    assert.match(pageSource, /models: \['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-6'\]/u);
+    assert.match(pageSource, /capabilities: 'claude'/u);
     assert.match(html, /id="refresh-btn">刷新列表<\/button>/u);
     assert.match(adminCss, /\.refresh-spin/u);
-    assert.match(html, /function runRefreshList\(\)/u);
-    assert.match(html, /刷新中\.\.\./u);
+    assert.match(pageSource, /function runRefreshList\(\)/u);
+    assert.match(pageSource, /刷新中\.\.\./u);
   } finally {
     await server.stop();
   }
@@ -2483,7 +2509,7 @@ test('WeixinAdminServer admin page enables shutdown-on-close by default', async 
   try {
     const response = await fetch(binding.url);
     assert.equal(response.status, 200);
-    const html = await response.text();
+    const html = `${await response.text()}\n${adminScript}`;
     assert.match(html, /rel="icon" type="image\/png" href="\/favicon\.png\?v=/u);
     assert.match(html, /rel="icon" type="image\/x-icon" href="\/favicon\.ico\?v=/u);
     assert.match(html, /rel="shortcut icon" href="\/favicon\.ico\?v=/u);
@@ -2577,13 +2603,8 @@ test('WeixinAdminServer admin page enables shutdown-on-close by default', async 
     assert.match(html, /\/api\/service\/shutdown/u);
     assert.match(html, /new Image\(\)/u);
     assert.match(html, /window\.addEventListener\('unload', closePage\)/u);
-    const scripts = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gu)].map((match) => match[1]);
-    assert.ok(scripts.length > 0);
-    for (const script of scripts) {
-      assert.doesNotThrow(() => new Function(script));
-    }
-    const accountScript = scripts.find((script) => script.includes('function findAccountCatalogModel'));
-    assert.ok(accountScript);
+    assert.doesNotThrow(() => new Function(adminScript));
+    const accountScript = adminScript;
     const catalogHelperStart = accountScript.indexOf('function invalidateProviderModelCatalogCache');
     const catalogHelperEnd = accountScript.indexOf('function accountModelDisplayText', catalogHelperStart);
     assert.ok(catalogHelperStart >= 0);

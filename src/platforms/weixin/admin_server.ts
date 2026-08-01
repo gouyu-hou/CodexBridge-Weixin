@@ -445,6 +445,10 @@ export class WeixinAdminServer {
       this.writeAdminAsset(res, 'admin.css', 'text/css; charset=utf-8');
       return;
     }
+    if (req.method === 'GET' && pathname === '/admin/admin.js') {
+      this.writeAdminAsset(res, 'admin.js', 'text/javascript; charset=utf-8');
+      return;
+    }
     if (req.method === 'GET' && pathname === '/favicon.ico') {
       this.writeIcon(res);
       return;
