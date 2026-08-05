@@ -340,11 +340,6 @@ test/         测试代码
 
 ## 安全提醒
 
-- 不要把真实 API key 上传到 GitHub
-- 不要提交 `weixin.service.env`
-- 不要提交 `CodexBridgeData/`
-- 不要提交 `release/`
-- 不要提交 `node_modules/`
 - 给朋友使用时，建议让对方填写自己的 API key，或者明确说明会消耗你的额度
 
 ## 来源说明
