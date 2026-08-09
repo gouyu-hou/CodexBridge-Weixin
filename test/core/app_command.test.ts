@@ -83,4 +83,5 @@ test('BridgeCoordinator delegates app command routing to the focused module', ()
   assert.match(source, /from '\.\/app_command\.js'/u);
   assert.match(handlerSource, /resolveAppsCommand\(args\)/u);
   assert.doesNotMatch(handlerSource, /const subcommand = String\(normalizedArgs\[0\]/u);
+  assert.ok(handlerSource.indexOf('resolveAppsCommand(args)') < handlerSource.indexOf('const session'));
 });

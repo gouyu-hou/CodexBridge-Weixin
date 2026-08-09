@@ -91,4 +91,5 @@ test('BridgeCoordinator delegates plugin command routing to the focused module',
   assert.match(source, /from '\.\/plugin_command\.js'/u);
   assert.match(handlerSource, /resolvePluginsCommand\(args\)/u);
   assert.doesNotMatch(handlerSource, /const subcommand = String\(normalizedArgs\[0\]/u);
+  assert.ok(handlerSource.indexOf('resolvePluginsCommand(args)') < handlerSource.indexOf('const session'));
 });

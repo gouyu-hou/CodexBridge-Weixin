@@ -63,4 +63,5 @@ test('BridgeCoordinator delegates MCP command routing to the focused module', ()
   assert.match(source, /from '\.\/mcp_command\.js'/u);
   assert.match(handlerSource, /resolveMcpCommand\(args\)/u);
   assert.doesNotMatch(handlerSource, /const subcommand = String\(normalizedArgs\[0\]/u);
+  assert.ok(handlerSource.indexOf('resolveMcpCommand(args)') < handlerSource.indexOf('const session'));
 });

@@ -8166,6 +8166,7 @@ export class BridgeCoordinator {
 
   async handleAppsCommand(event, args = []) {
     const scopeRef = toScopeRef(event);
+    const decision = resolveAppsCommand(args);
     const session = this.resolveSessionForEvent(scopeRef, event);
     const providerProfile = session
       ? this.requireProviderProfile(session.providerProfileId)
@@ -8178,7 +8179,6 @@ export class BridgeCoordinator {
         ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
       }
 
-      const decision = resolveAppsCommand(args);
       switch (decision.kind) {
         case 'list':
           return await this.handleAppsListCommand(event, providerProfile, {
@@ -8397,6 +8397,7 @@ export class BridgeCoordinator {
 
   async handlePluginsCommand(event, args = []) {
     const scopeRef = toScopeRef(event);
+    const decision = resolvePluginsCommand(args);
     const session = this.resolveSessionForEvent(scopeRef, event);
     const providerProfile = session
       ? this.requireProviderProfile(session.providerProfileId)
@@ -8409,7 +8410,6 @@ export class BridgeCoordinator {
         ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
       }
 
-      const decision = resolvePluginsCommand(args);
       switch (decision.kind) {
         case 'featured':
           return await this.handlePluginsFeaturedCommand(event, providerProfile);
@@ -8896,6 +8896,7 @@ export class BridgeCoordinator {
 
   async handleMcpCommand(event, args = []) {
     const scopeRef = toScopeRef(event);
+    const decision = resolveMcpCommand(args);
     const session = this.resolveSessionForEvent(scopeRef, event);
     const providerProfile = session
       ? this.requireProviderProfile(session.providerProfileId)
@@ -8908,7 +8909,6 @@ export class BridgeCoordinator {
         ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
       }
 
-      const decision = resolveMcpCommand(args);
       switch (decision.kind) {
         case 'list':
           return await this.handleMcpListCommand(event, providerProfile);
