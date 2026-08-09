@@ -329,7 +329,9 @@ test('packaged DOM smoke rejects an unrelated state poll as refresh evidence', a
   await assert.rejects(verifyPackagedAdminDom!(cdp), /start a state request/u);
 });
 
-test('packaged smoke removes temporary state when spawning throws synchronously', async () => {
+test('packaged smoke removes temporary state when spawning throws synchronously', {
+  skip: process.platform !== 'win32',
+}, async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-smoke-root-'));
   const executable = packagedSmoke.packagedExecutablePath(rootDir);
   const resourcesDir = path.join(rootDir, 'release', 'win-unpacked', 'resources');
