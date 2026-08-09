@@ -112,16 +112,20 @@ export async function runPackagedSmoke({
 
   const tempRoot = path.resolve(os.tmpdir());
   const stateDir = await fsp.mkdtemp(path.join(tempRoot, 'codexbridge-release-smoke-'));
-  if (!isPathInside(tempRoot, stateDir)) {
-    throw new Error('refusing to use a packaged smoke directory outside the system temp root');
-  }
+  let baseUrl = null;
+  let child = null;
+  let success = false;
+  try {
+    if (!isPathInside(tempRoot, stateDir)) {
+      throw new Error('refusing to use a packaged smoke directory outside the system temp root');
+    }
 
-  const adminPort = await findAvailableLoopbackPort();
-  const debugPort = await findAvailableLoopbackPort();
-  const baseUrl = `http://127.0.0.1:${adminPort}`;
-  if (!isLoopbackHttpUrl(baseUrl)) {
-    throw new Error('packaged smoke admin URL must use loopback HTTP');
-  }
+    const adminPort = await findAvailableLoopbackPort();
+    const debugPort = await findAvailableLoopbackPort();
+    baseUrl = `http://127.0.0.1:${adminPort}`;
+    if (!isLoopbackHttpUrl(baseUrl)) {
+      throw new Error('packaged smoke admin URL must use loopback HTTP');
+    }
 
   // Electron-hosted shells (VS Code tasks, agent sandboxes) may leak Node-mode
   // overrides that make the packaged app parse argv as Node CLI flags and exit
@@ -148,7 +152,7 @@ export async function runPackagedSmoke({
     WEIXIN_PROGRESS_PREVIEWS: '0',
   };
 
-  const child = spawnFn(executable, [
+  child = spawnFn(executable, [
     '--remote-debugging-address=127.0.0.1',
     `--remote-debugging-port=${debugPort}`,
     '--smoke-test',
@@ -168,8 +172,6 @@ export async function runPackagedSmoke({
     childError = error;
   });
 
-  let success = false;
-  try {
     const stateResponse = await waitForCondition(async () => {
       if (childError) {
         throw new Error(`packaged smoke process failed to start: ${childError.message}`);
@@ -313,12 +315,68 @@ async function findAdminCdpTarget(fetchFn, debugPort, expectedUrl, onDiagnostics
   }
 }
 
-async function verifyPackagedAdminDom(cdp) {
+export async function verifyPackagedAdminDom(cdp) {
+  await cdp.send('Page.enable');
+  await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `(() => {
+      window.__codexbridgeSmokeBootstrapReady = true;
+      window.__codexbridgeSmokeErrors = [];
+      window.__codexbridgeSmokeRequests = [];
+      window.addEventListener('error', (event) => {
+        const target = event.target;
+        if (target && target !== window) {
+          const resource = target.src || target.href || target.tagName || 'unknown resource';
+          window.__codexbridgeSmokeErrors.push('resource failed: ' + String(resource));
+          return;
+        }
+        window.__codexbridgeSmokeErrors.push(
+          String(event.error && event.error.message || event.message || 'page error'),
+        );
+      }, true);
+      window.addEventListener('unhandledrejection', (event) => {
+        window.__codexbridgeSmokeErrors.push(
+          String(event.reason && event.reason.message || event.reason || 'unhandled rejection'),
+        );
+      });
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (...args) => {
+        const input = args[0];
+        const rawUrl = typeof input === 'string' || input instanceof URL ? String(input) : input.url;
+        let pathname = '';
+        try {
+          pathname = new URL(rawUrl, window.location.href).pathname;
+        } catch {}
+        try {
+          const response = await originalFetch(...args);
+          window.__codexbridgeSmokeRequests.push({ ok: response.ok, pathname, status: response.status });
+          return response;
+        } catch (error) {
+          window.__codexbridgeSmokeRequests.push({ ok: false, pathname, status: 0 });
+          throw error;
+        }
+      };
+    })();`,
+  });
+  await cdp.send('Page.reload', { ignoreCache: false });
+
   const deadline = Date.now() + 10_000;
   let status;
   while (true) {
-    status = await cdp.evaluate(`(async () => {
-    const requiredIds = ['refresh-btn', 'service-state', 'metric-turns', 'status-updated'];
+    try {
+      status = await cdp.evaluate(`(async () => {
+    const requiredIds = [
+      'refresh-btn',
+      'service-state',
+      'metric-turns',
+      'status-updated',
+      'accounts-body',
+      'provider-model',
+      'update-check',
+      'sessions-body',
+      'logs-box',
+      'settings-save',
+      'setup-refresh'
+    ];
     const missingIds = requiredIds.filter((id) => !document.getElementById(id));
     const resourcePath = (value) => {
       try {
@@ -334,8 +392,9 @@ async function verifyPackagedAdminDom(cdp) {
     const styleHrefs = Array.from(document.styleSheets).map((sheet) => String(sheet.href || ''));
     const scriptSrcs = Array.from(document.scripts).map((script) => String(script.src || ''));
     const loadStateReady = typeof loadState === 'function';
+    const smokeBootstrapReady = window.__codexbridgeSmokeBootstrapReady === true;
     const serviceState = String(document.getElementById('service-state')?.textContent || '').trim();
-    const loading = !styleLoaded || !scriptLoaded || !loadStateReady
+    const loading = !smokeBootstrapReady || !styleLoaded || !scriptLoaded || !loadStateReady
       || !serviceState || serviceState === '-' || serviceState === '...' || serviceState === '加载中';
     if (loading || missingIds.length > 0) {
       return {
@@ -345,33 +404,29 @@ async function verifyPackagedAdminDom(cdp) {
         scriptLoaded,
         scriptSrcs,
         serviceState,
+        smokeBootstrapReady,
         styleHrefs,
         styleLoaded,
       };
     }
-    window.__codexbridgeSmokeErrors ||= [];
-    if (!window.__codexbridgeSmokeListenersInstalled) {
-      window.__codexbridgeSmokeListenersInstalled = true;
-      window.addEventListener('error', (event) => {
-        window.__codexbridgeSmokeErrors.push(
-          String(event.error && event.error.message || event.message || 'page error'),
-        );
-      });
-      window.addEventListener('unhandledrejection', (event) => {
-        window.__codexbridgeSmokeErrors.push(
-          String(event.reason && event.reason.message || event.reason || 'unhandled rejection'),
-        );
-      });
-    }
     const runtimeLink = document.querySelector('.side-nav a[data-page="runtime"]');
     const refreshButton = document.getElementById('refresh-btn');
+    const requestStart = Array.isArray(window.__codexbridgeSmokeRequests)
+      ? window.__codexbridgeSmokeRequests.length
+      : 0;
     if (runtimeLink) runtimeLink.click();
     if (refreshButton) refreshButton.click();
     const deadline = Date.now() + 5000;
-    while (refreshButton && refreshButton.disabled && Date.now() < deadline) {
+    let refreshRequests = [];
+    while (Date.now() < deadline) {
+      refreshRequests = (window.__codexbridgeSmokeRequests || [])
+        .slice(requestStart)
+        .filter((request) => request.pathname === '/api/state');
+      if (refreshRequests.length > 0 && refreshButton && !refreshButton.disabled) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     const runtimePanel = document.querySelector('[data-page-panel="runtime"]');
+    const messageColor = String(document.getElementById('message')?.style.color || '');
     return {
       activeRuntime: Boolean(runtimePanel && runtimePanel.classList.contains('active')),
       hash: window.location.hash,
@@ -379,11 +434,22 @@ async function verifyPackagedAdminDom(cdp) {
       missingIds,
       pageErrors: window.__codexbridgeSmokeErrors,
       refreshReady: Boolean(refreshButton && !refreshButton.disabled),
+      refreshRequestObserved: refreshRequests.length > 0,
+      refreshSucceeded: refreshRequests.some((request) => request.ok),
+      refreshMessageDanger: messageColor === 'rgb(225, 29, 72)' || messageColor === '#e11d48',
       scriptLoaded,
       serviceState,
+      smokeBootstrapReady,
       styleLoaded,
     };
   })()`);
+    } catch (error) {
+      if (Date.now() >= deadline) {
+        throw error;
+      }
+      await defaultSleep(50);
+      continue;
+    }
     if (!status?.loading) {
       break;
     }
@@ -398,6 +464,8 @@ async function verifyPackagedAdminDom(cdp) {
   if (status?.missingIds?.length) problems.push(`missing controls: ${status.missingIds.join(', ')}`);
   if (!status?.activeRuntime || status?.hash !== '#runtime') problems.push('runtime navigation failed');
   if (!status?.refreshReady) problems.push('refresh control did not settle');
+  if (!status?.refreshRequestObserved) problems.push('refresh did not request current state');
+  if (!status?.refreshSucceeded || status?.refreshMessageDanger) problems.push('refresh request failed');
   if (!status?.serviceState || status.serviceState === '-' || status.serviceState === '...') {
     problems.push('service state is still loading');
   }

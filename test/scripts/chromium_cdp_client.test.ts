@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws';
 type CdpClient = {
   close: () => Promise<void>;
   evaluate: (expression: string) => Promise<unknown>;
+  send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
 };
 
 async function createServer(
@@ -69,6 +70,23 @@ test('CDP client propagates protocol errors', async () => {
   const client = await connectCdp({ endpointUrl: server.endpointUrl, timeoutMs: 1_000 });
   try {
     await assert.rejects(client.evaluate('blocked'), /evaluation denied/u);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+test('CDP client exposes bounded generic commands for page setup', async () => {
+  const { connectCdp } = await loadClient();
+  const server = await createServer((socket, message) => {
+    socket.send(JSON.stringify({ id: message.id, result: { identifier: 'bootstrap-script' } }));
+  });
+  const client = await connectCdp({ endpointUrl: server.endpointUrl, timeoutMs: 1_000 });
+  try {
+    assert.deepEqual(
+      await client.send('Page.addScriptToEvaluateOnNewDocument', { source: 'setup()' }),
+      { identifier: 'bootstrap-script' },
+    );
   } finally {
     await client.close();
     await server.close();

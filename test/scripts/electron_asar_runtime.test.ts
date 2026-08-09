@@ -35,6 +35,12 @@ type PackagedSmokeModule = typeof packagedSmoke & {
     fetchFn: typeof fetch,
     baseUrl: string,
   ) => Promise<{ scriptStatus: number; styleStatus: number } | null>;
+  verifyPackagedAdminDom?: (
+    cdp: {
+      evaluate: (expression: string) => Promise<unknown>;
+      send: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+    },
+  ) => Promise<void>;
 };
 
 test('release and Electron staging rebuild and check Weixin admin browser assets', () => {
@@ -243,8 +249,100 @@ test('packaged smoke drives the real admin DOM through loopback-only CDP', () =>
   assert.match(smokeSource, /`--remote-debugging-port=\$\{debugPort\}`/u);
   assert.match(smokeSource, /['"]--smoke-test-ui['"]/u);
   assert.match(smokeSource, /domStatus:\s*['"]ok['"]/u);
+  assert.match(smokeSource, /Page\.addScriptToEvaluateOnNewDocument/u);
+  assert.match(smokeSource, /Page\.reload/u);
+  for (const requiredId of [
+    'accounts-body',
+    'provider-model',
+    'update-check',
+    'sessions-body',
+    'logs-box',
+    'settings-save',
+    'setup-refresh',
+  ]) {
+    assert.match(smokeSource, new RegExp(`['"]${requiredId}['"]`, 'u'), requiredId);
+  }
   assert.match(mainSource, /const smokeTestUi\s*=\s*Boolean\(args\.smokeTestUi\)/u);
   assert.match(mainSource, /smokeTest\s*&&\s*!smokeTestUi/u);
+});
+
+test('packaged DOM smoke reloads with initialization error capture installed', async () => {
+  const { verifyPackagedAdminDom } = packagedSmoke as PackagedSmokeModule;
+  assert.equal(typeof verifyPackagedAdminDom, 'function');
+  const commands: string[] = [];
+  const cdp = {
+    evaluate: async () => ({
+      activeRuntime: true,
+      hash: '#runtime',
+      loadStateReady: true,
+      loading: false,
+      missingIds: [],
+      pageErrors: ['initialization exploded'],
+      refreshReady: true,
+      refreshRequestObserved: true,
+      refreshSucceeded: true,
+      scriptLoaded: true,
+      serviceState: 'running',
+      smokeBootstrapReady: true,
+      styleLoaded: true,
+    }),
+    send: async (method: string) => {
+      commands.push(method);
+      return {};
+    },
+  };
+
+  await assert.rejects(verifyPackagedAdminDom!(cdp), /initialization exploded/u);
+  assert.deepEqual(commands.slice(0, 3), [
+    'Page.enable',
+    'Page.addScriptToEvaluateOnNewDocument',
+    'Page.reload',
+  ]);
+});
+
+test('packaged smoke removes temporary state when spawning throws synchronously', async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-smoke-root-'));
+  const executable = packagedSmoke.packagedExecutablePath(rootDir);
+  const resourcesDir = path.join(rootDir, 'release', 'win-unpacked', 'resources');
+  const requiredFiles = [
+    path.join('release', 'win-unpacked', 'CodexBridge Weixin Admin.exe'),
+    path.join('release', 'win-unpacked', 'resources', 'app.asar'),
+    path.join('release', 'win-unpacked', 'resources', 'runtime', 'node', 'node.exe'),
+    path.join('release', 'win-unpacked', 'resources', 'runtime-app', 'scripts', 'service', 'run-weixin-service.mjs'),
+    path.join('release', 'win-unpacked', 'resources', 'runtime-app', 'src', 'cli.ts'),
+    path.join('release', 'win-unpacked', 'resources', 'runtime-app', 'node_modules', 'tsx', 'dist', 'loader.mjs'),
+    path.join('release', 'win-unpacked', 'resources', 'runtime-app', 'assets', 'weixin-admin', 'admin.css'),
+    path.join('release', 'win-unpacked', 'resources', 'runtime-app', 'assets', 'weixin-admin', 'admin.js'),
+  ];
+  for (const relativePath of requiredFiles) {
+    const target = path.join(rootDir, relativePath);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, 'test', 'utf8');
+  }
+  assert.equal(fs.existsSync(executable), true);
+  assert.equal(fs.existsSync(resourcesDir), true);
+
+  const prefix = 'codexbridge-release-smoke-';
+  const before = new Set(fs.readdirSync(os.tmpdir()).filter((entry) => entry.startsWith(prefix)));
+  let created: string[] = [];
+  try {
+    await assert.rejects(
+      packagedSmoke.runPackagedSmoke({
+        rootDir,
+        spawnFn: (() => { throw new Error('spawn failed synchronously'); }) as never,
+      }),
+      /spawn failed synchronously/u,
+    );
+    created = fs.readdirSync(os.tmpdir()).filter(
+      (entry) => entry.startsWith(prefix) && !before.has(entry),
+    );
+    assert.deepEqual(created, []);
+  } finally {
+    for (const entry of created) {
+      fs.rmSync(path.join(os.tmpdir(), entry), { recursive: true, force: true });
+    }
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
 });
 
 test('packaged smoke loads and validates both Weixin admin assets', async () => {

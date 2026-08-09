@@ -105,6 +105,9 @@ export async function connectCdp({ endpointUrl, timeoutMs = 5_000 }) {
       }
       return response?.result?.value;
     },
+    send(method, params = {}) {
+      return command(method, params);
+    },
   };
 }
 
