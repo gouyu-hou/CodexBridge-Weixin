@@ -416,6 +416,10 @@ export async function verifyPackagedAdminDom(cdp) {
       : 0;
     if (runtimeLink) runtimeLink.click();
     if (refreshButton) refreshButton.click();
+    const refreshEnteredBusy = Boolean(
+      refreshButton
+      && (refreshButton.disabled || refreshButton.classList.contains('refreshing')),
+    );
     const deadline = Date.now() + 5000;
     let refreshRequests = [];
     while (Date.now() < deadline) {
@@ -433,6 +437,7 @@ export async function verifyPackagedAdminDom(cdp) {
       loadStateReady,
       missingIds,
       pageErrors: window.__codexbridgeSmokeErrors,
+      refreshEnteredBusy,
       refreshReady: Boolean(refreshButton && !refreshButton.disabled),
       refreshRequestObserved: refreshRequests.length > 0,
       refreshSucceeded: refreshRequests.some((request) => request.ok),
@@ -463,6 +468,7 @@ export async function verifyPackagedAdminDom(cdp) {
   if (!status?.scriptLoaded || !status?.loadStateReady) problems.push('admin script is not running');
   if (status?.missingIds?.length) problems.push(`missing controls: ${status.missingIds.join(', ')}`);
   if (!status?.activeRuntime || status?.hash !== '#runtime') problems.push('runtime navigation failed');
+  if (!status?.refreshEnteredBusy) problems.push('refresh did not enter busy state');
   if (!status?.refreshReady) problems.push('refresh control did not settle');
   if (!status?.refreshRequestObserved) problems.push('refresh did not request current state');
   if (!status?.refreshSucceeded || status?.refreshMessageDanger) problems.push('refresh request failed');

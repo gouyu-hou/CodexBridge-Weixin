@@ -278,6 +278,7 @@ test('packaged DOM smoke reloads with initialization error capture installed', a
       loading: false,
       missingIds: [],
       pageErrors: ['initialization exploded'],
+      refreshEnteredBusy: true,
       refreshReady: true,
       refreshRequestObserved: true,
       refreshSucceeded: true,
@@ -298,6 +299,32 @@ test('packaged DOM smoke reloads with initialization error capture installed', a
     'Page.addScriptToEvaluateOnNewDocument',
     'Page.reload',
   ]);
+});
+
+test('packaged DOM smoke rejects an unrelated state poll as refresh evidence', async () => {
+  const { verifyPackagedAdminDom } = packagedSmoke as PackagedSmokeModule;
+  assert.equal(typeof verifyPackagedAdminDom, 'function');
+  const cdp = {
+    evaluate: async () => ({
+      activeRuntime: true,
+      hash: '#runtime',
+      loadStateReady: true,
+      loading: false,
+      missingIds: [],
+      pageErrors: [],
+      refreshEnteredBusy: false,
+      refreshReady: true,
+      refreshRequestObserved: true,
+      refreshSucceeded: true,
+      scriptLoaded: true,
+      serviceState: 'running',
+      smokeBootstrapReady: true,
+      styleLoaded: true,
+    }),
+    send: async () => ({}),
+  };
+
+  await assert.rejects(verifyPackagedAdminDom!(cdp), /busy state/u);
 });
 
 test('packaged smoke removes temporary state when spawning throws synchronously', async () => {
