@@ -50,7 +50,7 @@ test('release and Electron staging rebuild and check Weixin admin browser assets
 
   assert.match(
     packageJson.scripts?.['verify:release'] || '',
-    /^npm run weixin:admin:build && npm run weixin:admin:typecheck && npm run typecheck/u,
+    /^npm run weixin:admin:build && git diff --exit-code -- assets\/weixin-admin\/admin\.js && npm run weixin:admin:typecheck && npm run typecheck/u,
   );
   assert.equal(
     packageJson.scripts?.['weixin:electron:prepare-runtime'],
@@ -280,6 +280,7 @@ test('packaged DOM smoke reloads with initialization error capture installed', a
       pageErrors: ['initialization exploded'],
       refreshEnteredBusy: true,
       refreshReady: true,
+      refreshRequestStartedImmediately: true,
       refreshRequestObserved: true,
       refreshSucceeded: true,
       scriptLoaded: true,
@@ -312,8 +313,9 @@ test('packaged DOM smoke rejects an unrelated state poll as refresh evidence', a
       loading: false,
       missingIds: [],
       pageErrors: [],
-      refreshEnteredBusy: false,
+      refreshEnteredBusy: true,
       refreshReady: true,
+      refreshRequestStartedImmediately: false,
       refreshRequestObserved: true,
       refreshSucceeded: true,
       scriptLoaded: true,
@@ -324,7 +326,7 @@ test('packaged DOM smoke rejects an unrelated state poll as refresh evidence', a
     send: async () => ({}),
   };
 
-  await assert.rejects(verifyPackagedAdminDom!(cdp), /busy state/u);
+  await assert.rejects(verifyPackagedAdminDom!(cdp), /start a state request/u);
 });
 
 test('packaged smoke removes temporary state when spawning throws synchronously', async () => {

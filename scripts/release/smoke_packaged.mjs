@@ -346,12 +346,16 @@ export async function verifyPackagedAdminDom(cdp) {
         try {
           pathname = new URL(rawUrl, window.location.href).pathname;
         } catch {}
+        const request = { ok: null, pathname, status: null };
+        window.__codexbridgeSmokeRequests.push(request);
         try {
           const response = await originalFetch(...args);
-          window.__codexbridgeSmokeRequests.push({ ok: response.ok, pathname, status: response.status });
+          request.ok = response.ok;
+          request.status = response.status;
           return response;
         } catch (error) {
-          window.__codexbridgeSmokeRequests.push({ ok: false, pathname, status: 0 });
+          request.ok = false;
+          request.status = 0;
           throw error;
         }
       };
@@ -420,6 +424,9 @@ export async function verifyPackagedAdminDom(cdp) {
       refreshButton
       && (refreshButton.disabled || refreshButton.classList.contains('refreshing')),
     );
+    const refreshRequestStartedImmediately = (window.__codexbridgeSmokeRequests || [])
+      .slice(requestStart)
+      .some((request) => request.pathname === '/api/state');
     const deadline = Date.now() + 5000;
     let refreshRequests = [];
     while (Date.now() < deadline) {
@@ -439,6 +446,7 @@ export async function verifyPackagedAdminDom(cdp) {
       pageErrors: window.__codexbridgeSmokeErrors,
       refreshEnteredBusy,
       refreshReady: Boolean(refreshButton && !refreshButton.disabled),
+      refreshRequestStartedImmediately,
       refreshRequestObserved: refreshRequests.length > 0,
       refreshSucceeded: refreshRequests.some((request) => request.ok),
       refreshMessageDanger: messageColor === 'rgb(225, 29, 72)' || messageColor === '#e11d48',
@@ -469,6 +477,7 @@ export async function verifyPackagedAdminDom(cdp) {
   if (status?.missingIds?.length) problems.push(`missing controls: ${status.missingIds.join(', ')}`);
   if (!status?.activeRuntime || status?.hash !== '#runtime') problems.push('runtime navigation failed');
   if (!status?.refreshEnteredBusy) problems.push('refresh did not enter busy state');
+  if (!status?.refreshRequestStartedImmediately) problems.push('refresh did not start a state request');
   if (!status?.refreshReady) problems.push('refresh control did not settle');
   if (!status?.refreshRequestObserved) problems.push('refresh did not request current state');
   if (!status?.refreshSucceeded || status?.refreshMessageDanger) problems.push('refresh request failed');
