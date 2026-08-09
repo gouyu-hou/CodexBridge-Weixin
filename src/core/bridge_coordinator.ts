@@ -30,6 +30,7 @@ import {
   scorePluginTokenAgainstField,
   type PluginSearchSynonymGroups,
 } from './plugin_search_text.js';
+import { resolvePluginsCommand } from './plugin_command.js';
 import { parseSlashCommand } from './command_parser.js';
 import { parseJsonObject } from './json_object_parser.js';
 import {
@@ -8405,7 +8406,6 @@ export class BridgeCoordinator {
 
   async handlePluginsCommand(event, args = []) {
     const scopeRef = toScopeRef(event);
-    const normalizedArgs = Array.isArray(args) ? args.map((value) => String(value ?? '').trim()).filter(Boolean) : [];
     const session = this.resolveSessionForEvent(scopeRef, event);
     const providerProfile = session
       ? this.requireProviderProfile(session.providerProfileId)
@@ -8418,36 +8418,34 @@ export class BridgeCoordinator {
         ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
       }
 
-      const subcommand = String(normalizedArgs[0] ?? '').trim().toLowerCase();
-      if (!subcommand || subcommand === 'default' || subcommand === 'featured') {
-        return await this.handlePluginsFeaturedCommand(event, providerProfile);
+      const decision = resolvePluginsCommand(args);
+      switch (decision.kind) {
+        case 'featured':
+          return await this.handlePluginsFeaturedCommand(event, providerProfile);
+        case 'reload':
+          return await this.handlePluginsReloadCommand(event, providerProfile);
+        case 'alias':
+          return await this.handlePluginsAliasCommand(event, providerProfile, decision.args);
+        case 'category_summary':
+          return await this.handlePluginsCategorySummaryCommand(event, providerProfile);
+        case 'category_items':
+          return await this.handlePluginsCategoryItemsCommand(
+            event,
+            providerProfile,
+            decision.categoryToken,
+            decision.pageToken,
+          );
+        case 'search':
+          return await this.handlePluginsSearchCommand(event, providerProfile, decision.args);
+        case 'show':
+          return await this.handlePluginsShowCommand(event, providerProfile, decision.token);
+        case 'install':
+          return await this.handlePluginsInstallCommand(event, providerProfile, decision.token);
+        case 'uninstall':
+          return await this.handlePluginsUninstallCommand(event, providerProfile, decision.token);
+        case 'help':
+          return await this.handleHelpsCommand(event, ['plugins']);
       }
-      if (subcommand === 'reload') {
-        return await this.handlePluginsReloadCommand(event, providerProfile);
-      }
-      if (subcommand === 'alias' || subcommand === 'aliases') {
-        return await this.handlePluginsAliasCommand(event, providerProfile, normalizedArgs.slice(1));
-      }
-      if (subcommand === 'list') {
-        const categoryToken = String(normalizedArgs[1] ?? '').trim();
-        const pageToken = String(normalizedArgs[2] ?? '').trim();
-        return categoryToken
-          ? await this.handlePluginsCategoryItemsCommand(event, providerProfile, categoryToken, pageToken)
-          : await this.handlePluginsCategorySummaryCommand(event, providerProfile);
-      }
-      if (subcommand === 'search' || subcommand === 'find') {
-        return await this.handlePluginsSearchCommand(event, providerProfile, normalizedArgs.slice(1));
-      }
-      if (subcommand === 'show') {
-        return await this.handlePluginsShowCommand(event, providerProfile, normalizedArgs.slice(1).join(' '));
-      }
-      if (subcommand === 'add' || subcommand === 'install') {
-        return await this.handlePluginsInstallCommand(event, providerProfile, normalizedArgs.slice(1).join(' '));
-      }
-      if (subcommand === 'del' || subcommand === 'uninstall' || subcommand === 'remove' || subcommand === 'rm') {
-        return await this.handlePluginsUninstallCommand(event, providerProfile, normalizedArgs.slice(1).join(' '));
-      }
-      return await this.handleHelpsCommand(event, ['plugins']);
     } catch (error) {
       return messageResponse([
         this.t('coordinator.plugins.failed', { error: formatUserError(error) }),
