@@ -12,6 +12,7 @@ import {
   renderAllowLines,
   renderApprovalPromptLines,
 } from './approval_command.js';
+import { resolveAppsCommand } from './app_command.js';
 import { isAgentCommandEnabled } from './command_availability.js';
 import {
   COMMAND_CANONICAL_NAME_MAP,
@@ -8154,7 +8155,6 @@ export class BridgeCoordinator {
 
   async handleAppsCommand(event, args = []) {
     const scopeRef = toScopeRef(event);
-    const normalizedArgs = Array.isArray(args) ? args.map((value) => String(value ?? '').trim()).filter(Boolean) : [];
     const session = this.resolveSessionForEvent(scopeRef, event);
     const providerProfile = session
       ? this.requireProviderProfile(session.providerProfileId)
@@ -8167,44 +8167,24 @@ export class BridgeCoordinator {
         ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
       }
 
-      const subcommand = String(normalizedArgs[0] ?? '').trim().toLowerCase();
-      if (!subcommand || subcommand === 'default') {
-        return await this.handleAppsListCommand(event, providerProfile, {
-          mode: 'default',
-        });
+      const decision = resolveAppsCommand(args);
+      switch (decision.kind) {
+        case 'list':
+          return await this.handleAppsListCommand(event, providerProfile, {
+            mode: decision.mode,
+            pageToken: decision.pageToken,
+          });
+        case 'search':
+          return await this.handleAppsSearchCommand(event, providerProfile, decision.searchTerm);
+        case 'show':
+          return await this.handleAppsShowCommand(event, providerProfile, decision.token);
+        case 'toggle':
+          return await this.handleAppsToggleCommand(event, providerProfile, decision.token, decision.enabled);
+        case 'auth':
+          return await this.handleAppsAuthCommand(event, providerProfile, decision.token);
+        case 'help':
+          return await this.handleHelpsCommand(event, ['apps']);
       }
-      if (subcommand === 'list') {
-        return await this.handleAppsListCommand(event, providerProfile, {
-          pageToken: normalizedArgs[1],
-        });
-      }
-      if (parsePositiveIntegerToken(subcommand) !== null) {
-        return await this.handleAppsListCommand(event, providerProfile, {
-          pageToken: subcommand,
-        });
-      }
-      if (subcommand === 'all') {
-        return await this.handleAppsListCommand(event, providerProfile, {
-          mode: 'all',
-          pageToken: normalizedArgs[1],
-        });
-      }
-      if (subcommand === 'search') {
-        return await this.handleAppsSearchCommand(event, providerProfile, normalizedArgs.slice(1).join(' '));
-      }
-      if (subcommand === 'show') {
-        return await this.handleAppsShowCommand(event, providerProfile, normalizedArgs.slice(1).join(' '));
-      }
-      if (subcommand === 'on' || subcommand === 'enable') {
-        return await this.handleAppsToggleCommand(event, providerProfile, normalizedArgs.slice(1).join(' '), true);
-      }
-      if (subcommand === 'off' || subcommand === 'disable') {
-        return await this.handleAppsToggleCommand(event, providerProfile, normalizedArgs.slice(1).join(' '), false);
-      }
-      if (subcommand === 'auth') {
-        return await this.handleAppsAuthCommand(event, providerProfile, normalizedArgs.slice(1).join(' '));
-      }
-      return await this.handleHelpsCommand(event, ['apps']);
     } catch (error) {
       return messageResponse([
         this.t('coordinator.apps.failed', { error: formatUserError(error) }),
