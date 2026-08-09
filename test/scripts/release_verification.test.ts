@@ -141,6 +141,15 @@ test('CI builds the Web console and its README matches the implemented surface',
   ) as {
     scripts?: Record<string, string>;
   };
+  const clientStrictConfig = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'apps', 'web', 'tsconfig.client-strict.json'), 'utf8'),
+  ) as {
+    compilerOptions?: {
+      incremental?: boolean;
+      strict?: boolean;
+    };
+    include?: string[];
+  };
   const rootPackage = JSON.parse(
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
   ) as { scripts?: Record<string, string> };
@@ -157,12 +166,22 @@ test('CI builds the Web console and its README matches the implemented surface',
   assert.match(rootPackage.scripts?.['verify:release'] ?? '', /npm run web:verify/u);
   assert.equal(
     rootPackage.scripts?.['web:verify'],
-    'npm run web:typecheck:server-strict && npm run web:typecheck && npm run web:build',
+    'npm run web:typecheck:server-strict && npm run web:typecheck:client-strict && npm run web:typecheck && npm run web:build',
   );
   assert.equal(webPackage.scripts?.typecheck, 'tsc --noEmit');
+  assert.match(webPackage.scripts?.['typecheck:client-strict'] ?? '', /tsconfig\.client-strict\.json/u);
   assert.match(webPackage.scripts?.['typecheck:server-strict'] ?? '', /tsconfig\.server-strict\.json/u);
+  assert.equal(clientStrictConfig.compilerOptions?.strict, true);
+  assert.equal(clientStrictConfig.compilerOptions?.incremental, false);
+  assert.deepEqual(clientStrictConfig.include, [
+    'components/**/*.ts',
+    'components/**/*.tsx',
+    'hooks/**/*.ts',
+    'hooks/**/*.tsx',
+  ]);
   assert.match(webPackage.scripts?.build ?? '', /scripts\/next-build\.mjs/u);
   assert.match(webPnpmConfig, /allowBuilds:[\s\S]*sharp:\s*true/u);
+  assert.match(readme, /typecheck:client-strict/u);
   for (const route of ['/login', '/sessions', '/automations', '/runtime', '/api/codex-threads']) {
     assert.match(readme, new RegExp(escapeRegExp(route), 'u'), route);
   }

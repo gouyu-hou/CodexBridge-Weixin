@@ -60,6 +60,7 @@ From the repository root:
 ```bash
 pnpm --dir apps/web install --frozen-lockfile
 pnpm --dir apps/web typecheck:server-strict
+pnpm --dir apps/web typecheck:client-strict
 pnpm --dir apps/web typecheck
 pnpm --dir apps/web build
 ```
@@ -75,8 +76,8 @@ pnpm web:start
 The Web package is a pnpm workspace containing `@codexbridge/web-runtime`.
 Production builds compile that package before Next.js and keep dynamic state
 file access outside Next.js output tracing. CI runs the frozen-lockfile install,
-strict server check, complete typecheck, and production build on Ubuntu and
-Windows.
+strict server and client checks, complete typecheck, and production build on
+Ubuntu and Windows.
 
 ## Routes
 

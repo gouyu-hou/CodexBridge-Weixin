@@ -8,6 +8,7 @@
     "build": "pnpm --filter @codexbridge/web-runtime build && node scripts/next-build.mjs",
     "start": "next start --hostname 0.0.0.0 --port 58888",
     "typecheck": "tsc --noEmit",
+    "typecheck:client-strict": "tsc -p tsconfig.client-strict.json --noEmit",
     "typecheck:server-strict": "pnpm --filter @codexbridge/web-runtime typecheck && tsc -p tsconfig.server-strict.json --noEmit"
   },
   "dependencies": {

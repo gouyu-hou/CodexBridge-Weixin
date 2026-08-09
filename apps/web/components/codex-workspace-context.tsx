@@ -412,6 +412,7 @@ export function CodexWorkspaceProvider({
       throw new Error((payload?.error && String(payload.error).trim()) || '创建会话失败');
     }
 
+    const threadId = payload.threadId;
     const nextCwd = payload.cwd?.trim() || cwd || null;
     const optimisticThreadTitle = '新聊天';
     const optimisticFolderLabel = nextCwd
@@ -421,16 +422,16 @@ export function CodexWorkspaceProvider({
       setLastActiveCwd(nextCwd);
       window.localStorage.setItem(LAST_ACTIVE_CWD_STORAGE_KEY, nextCwd);
     }
-    setLastActiveThreadId(payload.threadId);
-    window.localStorage.setItem(LAST_ACTIVE_THREAD_STORAGE_KEY, payload.threadId);
+    setLastActiveThreadId(threadId);
+    window.localStorage.setItem(LAST_ACTIVE_THREAD_STORAGE_KEY, threadId);
     window.sessionStorage.setItem(PENDING_CREATED_THREAD_STORAGE_KEY, JSON.stringify({
       cwd: nextCwd,
-      threadId: payload.threadId,
+      threadId,
       title: optimisticThreadTitle,
       updatedAtLabel: '刚刚',
     }));
     setThreads((current) => {
-      if (current.some((entry) => entry.threadId === payload.threadId)) {
+      if (current.some((entry) => entry.threadId === threadId)) {
         return current;
       }
       return [
@@ -441,12 +442,12 @@ export function CodexWorkspaceProvider({
           folderLabel: optimisticFolderLabel,
           folderPinned: false,
           folderRemoved: false,
-          href: `/sessions/codex/${encodeURIComponent(payload.threadId)}`,
+          href: `/sessions/codex/${encodeURIComponent(threadId)}`,
           isArchived: false,
           isPinned: false,
           linkedBridgeSessionCount: 1,
           linkedBridgeSessionId: null,
-          threadId: payload.threadId,
+          threadId,
           title: optimisticThreadTitle,
           updatedAt: Date.now(),
           updatedAtLabel: '刚刚',
@@ -457,7 +458,7 @@ export function CodexWorkspaceProvider({
     void refreshThreads();
     return {
       cwd: nextCwd,
-      threadId: payload.threadId,
+      threadId,
     };
   }, [preferredLaunchCwd, refreshThreads]);
 

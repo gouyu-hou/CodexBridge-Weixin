@@ -270,7 +270,7 @@ export function CodexThreadMessages({
       return;
     }
 
-    function commitScrollState() {
+    const commitScrollState = () => {
       const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
       pinnedRef.current = distanceFromBottom < 48;
       const roundedScrollTop = Math.round(viewport.scrollTop / 12) * 12;
@@ -280,7 +280,7 @@ export function CodexThreadMessages({
       if (pinnedRef.current) {
         setHasQueuedNewerMessages((current) => (current ? false : current));
       }
-    }
+    };
 
     function updatePinnedState() {
       if (scrollUpdateFrameRef.current !== null) {
