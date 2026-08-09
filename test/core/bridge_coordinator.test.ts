@@ -8792,7 +8792,10 @@ test('/review natural language can reject execution requests and avoids starting
   });
 
   assert.equal(openai.startReviewCalls.length, 0);
-  assert.match(result.messages[0]?.text ?? '', /应该使用 \/agent/);
+  assert.equal(
+    result.messages[0]?.text ?? '',
+    '这是执行或修复请求，不是只读审查。当前后台执行命令已隐藏，请直接用普通消息描述你要完成的目标。',
+  );
 });
 
 // /agent is frozen and hidden in production. Keep legacy integration tests
