@@ -37,6 +37,21 @@ type PackagedSmokeModule = typeof packagedSmoke & {
   ) => Promise<{ scriptStatus: number; styleStatus: number } | null>;
 };
 
+test('release and Electron staging rebuild and check Weixin admin browser assets', () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+  ) as { scripts?: Record<string, string> };
+
+  assert.match(
+    packageJson.scripts?.['verify:release'] || '',
+    /^npm run weixin:admin:build && npm run weixin:admin:typecheck && npm run typecheck/u,
+  );
+  assert.equal(
+    packageJson.scripts?.['weixin:electron:prepare-runtime'],
+    'npm run weixin:admin:build && node scripts/electron/prepare-windows-runtime.cjs',
+  );
+});
+
 test('Electron build stores the staged service runtime outside ASAR', () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
