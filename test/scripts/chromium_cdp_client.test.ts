@@ -18,9 +18,11 @@ async function createServer(
     });
   });
   const address = server.address();
-  assert.equal(typeof address, 'object');
+  if (!address || typeof address === 'string') {
+    throw new Error('fake CDP WebSocket server did not bind a TCP port');
+  }
   return {
-    endpointUrl: `ws://127.0.0.1:${address!.port}`,
+    endpointUrl: `ws://127.0.0.1:${address.port}`,
     close: () => new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
     }),
