@@ -8764,38 +8764,37 @@ test('/review custom output follows locale and stays English when locale is en',
 });
 
 test('/review natural language can reject execution requests and avoids starting review', async () => {
-  const { runtime, openai } = makeRuntime({
-    defaultCwd: '/tmp/openai-default',
-  });
-  const originalStartTurn = openai.startTurn.bind(openai);
-  openai.startTurn = async (params: any) => {
-    const parserInput = normalizeCommandSkillInput(params?.inputText);
-    if (parserInput.includes('docs/command-skills/review.md') && parserInput.includes('"command": "review"')) {
-      return {
-        outputText: JSON.stringify({
-          schemaVersion: 'codexbridge.review-command-skill.v1',
-          ok: false,
-          action: 'reject',
-          confidence: 0.98,
-          requiresConfirmation: false,
-          reason: '这是执行或修复请求，不是只读审查。应该使用 /agent。',
-        }),
-      };
-    }
-    return originalStartTurn(params);
-  };
+  await withEnvOverride('CODEXBRIDGE_ENABLE_AGENT_COMMAND', '1', async () => {
+    const { runtime, openai } = makeRuntime({
+      defaultCwd: '/tmp/openai-default',
+    });
+    const originalStartTurn = openai.startTurn.bind(openai);
+    openai.startTurn = async (params: any) => {
+      const parserInput = normalizeCommandSkillInput(params?.inputText);
+      if (parserInput.includes('docs/command-skills/review.md') && parserInput.includes('"command": "review"')) {
+        return {
+          outputText: JSON.stringify({
+            schemaVersion: 'codexbridge.review-command-skill.v1',
+            ok: false,
+            action: 'reject',
+            confidence: 0.98,
+            requiresConfirmation: false,
+            reason: '这是执行或修复请求，不是只读审查。应该使用 /agent。',
+          }),
+        };
+      }
+      return originalStartTurn(params);
+    };
 
-  const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
-    platform: 'weixin',
-    externalScopeId: 'wx-user-review-reject-1',
-    text: '/review 顺手把发现的问题也修了',
-  });
+    const result = await runtime.services.bridgeCoordinator.handleInboundEvent({
+      platform: 'weixin',
+      externalScopeId: 'wx-user-review-reject-1',
+      text: '/review 顺手把发现的问题也修了',
+    });
 
-  assert.equal(openai.startReviewCalls.length, 0);
-  assert.equal(
-    result.messages[0]?.text ?? '',
-    '这是执行或修复请求，不是只读审查。当前后台执行命令已隐藏，请直接用普通消息描述你要完成的目标。',
-  );
+    assert.equal(openai.startReviewCalls.length, 0);
+    assert.equal(result.messages[0]?.text ?? '', '这是执行或修复请求，不是只读审查。应该使用 /agent。');
+  });
 });
 
 // /agent is frozen and hidden in production. Keep legacy integration tests
