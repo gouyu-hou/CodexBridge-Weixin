@@ -6,6 +6,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFileSync } from 'node:child_process';
 import { formatPlatformScopeKey } from './contracts.js';
 import { buildActiveTurnDeliveryKey } from './active_turn_delivery.js';
+import { resolveAutomationCommand } from './automation_command.js';
 import {
   parseAllowCommandArgs,
   renderAllowAcknowledgementLines,
@@ -9847,46 +9848,37 @@ export class BridgeCoordinator {
       ], this.buildScopedSessionMeta(event));
     }
     const scopeRef = toScopeRef(event);
-    const normalizedArgs = Array.isArray(args) ? args.map((value) => String(value ?? '').trim()) : [];
-    const subcommand = String(normalizedArgs[0] ?? '').trim().toLowerCase();
-    if (!subcommand) {
-      const pendingOperation = this.getPendingAutomationOperation(scopeRef);
-      if (pendingOperation) {
-        return this.renderAutomationPendingOperationResponse(event, pendingOperation);
+    const decision = resolveAutomationCommand(args);
+    switch (decision.kind) {
+      case 'default': {
+        const pendingOperation = this.getPendingAutomationOperation(scopeRef);
+        return pendingOperation
+          ? this.renderAutomationPendingOperationResponse(event, pendingOperation)
+          : this.handleAutomationListCommand(event);
       }
-      return this.handleAutomationListCommand(event);
+      case 'confirm':
+        return this.handleAutomationConfirmCommand(event);
+      case 'edit':
+        return this.handleAutomationEditCommand(event);
+      case 'cancel':
+        return this.handleAutomationCancelCommand(event);
+      case 'list':
+        return this.handleAutomationListCommand(event);
+      case 'show':
+        return this.handleAutomationShowCommand(event, decision.token);
+      case 'pause':
+        return this.handleAutomationPauseCommand(event, decision.token);
+      case 'resume':
+        return this.handleAutomationResumeCommand(event, decision.token);
+      case 'delete':
+        return this.handleAutomationDeleteCommand(event, decision.token);
+      case 'rename':
+        return this.handleAutomationRenameCommand(event, decision.token, extractAutomationRenameTitle(event.text));
+      case 'add':
+        return this.handleAutomationAddCommand(event);
+      case 'natural':
+        return this.handleAutomationNaturalCommand(event);
     }
-    if (['confirm'].includes(subcommand)) {
-      return this.handleAutomationConfirmCommand(event);
-    }
-    if (['edit'].includes(subcommand)) {
-      return this.handleAutomationEditCommand(event);
-    }
-    if (['cancel'].includes(subcommand)) {
-      return this.handleAutomationCancelCommand(event);
-    }
-    if (['list'].includes(subcommand)) {
-      return this.handleAutomationListCommand(event);
-    }
-    if (['show'].includes(subcommand)) {
-      return this.handleAutomationShowCommand(event, normalizedArgs[1] ?? '');
-    }
-    if (['pause'].includes(subcommand)) {
-      return this.handleAutomationPauseCommand(event, normalizedArgs[1] ?? '');
-    }
-    if (['resume'].includes(subcommand)) {
-      return this.handleAutomationResumeCommand(event, normalizedArgs[1] ?? '');
-    }
-    if (['delete', 'del'].includes(subcommand)) {
-      return this.handleAutomationDeleteCommand(event, normalizedArgs[1] ?? '');
-    }
-    if (['rename'].includes(subcommand)) {
-      return this.handleAutomationRenameCommand(event, normalizedArgs[1] ?? '', extractAutomationRenameTitle(event.text));
-    }
-    if (['add'].includes(subcommand)) {
-      return this.handleAutomationAddCommand(event);
-    }
-    return this.handleAutomationNaturalCommand(event);
   }
 
   async handleWeiboCommand(event, args = []) {
