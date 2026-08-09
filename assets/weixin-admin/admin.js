@@ -1,5 +1,8 @@
-    const ADMIN_TOKEN = document.querySelector('meta[name="codexbridge-admin-token"]')?.content || '';
+    const ADMIN_TOKEN = /** @type {HTMLMetaElement | null} */ (
+      document.querySelector('meta[name="codexbridge-admin-token"]')
+    )?.content || '';
     const queryParams = new URLSearchParams(window.location.search);
+    /** @type {AdminState} */
     const state = {
       pairingTimer: null,
       shutdownOnClose: queryParams.get('shutdownOnClose') !== '0',
@@ -25,7 +28,17 @@
       providerUsageProfileId: '',
       providerProfiles: []
     };
-    const $ = (id) => document.getElementById(id);
+    /**
+     * @param {string} id
+     * @returns {AdminElement}
+     */
+    const $ = (id) => {
+      const element = document.getElementById(id);
+      if (!element) {
+        throw new Error('Missing Weixin admin element: ' + id);
+      }
+      return /** @type {AdminElement} */ (element);
+    };
     const THEME_STORAGE_KEY = 'codexbridge-admin-theme';
 
     function normalizeThemeMode(mode) {
@@ -244,8 +257,12 @@
 
     function showPage(page) {
       const target = String(page || 'overview').replace(/^#/, '') || 'overview';
-      const links = Array.from(document.querySelectorAll('.side-nav a[data-page]'));
-      const panels = Array.from(document.querySelectorAll('[data-page-panel]'));
+      const links = Array.from(/** @type {NodeListOf<HTMLElement>} */ (
+        document.querySelectorAll('.side-nav a[data-page]')
+      ));
+      const panels = Array.from(/** @type {NodeListOf<HTMLElement>} */ (
+        document.querySelectorAll('[data-page-panel]')
+      ));
       const known = panels.some((panel) => panel.dataset.pagePanel === target);
       const next = known ? target : 'overview';
       for (const link of links) {
@@ -334,7 +351,13 @@
       $('import-message').textContent = '';
     }
 
-    async function requestJson(url, options) {
+    /**
+     * @template {AdminJson} T
+     * @param {string} url
+     * @param {AdminRequestOptions} [options]
+     * @returns {Promise<T>}
+     */
+    async function requestJson(url, options = {}) {
       const requestedHeaders = (options && options.headers) || {};
       const res = await fetch(url, {
         ...options,
@@ -344,7 +367,9 @@
           ...requestedHeaders
         }
       });
-      const data = await res.json().catch(() => ({}));
+      const data = /** @type {T & { error?: string }} */ (
+        await res.json().catch(() => ({}))
+      );
       if (!res.ok) {
         throw new Error(data.error || ('HTTP ' + res.status));
       }
@@ -1421,10 +1446,14 @@
     function setSetupStep(step) {
       const next = Math.max(0, Math.min(4, Number(step || 0)));
       state.setupStep = next;
-      for (const tab of document.querySelectorAll('[data-setup-step]')) {
+      for (const tab of /** @type {NodeListOf<HTMLElement>} */ (
+        document.querySelectorAll('[data-setup-step]')
+      )) {
         tab.classList.toggle('active', Number(tab.dataset.setupStep) === next);
       }
-      for (const panel of document.querySelectorAll('[data-setup-panel]')) {
+      for (const panel of /** @type {NodeListOf<HTMLElement>} */ (
+        document.querySelectorAll('[data-setup-panel]')
+      )) {
         panel.classList.toggle('active', Number(panel.dataset.setupPanel) === next);
       }
       $('setup-prev').disabled = next === 0;
@@ -1576,7 +1605,7 @@
       $('attachment-concurrency').value = concurrency.attachmentProcessingConcurrency || 3;
       $('account-poll-concurrency').value = concurrency.accountPollConcurrency || 4;
       $('log-retention-days').value = logCleanup.retentionDays || 7;
-      $('log-max-mb').value = Math.max(1, Math.round(Number(logCleanup.maxBytes || 10485760) / 1024 / 1024));
+      $('log-max-mb').value = String(Math.max(1, Math.round(Number(logCleanup.maxBytes || 10485760) / 1024 / 1024)));
       $('log-cleanup-interval').value = logCleanup.intervalMinutes || 60;
       $('alert-webhook-url').value = settings.alertWebhookUrl || '';
       renderModelProvider(settings.modelProvider || {});
@@ -2363,7 +2392,7 @@
       $('provider-env-file').value = state.currentModelProvider.serviceEnvFile || '';
       $('provider-source').value = state.currentModelProvider.source || 'manual';
       $('provider-ccswitch-home').value = (state.currentModelProvider.ccswitch && state.currentModelProvider.ccswitch.codexHome) || '';
-      $('provider-ccswitch-interval').value = Math.max(2, Math.round(Number((state.currentModelProvider.ccswitch && state.currentModelProvider.ccswitch.intervalMs) || 10000) / 1000));
+      $('provider-ccswitch-interval').value = String(Math.max(2, Math.round(Number((state.currentModelProvider.ccswitch && state.currentModelProvider.ccswitch.intervalMs) || 10000) / 1000)));
       renderCcswitchStatus('provider-ccswitch-status', state.currentModelProvider.ccswitch);
     }
 
@@ -2388,7 +2417,7 @@
       $('setup-provider-env-file').value = current.serviceEnvFile || '';
       $('setup-provider-source').value = current.source || 'manual';
       $('setup-provider-ccswitch-home').value = (current.ccswitch && current.ccswitch.codexHome) || '';
-      $('setup-provider-ccswitch-interval').value = Math.max(2, Math.round(Number((current.ccswitch && current.ccswitch.intervalMs) || 10000) / 1000));
+      $('setup-provider-ccswitch-interval').value = String(Math.max(2, Math.round(Number((current.ccswitch && current.ccswitch.intervalMs) || 10000) / 1000)));
       renderCcswitchStatus('setup-provider-ccswitch-status', current.ccswitch);
     }
 
@@ -2844,7 +2873,9 @@
 
     initThemeMode();
 
-    for (const link of document.querySelectorAll('.side-nav a[data-page]')) {
+    for (const link of /** @type {NodeListOf<HTMLElement>} */ (
+      document.querySelectorAll('.side-nav a[data-page]')
+    )) {
       link.addEventListener('click', (event) => {
         event.preventDefault();
         showPage(link.dataset.page);
@@ -2971,7 +3002,9 @@
         setMessage(error.message, true);
       });
     };
-    for (const tab of document.querySelectorAll('[data-setup-step]')) {
+    for (const tab of /** @type {NodeListOf<HTMLElement>} */ (
+      document.querySelectorAll('[data-setup-step]')
+    )) {
       tab.addEventListener('click', () => setSetupStep(Number(tab.dataset.setupStep || 0)));
     }
     $('sessions-refresh').onclick = () => loadSessions().catch((error) => setMessage(error.message, true));

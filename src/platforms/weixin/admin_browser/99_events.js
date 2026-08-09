@@ -1,7 +1,9 @@
 
     initThemeMode();
 
-    for (const link of document.querySelectorAll('.side-nav a[data-page]')) {
+    for (const link of /** @type {NodeListOf<HTMLElement>} */ (
+      document.querySelectorAll('.side-nav a[data-page]')
+    )) {
       link.addEventListener('click', (event) => {
         event.preventDefault();
         showPage(link.dataset.page);
@@ -128,7 +130,9 @@
         setMessage(error.message, true);
       });
     };
-    for (const tab of document.querySelectorAll('[data-setup-step]')) {
+    for (const tab of /** @type {NodeListOf<HTMLElement>} */ (
+      document.querySelectorAll('[data-setup-step]')
+    )) {
       tab.addEventListener('click', () => setSetupStep(Number(tab.dataset.setupStep || 0)));
     }
     $('sessions-refresh').onclick = () => loadSessions().catch((error) => setMessage(error.message, true));

@@ -134,7 +134,7 @@
       $('provider-env-file').value = state.currentModelProvider.serviceEnvFile || '';
       $('provider-source').value = state.currentModelProvider.source || 'manual';
       $('provider-ccswitch-home').value = (state.currentModelProvider.ccswitch && state.currentModelProvider.ccswitch.codexHome) || '';
-      $('provider-ccswitch-interval').value = Math.max(2, Math.round(Number((state.currentModelProvider.ccswitch && state.currentModelProvider.ccswitch.intervalMs) || 10000) / 1000));
+      $('provider-ccswitch-interval').value = String(Math.max(2, Math.round(Number((state.currentModelProvider.ccswitch && state.currentModelProvider.ccswitch.intervalMs) || 10000) / 1000)));
       renderCcswitchStatus('provider-ccswitch-status', state.currentModelProvider.ccswitch);
     }
 
@@ -159,7 +159,7 @@
       $('setup-provider-env-file').value = current.serviceEnvFile || '';
       $('setup-provider-source').value = current.source || 'manual';
       $('setup-provider-ccswitch-home').value = (current.ccswitch && current.ccswitch.codexHome) || '';
-      $('setup-provider-ccswitch-interval').value = Math.max(2, Math.round(Number((current.ccswitch && current.ccswitch.intervalMs) || 10000) / 1000));
+      $('setup-provider-ccswitch-interval').value = String(Math.max(2, Math.round(Number((current.ccswitch && current.ccswitch.intervalMs) || 10000) / 1000)));
       renderCcswitchStatus('setup-provider-ccswitch-status', current.ccswitch);
     }
 

@@ -1,5 +1,8 @@
-    const ADMIN_TOKEN = document.querySelector('meta[name="codexbridge-admin-token"]')?.content || '';
+    const ADMIN_TOKEN = /** @type {HTMLMetaElement | null} */ (
+      document.querySelector('meta[name="codexbridge-admin-token"]')
+    )?.content || '';
     const queryParams = new URLSearchParams(window.location.search);
+    /** @type {AdminState} */
     const state = {
       pairingTimer: null,
       shutdownOnClose: queryParams.get('shutdownOnClose') !== '0',
@@ -25,7 +28,17 @@
       providerUsageProfileId: '',
       providerProfiles: []
     };
-    const $ = (id) => document.getElementById(id);
+    /**
+     * @param {string} id
+     * @returns {AdminElement}
+     */
+    const $ = (id) => {
+      const element = document.getElementById(id);
+      if (!element) {
+        throw new Error('Missing Weixin admin element: ' + id);
+      }
+      return /** @type {AdminElement} */ (element);
+    };
     const THEME_STORAGE_KEY = 'codexbridge-admin-theme';
 
     function normalizeThemeMode(mode) {
@@ -244,8 +257,12 @@
 
     function showPage(page) {
       const target = String(page || 'overview').replace(/^#/, '') || 'overview';
-      const links = Array.from(document.querySelectorAll('.side-nav a[data-page]'));
-      const panels = Array.from(document.querySelectorAll('[data-page-panel]'));
+      const links = Array.from(/** @type {NodeListOf<HTMLElement>} */ (
+        document.querySelectorAll('.side-nav a[data-page]')
+      ));
+      const panels = Array.from(/** @type {NodeListOf<HTMLElement>} */ (
+        document.querySelectorAll('[data-page-panel]')
+      ));
       const known = panels.some((panel) => panel.dataset.pagePanel === target);
       const next = known ? target : 'overview';
       for (const link of links) {

@@ -1,5 +1,11 @@
 
-    async function requestJson(url, options) {
+    /**
+     * @template {AdminJson} T
+     * @param {string} url
+     * @param {AdminRequestOptions} [options]
+     * @returns {Promise<T>}
+     */
+    async function requestJson(url, options = {}) {
       const requestedHeaders = (options && options.headers) || {};
       const res = await fetch(url, {
         ...options,
@@ -9,7 +15,9 @@
           ...requestedHeaders
         }
       });
-      const data = await res.json().catch(() => ({}));
+      const data = /** @type {T & { error?: string }} */ (
+        await res.json().catch(() => ({}))
+      );
       if (!res.ok) {
         throw new Error(data.error || ('HTTP ' + res.status));
       }

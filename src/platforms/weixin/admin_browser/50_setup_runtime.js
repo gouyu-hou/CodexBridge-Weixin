@@ -19,10 +19,14 @@
     function setSetupStep(step) {
       const next = Math.max(0, Math.min(4, Number(step || 0)));
       state.setupStep = next;
-      for (const tab of document.querySelectorAll('[data-setup-step]')) {
+      for (const tab of /** @type {NodeListOf<HTMLElement>} */ (
+        document.querySelectorAll('[data-setup-step]')
+      )) {
         tab.classList.toggle('active', Number(tab.dataset.setupStep) === next);
       }
-      for (const panel of document.querySelectorAll('[data-setup-panel]')) {
+      for (const panel of /** @type {NodeListOf<HTMLElement>} */ (
+        document.querySelectorAll('[data-setup-panel]')
+      )) {
         panel.classList.toggle('active', Number(panel.dataset.setupPanel) === next);
       }
       $('setup-prev').disabled = next === 0;
@@ -174,7 +178,7 @@
       $('attachment-concurrency').value = concurrency.attachmentProcessingConcurrency || 3;
       $('account-poll-concurrency').value = concurrency.accountPollConcurrency || 4;
       $('log-retention-days').value = logCleanup.retentionDays || 7;
-      $('log-max-mb').value = Math.max(1, Math.round(Number(logCleanup.maxBytes || 10485760) / 1024 / 1024));
+      $('log-max-mb').value = String(Math.max(1, Math.round(Number(logCleanup.maxBytes || 10485760) / 1024 / 1024)));
       $('log-cleanup-interval').value = logCleanup.intervalMinutes || 60;
       $('alert-webhook-url').value = settings.alertWebhookUrl || '';
       renderModelProvider(settings.modelProvider || {});

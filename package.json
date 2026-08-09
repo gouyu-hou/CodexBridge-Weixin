@@ -45,6 +45,7 @@
     "weixin:clear-context": "tsx src/cli.ts weixin clear-context",
     "weixin:serve": "tsx src/cli.ts weixin serve",
     "weixin:admin:build": "node scripts/weixin/build-admin-browser.mjs",
+    "weixin:admin:typecheck": "tsc -p tsconfig.admin-browser.json",
     "weixin:electron": "electron scripts/electron/weixin-admin-main.cjs",
     "weixin:electron:install-shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/service/install-windows-electron-launcher.ps1",
     "weixin:electron:prepare-runtime": "node scripts/electron/prepare-windows-runtime.cjs",
