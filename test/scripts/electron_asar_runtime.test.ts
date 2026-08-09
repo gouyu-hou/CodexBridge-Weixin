@@ -228,6 +228,25 @@ test('packaged smoke launches Electron in app mode even under Node-mode shells',
   assert.doesNotMatch(smokeSource, /\.\.\.process\.env/u);
 });
 
+test('packaged smoke drives the real admin DOM through loopback-only CDP', () => {
+  const smokeSource = fs.readFileSync(
+    path.join(process.cwd(), 'scripts', 'release', 'smoke_packaged.mjs'),
+    'utf8',
+  );
+  const mainSource = fs.readFileSync(
+    path.join(process.cwd(), 'scripts', 'electron', 'weixin-admin-main.cjs'),
+    'utf8',
+  );
+
+  assert.match(smokeSource, /connectCdp/u);
+  assert.match(smokeSource, /['"]--remote-debugging-address=['"]?127\.0\.0\.1/u);
+  assert.match(smokeSource, /`--remote-debugging-port=\$\{debugPort\}`/u);
+  assert.match(smokeSource, /['"]--smoke-test-ui['"]/u);
+  assert.match(smokeSource, /domStatus:\s*['"]ok['"]/u);
+  assert.match(mainSource, /const smokeTestUi\s*=\s*Boolean\(args\.smokeTestUi\)/u);
+  assert.match(mainSource, /smokeTest\s*&&\s*!smokeTestUi/u);
+});
+
 test('packaged smoke loads and validates both Weixin admin assets', async () => {
   const { fetchPackagedAdminAssets } = packagedSmoke as PackagedSmokeModule;
   assert.equal(typeof fetchPackagedAdminAssets, 'function');

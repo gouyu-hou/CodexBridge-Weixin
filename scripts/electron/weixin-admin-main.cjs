@@ -58,6 +58,7 @@ const serviceLogsDir = path.join(stateDir, 'logs');
 const serviceStdoutLog = path.join(serviceLogsDir, 'weixin-bridge.out.log');
 const serviceStderrLog = path.join(serviceLogsDir, 'weixin-bridge.err.log');
 const smokeTest = Boolean(args.smokeTest);
+const smokeTestUi = Boolean(args.smokeTestUi);
 const forceSetup = Boolean(args.forceSetup);
 const stopOnClose = args.stopOnClose !== '0' && args.noStopOnClose !== true;
 const DEFAULT_ADMIN_PORT = 43183;
@@ -373,7 +374,7 @@ async function startBridgeFlow(serviceEnv) {
 }
 
 async function startBridgeFlowInternal(serviceEnv) {
-  if (!smokeTest) {
+  if (!smokeTest || smokeTestUi) {
     mainWindow ??= createMainWindow();
     await loadStatusPage('Starting CodexBridge', 'Checking the local service...');
   }
@@ -385,15 +386,17 @@ async function startBridgeFlowInternal(serviceEnv) {
     await postJson(`${adminUrl}/api/bridge/start`, {});
   }
 
-  if (smokeTest) {
+  if (smokeTest && !smokeTestUi) {
     await shutdownAndQuit('smoke-test');
     return;
   }
 
   await loadStatusPage('Opening admin panel', 'Loading the local dashboard...');
   await loadAdminPanelWithRetry();
-  startServiceWatchdog();
-  scheduleStartupUpdateCheck();
+  if (!smokeTest) {
+    startServiceWatchdog();
+    scheduleStartupUpdateCheck();
+  }
 }
 
 async function buildServiceEnv() {
@@ -3311,6 +3314,10 @@ function parseArgs(argv) {
     const arg = argv[index];
     if (arg === '--smoke-test') {
       parsed.smokeTest = true;
+      continue;
+    }
+    if (arg === '--smoke-test-ui') {
+      parsed.smokeTestUi = true;
       continue;
     }
     if (arg === '--no-stop-on-close') {

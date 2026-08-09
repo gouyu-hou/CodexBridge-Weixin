@@ -5,6 +5,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { connectCdp } from './chromium-cdp-client.mjs';
 
 export function packagedExecutablePath(rootDir) {
   return path.join(
@@ -116,6 +117,7 @@ export async function runPackagedSmoke({
   }
 
   const adminPort = await findAvailableLoopbackPort();
+  const debugPort = await findAvailableLoopbackPort();
   const baseUrl = `http://127.0.0.1:${adminPort}`;
   if (!isLoopbackHttpUrl(baseUrl)) {
     throw new Error('packaged smoke admin URL must use loopback HTTP');
@@ -147,7 +149,10 @@ export async function runPackagedSmoke({
   };
 
   const child = spawnFn(executable, [
+    '--remote-debugging-address=127.0.0.1',
+    `--remote-debugging-port=${debugPort}`,
     '--smoke-test',
+    '--smoke-test-ui',
     '--state-dir',
     stateDir,
     '--env-file',
@@ -194,6 +199,36 @@ export async function runPackagedSmoke({
       },
     );
 
+    let cdpTargetDiagnostics = null;
+    let adminTarget;
+    try {
+      adminTarget = await waitForCondition(
+        () => findAdminCdpTarget(
+          fetchFn,
+          debugPort,
+          `${baseUrl}/?shutdownOnClose=0`,
+          (diagnostics) => { cdpTargetDiagnostics = diagnostics; },
+        ),
+        {
+          timeoutMs: Math.min(timeoutMs, 15_000),
+          intervalMs: 50,
+          description: 'packaged admin Chromium target',
+        },
+      );
+    } catch (error) {
+      throw new Error(`${error.message}; CDP diagnostics: ${JSON.stringify(cdpTargetDiagnostics)}`);
+    }
+    const cdp = await connectCdp({
+      endpointUrl: adminTarget.webSocketDebuggerUrl,
+      timeoutMs: Math.min(timeoutMs, 10_000),
+    });
+    try {
+      await verifyPackagedAdminDom(cdp);
+      await cdp.evaluate('window.close()');
+    } finally {
+      await cdp.close();
+    }
+
     await waitForCondition(async () => {
       const response = await tryFetch(fetchFn, `${baseUrl}/api/state`, 'status');
       return response ? null : true;
@@ -220,6 +255,7 @@ export async function runPackagedSmoke({
     success = true;
     return {
       endpointStopped: true,
+      domStatus: 'ok',
       pageStatus: pageResponse.status,
       scriptStatus: adminAssets.scriptStatus,
       selfStopped: true,
@@ -236,6 +272,140 @@ export async function runPackagedSmoke({
       throw new Error('refusing to remove a packaged smoke directory outside the system temp root');
     }
     await fsp.rm(stateDir, { recursive: true, force: true });
+  }
+}
+
+async function findAdminCdpTarget(fetchFn, debugPort, expectedUrl, onDiagnostics) {
+  try {
+    const response = await fetchFn(`http://127.0.0.1:${debugPort}/json/list`, {
+      signal: AbortSignal.timeout(1_000),
+    });
+    if (!response.ok) {
+      onDiagnostics?.({ status: response.status });
+      return null;
+    }
+    const targets = await response.json();
+    if (!Array.isArray(targets)) {
+      onDiagnostics?.({ targetsType: typeof targets });
+      return null;
+    }
+    onDiagnostics?.({
+      targets: targets.map((entry) => ({ type: entry?.type, url: entry?.url })),
+    });
+    const expected = new URL(expectedUrl);
+    expected.hash = '';
+    const target = targets.find((entry) => {
+      if (entry?.type !== 'page' || typeof entry.webSocketDebuggerUrl !== 'string') {
+        return false;
+      }
+      try {
+        const candidate = new URL(entry.url);
+        candidate.hash = '';
+        return candidate.toString() === expected.toString();
+      } catch {
+        return false;
+      }
+    });
+    return target || null;
+  } catch (error) {
+    onDiagnostics?.({ error: error?.message || String(error) });
+    return null;
+  }
+}
+
+async function verifyPackagedAdminDom(cdp) {
+  const deadline = Date.now() + 10_000;
+  let status;
+  while (true) {
+    status = await cdp.evaluate(`(async () => {
+    const requiredIds = ['refresh-btn', 'service-state', 'metric-turns', 'status-updated'];
+    const missingIds = requiredIds.filter((id) => !document.getElementById(id));
+    const resourcePath = (value) => {
+      try {
+        return new URL(String(value || ''), window.location.href).pathname;
+      } catch {
+        return '';
+      }
+    };
+    const styleLoaded = Array.from(document.styleSheets).some((sheet) =>
+      resourcePath(sheet.href) === '/admin/admin.css');
+    const scriptLoaded = Array.from(document.scripts).some((script) =>
+      resourcePath(script.src) === '/admin/admin.js');
+    const styleHrefs = Array.from(document.styleSheets).map((sheet) => String(sheet.href || ''));
+    const scriptSrcs = Array.from(document.scripts).map((script) => String(script.src || ''));
+    const loadStateReady = typeof loadState === 'function';
+    const serviceState = String(document.getElementById('service-state')?.textContent || '').trim();
+    const loading = !styleLoaded || !scriptLoaded || !loadStateReady
+      || !serviceState || serviceState === '-' || serviceState === '...' || serviceState === '加载中';
+    if (loading || missingIds.length > 0) {
+      return {
+        loadStateReady,
+        loading,
+        missingIds,
+        scriptLoaded,
+        scriptSrcs,
+        serviceState,
+        styleHrefs,
+        styleLoaded,
+      };
+    }
+    window.__codexbridgeSmokeErrors ||= [];
+    if (!window.__codexbridgeSmokeListenersInstalled) {
+      window.__codexbridgeSmokeListenersInstalled = true;
+      window.addEventListener('error', (event) => {
+        window.__codexbridgeSmokeErrors.push(
+          String(event.error && event.error.message || event.message || 'page error'),
+        );
+      });
+      window.addEventListener('unhandledrejection', (event) => {
+        window.__codexbridgeSmokeErrors.push(
+          String(event.reason && event.reason.message || event.reason || 'unhandled rejection'),
+        );
+      });
+    }
+    const runtimeLink = document.querySelector('.side-nav a[data-page="runtime"]');
+    const refreshButton = document.getElementById('refresh-btn');
+    if (runtimeLink) runtimeLink.click();
+    if (refreshButton) refreshButton.click();
+    const deadline = Date.now() + 5000;
+    while (refreshButton && refreshButton.disabled && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const runtimePanel = document.querySelector('[data-page-panel="runtime"]');
+    return {
+      activeRuntime: Boolean(runtimePanel && runtimePanel.classList.contains('active')),
+      hash: window.location.hash,
+      loadStateReady,
+      missingIds,
+      pageErrors: window.__codexbridgeSmokeErrors,
+      refreshReady: Boolean(refreshButton && !refreshButton.disabled),
+      scriptLoaded,
+      serviceState,
+      styleLoaded,
+    };
+  })()`);
+    if (!status?.loading) {
+      break;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`packaged admin DOM did not finish loading; state: ${JSON.stringify(status)}`);
+    }
+    await defaultSleep(50);
+  }
+  const problems = [];
+  if (!status?.styleLoaded) problems.push('admin stylesheet is not loaded');
+  if (!status?.scriptLoaded || !status?.loadStateReady) problems.push('admin script is not running');
+  if (status?.missingIds?.length) problems.push(`missing controls: ${status.missingIds.join(', ')}`);
+  if (!status?.activeRuntime || status?.hash !== '#runtime') problems.push('runtime navigation failed');
+  if (!status?.refreshReady) problems.push('refresh control did not settle');
+  if (!status?.serviceState || status.serviceState === '-' || status.serviceState === '...') {
+    problems.push('service state is still loading');
+  }
+  if (status?.pageErrors?.length) problems.push(`page errors: ${status.pageErrors.join('; ')}`);
+  if (problems.length > 0) {
+    throw new Error(
+      `packaged admin DOM smoke failed: ${problems.join('; ')}; state: ${JSON.stringify(status)}`,
+    );
   }
 }
 
