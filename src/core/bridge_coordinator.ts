@@ -104,6 +104,7 @@ import {
   resolveSessionModelForEffort,
   type EffectiveModelState,
 } from './model_command.js';
+import { resolveMcpCommand } from './mcp_command.js';
 import { NotFoundError } from './errors.js';
 import { ProviderUsageService } from './provider_usage_service.js';
 import {
@@ -8885,7 +8886,6 @@ export class BridgeCoordinator {
 
   async handleMcpCommand(event, args = []) {
     const scopeRef = toScopeRef(event);
-    const normalizedArgs = Array.isArray(args) ? args.map((value) => String(value ?? '').trim()).filter(Boolean) : [];
     const session = this.resolveSessionForEvent(scopeRef, event);
     const providerProfile = session
       ? this.requireProviderProfile(session.providerProfileId)
@@ -8898,23 +8898,19 @@ export class BridgeCoordinator {
         ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
       }
 
-      const subcommand = String(normalizedArgs[0] ?? '').trim().toLowerCase();
-      if (!subcommand || subcommand === 'default' || subcommand === 'list') {
-        return await this.handleMcpListCommand(event, providerProfile);
+      const decision = resolveMcpCommand(args);
+      switch (decision.kind) {
+        case 'list':
+          return await this.handleMcpListCommand(event, providerProfile);
+        case 'toggle':
+          return await this.handleMcpSetEnabledCommand(event, providerProfile, decision.token, decision.enabled);
+        case 'auth':
+          return await this.handleMcpAuthCommand(event, providerProfile, decision.token);
+        case 'reload':
+          return await this.handleMcpReloadCommand(event, providerProfile);
+        case 'help':
+          return await this.handleHelpsCommand(event, ['mcp']);
       }
-      if (subcommand === 'on') {
-        return await this.handleMcpSetEnabledCommand(event, providerProfile, normalizedArgs.slice(1).join(' '), true);
-      }
-      if (subcommand === 'off') {
-        return await this.handleMcpSetEnabledCommand(event, providerProfile, normalizedArgs.slice(1).join(' '), false);
-      }
-      if (subcommand === 'auth') {
-        return await this.handleMcpAuthCommand(event, providerProfile, normalizedArgs.slice(1).join(' '));
-      }
-      if (subcommand === 'reload') {
-        return await this.handleMcpReloadCommand(event, providerProfile);
-      }
-      return await this.handleHelpsCommand(event, ['mcp']);
     } catch (error) {
       return messageResponse([
         this.t('coordinator.mcp.failed', { error: formatUserError(error) }),
