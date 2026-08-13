@@ -2,9 +2,11 @@ import path from 'node:path';
 import { formatPlatformScopeKey } from './contracts.js';
 import {
   THREAD_COMMAND_SKILL_ACTIONS,
+  type PendingThreadCommandOperation,
   type ThreadCommandInventoryItem,
   type ThreadCommandOperationKind,
   type ThreadCommandSkillSubcommand,
+  type ThreadOperationOutcome,
 } from './thread_command.js';
 import {
   formatRelativeTimeLocalized,
@@ -19,6 +21,7 @@ export const THREAD_COMMAND_SKILL_RESULT_LIMIT = 8;
 export const THREAD_COMMAND_SKILL_LIST_LIMIT = 100_000;
 const THREAD_PREVIEW_LIMIT = 72;
 const THREAD_HISTORY_TURN_LIMIT = 3;
+const THREAD_CLARIFY_CANDIDATE_LIMIT = 6;
 const THREAD_COMMAND_SKILL_PATH = path.resolve('docs/command-skills/threads.md');
 
 export function buildThreadBrowserKey(event) {
@@ -31,6 +34,121 @@ export function buildThreadOperationKey(scopeRef: PlatformScopeRef) {
 
 export function formatThreadOperationKind(kind: ThreadCommandOperationKind, i18n: Translator): string {
   return i18n.t(`coordinator.threads.operation.${kind}`);
+}
+
+export function buildPendingThreadOperationLines(
+  operation: PendingThreadCommandOperation,
+  i18n: Translator,
+): string[] {
+  const lines = [
+    i18n.t('coordinator.threads.pendingTitle'),
+    i18n.t('coordinator.threads.pendingAction', {
+      value: formatThreadOperationKind(operation.kind, i18n),
+    }),
+    i18n.t('coordinator.threads.pendingSummary', { value: operation.summary }),
+  ];
+  if (operation.reason) {
+    lines.push(i18n.t('coordinator.threads.pendingReason', { value: operation.reason }));
+  }
+  lines.push(i18n.t('coordinator.threads.pendingItemsTitle', { count: operation.threads.length }));
+  operation.threads.forEach((thread, index) => {
+    const title = thread.alias ?? thread.title ?? thread.threadId;
+    lines.push(`${index + 1}. ${title}`);
+    lines.push(`   ${thread.threadId}`);
+    if (thread.preview) {
+      lines.push(`   ${i18n.t('coordinator.threadList.preview', { preview: thread.preview })}`);
+    }
+  });
+  lines.push(i18n.t('coordinator.threads.confirmHint'));
+  lines.push(i18n.t('coordinator.threads.cancelHint'));
+  return lines;
+}
+
+export function renderThreadCommandClarifyLines(
+  inventory: readonly ThreadCommandInventoryItem[],
+  question: string,
+  candidates: readonly Record<string, unknown>[],
+  i18n: Translator,
+): string[] {
+  const lines = [question || i18n.t('coordinator.threadList.noMatch')];
+  const byId = new Map(inventory.map((item) => [item.threadId, item] as const));
+  for (const [index, candidate] of candidates.slice(0, THREAD_CLARIFY_CANDIDATE_LIMIT).entries()) {
+    const threadId = compactWhitespace(candidate.threadId ?? candidate.id ?? '');
+    const item = threadId ? byId.get(threadId) ?? null : null;
+    const label = compactWhitespace(
+      candidate.label
+      ?? candidate.title
+      ?? item?.alias
+      ?? item?.title
+      ?? threadId
+      ?? i18n.t('common.unknown'),
+    );
+    lines.push(`${index + 1}. ${label}`);
+    if (threadId) {
+      lines.push(`   ${threadId}`);
+    }
+  }
+  return lines;
+}
+
+export function formatThreadOperationOutcome(
+  outcome: ThreadOperationOutcome,
+  i18n: Translator,
+): string {
+  if (outcome.status === 'resolution_error') {
+    return outcome.message;
+  }
+  if (outcome.status === 'already_archived') {
+    return i18n.t('coordinator.thread.archiveAlreadyArchived', { threadId: outcome.threadId });
+  }
+  if (outcome.status === 'not_archived') {
+    return i18n.t('coordinator.thread.restoreNotArchived', { threadId: outcome.threadId });
+  }
+  if (outcome.status === 'already_pinned') {
+    return i18n.t('coordinator.thread.pinAlreadyPinned', { threadId: outcome.threadId });
+  }
+  if (outcome.status === 'not_pinned') {
+    return i18n.t('coordinator.thread.unpinNotPinned', { threadId: outcome.threadId });
+  }
+  if (outcome.status === 'archive_failed') {
+    return i18n.t('coordinator.thread.archiveFailed', {
+      threadId: outcome.threadId,
+      error: outcome.error,
+    });
+  }
+  if (outcome.status === 'restore_failed') {
+    return i18n.t('coordinator.thread.restoreFailed', {
+      threadId: outcome.threadId,
+      error: outcome.error,
+    });
+  }
+  if (outcome.status !== 'applied') {
+    throw new Error(`Unhandled thread operation outcome: ${outcome.status}`);
+  }
+  const key = outcome.operation === 'archive'
+    ? 'archived'
+    : outcome.operation === 'restore'
+      ? 'restored'
+      : outcome.operation === 'pin'
+        ? 'pinned'
+        : 'unpinned';
+  return i18n.t(`coordinator.thread.${key}`, { threadId: outcome.threadId });
+}
+
+export function formatThreadOperationUsage(
+  operation: ThreadCommandOperationKind,
+  i18n: Translator,
+): string {
+  return operation === 'archive'
+    ? i18n.t('coordinator.threads.delUsage')
+    : i18n.t(`coordinator.threads.${operation}Usage`);
+}
+
+export function formatThreadOperationAction(
+  operation: ThreadCommandOperationKind,
+  i18n: Translator,
+): string {
+  return i18n.t(`coordinator.thread.${operation}Actions`);
 }
 
 export function buildThreadCommandSkillPrompt({

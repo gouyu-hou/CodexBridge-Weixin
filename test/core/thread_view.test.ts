@@ -4,14 +4,19 @@ import {
   buildThreadBrowserKey,
   buildThreadCommandSkillPrompt,
   buildThreadOperationKey,
+  buildPendingThreadOperationLines,
   classifyPreviewTurnStatus,
   collectTurnItemTexts,
   extractRecentThreadTurns,
   formatCurrentBindingTitle,
+  formatThreadOperationAction,
   formatThreadOperationKind,
+  formatThreadOperationOutcome,
+  formatThreadOperationUsage,
   formatThreadTitle,
   isProviderTurnTerminal,
   normalizeThreadPreview,
+  renderThreadCommandClarifyLines,
   renderThreadPeek,
   renderThreadsPageMessage,
 } from '../../src/core/thread_view.js';
@@ -32,6 +37,84 @@ test('formatThreadOperationKind resolves localized operation labels', () => {
     assert.ok(label);
     assert.ok(!label.includes('coordinator.threads.operation'), label);
   }
+});
+
+test('thread operation presentation helpers render pending actions and outcomes', () => {
+  const operation = {
+    kind: 'archive' as const,
+    createdAt: 1,
+    rawInput: 'archive old threads',
+    providerProfileId: 'default',
+    summary: 'Archive completed work',
+    reason: 'Keep the active list focused',
+    threads: [{
+      threadId: 'thread-1',
+      title: 'Completed work',
+      alias: 'Release notes',
+      preview: 'Version 0.1.7 is ready',
+      updatedAt: 1,
+      archivedAt: null,
+      pinnedAt: null,
+      isCurrent: false,
+    }],
+  };
+  const lines = buildPendingThreadOperationLines(operation, i18n);
+  assert.ok(lines.includes(i18n.t('coordinator.threads.pendingTitle')));
+  assert.ok(lines.includes('1. Release notes'));
+  assert.ok(lines.includes('   thread-1'));
+  assert.ok(lines.includes(i18n.t('coordinator.threads.confirmHint')));
+
+  assert.equal(
+    formatThreadOperationOutcome({ status: 'resolution_error', message: 'missing thread' }, i18n),
+    'missing thread',
+  );
+  assert.equal(
+    formatThreadOperationOutcome({
+      status: 'archive_failed',
+      providerProfileId: 'default',
+      threadId: 'thread-1',
+      error: 'denied',
+    }, i18n),
+    i18n.t('coordinator.thread.archiveFailed', { threadId: 'thread-1', error: 'denied' }),
+  );
+  assert.equal(
+    formatThreadOperationOutcome({
+      status: 'applied',
+      operation: 'pin',
+      providerProfileId: 'default',
+      threadId: 'thread-1',
+    }, i18n),
+    i18n.t('coordinator.thread.pinned', { threadId: 'thread-1' }),
+  );
+  assert.equal(formatThreadOperationUsage('archive', i18n), i18n.t('coordinator.threads.delUsage'));
+  assert.equal(formatThreadOperationUsage('restore', i18n), i18n.t('coordinator.threads.restoreUsage'));
+  assert.equal(formatThreadOperationAction('unpin', i18n), i18n.t('coordinator.thread.unpinActions'));
+});
+
+test('renderThreadCommandClarifyLines resolves inventory labels and limits candidates', () => {
+  const inventory = [{
+    threadId: 'thread-1',
+    title: 'Original title',
+    alias: 'Friendly alias',
+    preview: null,
+    updatedAt: null,
+    archivedAt: null,
+    pinnedAt: null,
+    isCurrent: false,
+  }];
+  const candidates = [
+    { threadId: 'thread-1' },
+    ...Array.from({ length: 8 }, (_, index) => ({
+      threadId: `thread-${index + 2}`,
+      label: `Candidate ${index + 2}`,
+    })),
+  ];
+  const lines = renderThreadCommandClarifyLines(inventory, '', candidates, i18n);
+  assert.equal(lines[0], i18n.t('coordinator.threadList.noMatch'));
+  assert.equal(lines[1], '1. Friendly alias');
+  assert.equal(lines[2], '   thread-1');
+  assert.equal(lines.filter((line) => /^\d+\. /u.test(line)).length, 6);
+  assert.ok(!lines.some((line) => line.includes('Candidate 7')));
 });
 
 test('buildThreadCommandSkillPrompt embeds inventory and skill contract', () => {
