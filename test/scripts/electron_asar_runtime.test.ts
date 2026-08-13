@@ -58,6 +58,24 @@ test('release and Electron staging rebuild and check Weixin admin browser assets
   );
 });
 
+test('Windows admin shortcut launches PowerShell directly without a quarantined VBS wrapper', () => {
+  const launcherPath = path.join(
+    process.cwd(),
+    'scripts',
+    'service',
+    'install-windows-admin-launcher.ps1',
+  );
+  const source = fs.readFileSync(launcherPath, 'utf8');
+
+  assert.match(source, /\$Shortcut\.TargetPath\s*=\s*\$PowerShellExe/u);
+  assert.match(source, /\$Shortcut\.Arguments\s*=\s*\$LauncherArguments/u);
+  assert.match(source, /"-WindowStyle",\s*"Hidden"/u);
+  assert.match(source, /"-TaskName",\s*"`"\$TaskName`""/u);
+  assert.match(source, /"-AdminUrl",\s*"`"\$AdminUrl`""/u);
+  assert.match(source, /"-EnvFile",\s*"`"\$EnvFile`""/u);
+  assert.doesNotMatch(source, /open-weixin-admin-hidden\.vbs|Resolve-WScriptExe/u);
+});
+
 test('Electron build stores the staged service runtime outside ASAR', () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
