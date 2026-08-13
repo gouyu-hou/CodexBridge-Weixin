@@ -373,6 +373,79 @@ export function formatInstructionsContentPreview(content: string, i18n: Translat
   return preview;
 }
 
+export function buildInstructionsOperationPreviewLines(
+  operation: PendingInstructionsOperation,
+  i18n: Translator,
+): string[] {
+  const lines = [
+    i18n.t('coordinator.instructions.draftTitle'),
+    i18n.t('coordinator.instructions.draftKind', {
+      value: formatInstructionsProposalKind(operation.kind, i18n),
+    }),
+    i18n.t('coordinator.instructions.draftSummary', {
+      value: operation.summary || defaultInstructionsSummary(operation.kind, i18n),
+    }),
+  ];
+  if (operation.changes.length > 0) {
+    lines.push(i18n.t('coordinator.instructions.draftChangesTitle'));
+    lines.push(...operation.changes.map((change, index) => `${index + 1}. ${change}`));
+  }
+  lines.push(i18n.t('coordinator.instructions.draftContentTitle'));
+  lines.push(...formatInstructionsContentPreview(operation.proposedContent, i18n));
+  return lines;
+}
+
+export function buildInstructionsDraftResponseLines(
+  operation: PendingInstructionsOperation,
+  {
+    includeEditHint = true,
+    includeSourceNotice = false,
+  }: {
+    includeEditHint?: boolean;
+    includeSourceNotice?: boolean;
+  } = {},
+  i18n: Translator,
+): string[] {
+  const lines = buildInstructionsOperationPreviewLines(operation, i18n);
+  if (includeSourceNotice) {
+    lines.push(i18n.t('coordinator.instructions.captureNotice'));
+  }
+  lines.push(i18n.t('coordinator.instructions.draftNotice'));
+  lines.push(i18n.t('coordinator.instructions.confirmHint'));
+  if (includeEditHint) {
+    lines.push(i18n.t('coordinator.instructions.editDraftHint'));
+  }
+  lines.push(i18n.t('coordinator.instructions.cancelHint'));
+  return lines;
+}
+
+export function renderInstructionsSavedLines(
+  {
+    action,
+    snapshot,
+    reconnectSummary,
+  }: {
+    action: 'saved' | 'cleared';
+    snapshot: CodexInstructionsSnapshot;
+    reconnectSummary: { refreshedCount: number; errors: string[] };
+  },
+  i18n: Translator,
+): string[] {
+  return [
+    action === 'saved'
+      ? i18n.t('coordinator.instructions.saved')
+      : i18n.t('coordinator.instructions.cleared'),
+    i18n.t('coordinator.instructions.path', { value: snapshot.path }),
+    ...(reconnectSummary.refreshedCount > 0
+      ? [i18n.t('coordinator.instructions.reconnected', { count: reconnectSummary.refreshedCount })]
+      : [i18n.t('coordinator.instructions.reconnectedNone')]),
+    ...(reconnectSummary.errors.length > 0
+      ? [i18n.t('coordinator.instructions.reconnectFailed', { error: reconnectSummary.errors[0] })]
+      : []),
+    i18n.t('coordinator.instructions.applyNextTurn'),
+  ];
+}
+
 function clampAssistantConfidence(value: number): number {
   if (!Number.isFinite(value)) {
     return 0.8;

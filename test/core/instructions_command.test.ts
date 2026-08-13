@@ -3,9 +3,11 @@ import test from 'node:test';
 import {
   INSTRUCTIONS_COMMAND_SKILL_ACTIONS,
   buildInstructionsCommandSkillPrompt,
+  buildInstructionsDraftResponseLines,
   buildInstructionsEditKey,
   buildInstructionsOperation,
   buildInstructionsOperationKey,
+  buildInstructionsOperationPreviewLines,
   buildPendingInstructionsOperationFromSkillResult,
   defaultInstructionsSummary,
   extractInstructionsEditBody,
@@ -15,6 +17,7 @@ import {
   formatInstructionsStatus,
   normalizeInstructionsDocumentContent,
   parseInstructionsCommandSkillResult,
+  renderInstructionsSavedLines,
   type PendingInstructionsOperation,
 } from '../../src/core/instructions_command.js';
 import { createI18n } from '../../src/i18n/index.js';
@@ -39,6 +42,73 @@ test('formatInstructionsStatus and proposal kind labels resolve localized text',
     assert.ok(summary);
     assert.ok(!summary.includes('coordinator.instructions.defaultSummary'), summary);
   }
+});
+
+test('instructions presentation helpers render drafts and optional guidance', () => {
+  const operation: PendingInstructionsOperation = {
+    kind: 'replace',
+    createdAt: 1,
+    rawInput: 'replace instructions',
+    summary: '',
+    changes: ['Use concise replies', 'Keep code examples focused'],
+    proposedContent: '# Instructions\nUse concise replies.',
+    baseContent: '',
+    normalizedBy: 'local',
+  };
+  const preview = buildInstructionsOperationPreviewLines(operation, i18n);
+  assert.deepEqual(preview, [
+    i18n.t('coordinator.instructions.draftTitle'),
+    i18n.t('coordinator.instructions.draftKind', {
+      value: formatInstructionsProposalKind('replace', i18n),
+    }),
+    i18n.t('coordinator.instructions.draftSummary', {
+      value: defaultInstructionsSummary('replace', i18n),
+    }),
+    i18n.t('coordinator.instructions.draftChangesTitle'),
+    '1. Use concise replies',
+    '2. Keep code examples focused',
+    i18n.t('coordinator.instructions.draftContentTitle'),
+    '# Instructions',
+    'Use concise replies.',
+  ]);
+
+  assert.deepEqual(buildInstructionsDraftResponseLines(operation, {
+    includeEditHint: false,
+    includeSourceNotice: true,
+  }, i18n), [
+    ...preview,
+    i18n.t('coordinator.instructions.captureNotice'),
+    i18n.t('coordinator.instructions.draftNotice'),
+    i18n.t('coordinator.instructions.confirmHint'),
+    i18n.t('coordinator.instructions.cancelHint'),
+  ]);
+});
+
+test('renderInstructionsSavedLines summarizes reconnect results', () => {
+  const snapshot = {
+    path: 'D:/work/AGENTS.md',
+    exists: true,
+    content: '# Instructions',
+  } as any;
+  assert.deepEqual(renderInstructionsSavedLines({
+    action: 'saved',
+    snapshot,
+    reconnectSummary: { refreshedCount: 2, errors: ['profile failed'] },
+  }, i18n), [
+    i18n.t('coordinator.instructions.saved'),
+    i18n.t('coordinator.instructions.path', { value: snapshot.path }),
+    i18n.t('coordinator.instructions.reconnected', { count: 2 }),
+    i18n.t('coordinator.instructions.reconnectFailed', { error: 'profile failed' }),
+    i18n.t('coordinator.instructions.applyNextTurn'),
+  ]);
+
+  const cleared = renderInstructionsSavedLines({
+    action: 'cleared',
+    snapshot,
+    reconnectSummary: { refreshedCount: 0, errors: [] },
+  }, i18n);
+  assert.equal(cleared[0], i18n.t('coordinator.instructions.cleared'));
+  assert.ok(cleared.includes(i18n.t('coordinator.instructions.reconnectedNone')));
 });
 
 test('extractInstructionsInlineContent and extractInstructionsEditBody parse command bodies', () => {

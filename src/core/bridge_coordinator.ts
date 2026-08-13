@@ -83,18 +83,18 @@ import {
 import {
   INSTRUCTIONS_COMMAND_SKILL_ACTIONS,
   buildInstructionsCommandSkillPrompt,
+  buildInstructionsDraftResponseLines,
   buildInstructionsEditKey,
   buildInstructionsOperation,
   buildInstructionsOperationKey,
+  buildInstructionsOperationPreviewLines,
   buildPendingInstructionsOperationFromSkillResult,
-  defaultInstructionsSummary,
   extractInstructionsEditBody,
   extractInstructionsInlineContent,
-  formatInstructionsContentPreview,
-  formatInstructionsProposalKind,
   formatInstructionsStatus,
   normalizeInstructionsDocumentContent,
   parseInstructionsCommandSkillResult,
+  renderInstructionsSavedLines,
   type InstructionsCommandSkillResult,
   type PendingInstructionsCapture,
   type PendingInstructionsOperation,
@@ -2003,7 +2003,7 @@ export class BridgeCoordinator {
     if (operation) {
       lines.push('');
       lines.push(this.t('coordinator.instructions.draftPending'));
-      lines.push(...this.buildInstructionsOperationPreviewLines(operation));
+      lines.push(...buildInstructionsOperationPreviewLines(operation, this.currentI18n));
     }
     return messageResponse(lines, this.buildScopedSessionMeta(event));
   }
@@ -2028,10 +2028,10 @@ export class BridgeCoordinator {
     this.clearPendingInstructionsCapture(event);
     this.setPendingInstructionsOperation(scopeRef, operation);
     return messageResponse(
-      this.buildInstructionsDraftResponseLines(operation, {
+      buildInstructionsDraftResponseLines(operation, {
         includeEditHint: true,
         includeSourceNotice: source === 'capture',
-      }),
+      }, this.currentI18n),
       this.buildScopedSessionMeta(event),
     );
   }
@@ -2051,53 +2051,11 @@ export class BridgeCoordinator {
     this.clearPendingInstructionsCapture(event);
     this.setPendingInstructionsOperation(scopeRef, operation);
     return messageResponse(
-      this.buildInstructionsDraftResponseLines(operation, {
+      buildInstructionsDraftResponseLines(operation, {
         includeEditHint: true,
-      }),
+      }, this.currentI18n),
       this.buildScopedSessionMeta(event),
     );
-  }
-
-  buildInstructionsOperationPreviewLines(operation: PendingInstructionsOperation): string[] {
-    const lines = [
-      this.t('coordinator.instructions.draftTitle'),
-      this.t('coordinator.instructions.draftKind', {
-        value: formatInstructionsProposalKind(operation.kind, this.currentI18n),
-      }),
-      this.t('coordinator.instructions.draftSummary', {
-        value: operation.summary || defaultInstructionsSummary(operation.kind, this.currentI18n),
-      }),
-    ];
-    if (operation.changes.length > 0) {
-      lines.push(this.t('coordinator.instructions.draftChangesTitle'));
-      lines.push(...operation.changes.map((change, index) => `${index + 1}. ${change}`));
-    }
-    lines.push(this.t('coordinator.instructions.draftContentTitle'));
-    lines.push(...formatInstructionsContentPreview(operation.proposedContent, this.currentI18n));
-    return lines;
-  }
-
-  buildInstructionsDraftResponseLines(
-    operation: PendingInstructionsOperation,
-    {
-      includeEditHint = true,
-      includeSourceNotice = false,
-    }: {
-      includeEditHint?: boolean;
-      includeSourceNotice?: boolean;
-    } = {},
-  ): string[] {
-    const lines = this.buildInstructionsOperationPreviewLines(operation);
-    if (includeSourceNotice) {
-      lines.push(this.t('coordinator.instructions.captureNotice'));
-    }
-    lines.push(this.t('coordinator.instructions.draftNotice'));
-    lines.push(this.t('coordinator.instructions.confirmHint'));
-    if (includeEditHint) {
-      lines.push(this.t('coordinator.instructions.editDraftHint'));
-    }
-    lines.push(this.t('coordinator.instructions.cancelHint'));
-    return lines;
   }
 
   async applyPendingInstructionsOperation(event, scopeRef: PlatformScopeRef, operation: PendingInstructionsOperation) {
@@ -2113,11 +2071,11 @@ export class BridgeCoordinator {
       this.clearPendingInstructionsCapture(event);
       this.clearPendingInstructionsOperation(scopeRef);
       const reconnectSummary = await this.reconnectCodexBackedProfiles();
-      return messageResponse(this.renderInstructionsSavedLines({
+      return messageResponse(renderInstructionsSavedLines({
         action: operation.kind === 'clear' ? 'cleared' : 'saved',
         snapshot,
         reconnectSummary,
-      }), this.buildScopedSessionMeta(event));
+      }, this.currentI18n), this.buildScopedSessionMeta(event));
     } catch (error) {
       return messageResponse([
         this.t('coordinator.instructions.failed', { error: formatUserError(error) }),
@@ -2137,31 +2095,6 @@ export class BridgeCoordinator {
     return messageResponse([
       this.t('coordinator.instructions.editCancelled'),
     ], this.buildScopedSessionMeta(event));
-  }
-
-  renderInstructionsSavedLines({
-    action,
-    snapshot,
-    reconnectSummary,
-  }: {
-    action: 'saved' | 'cleared';
-    snapshot: CodexInstructionsSnapshot;
-    reconnectSummary: { refreshedCount: number; errors: string[] };
-  }): string[] {
-    const lines = [
-      action === 'saved'
-        ? this.t('coordinator.instructions.saved')
-        : this.t('coordinator.instructions.cleared'),
-      this.t('coordinator.instructions.path', { value: snapshot.path }),
-      ...(reconnectSummary.refreshedCount > 0
-        ? [this.t('coordinator.instructions.reconnected', { count: reconnectSummary.refreshedCount })]
-        : [this.t('coordinator.instructions.reconnectedNone')]),
-      ...(reconnectSummary.errors.length > 0
-        ? [this.t('coordinator.instructions.reconnectFailed', { error: reconnectSummary.errors[0] })]
-        : []),
-      this.t('coordinator.instructions.applyNextTurn'),
-    ];
-    return lines;
   }
 
   renderLoginAccountLines(account, { includePrefix = false } = {}) {
@@ -5351,7 +5284,7 @@ export class BridgeCoordinator {
     this.clearPendingInstructionsCapture(event);
     this.setPendingInstructionsOperation(scopeRef, operation);
     return messageResponse(
-      this.buildInstructionsDraftResponseLines(operation),
+      buildInstructionsDraftResponseLines(operation, {}, this.currentI18n),
       this.buildScopedSessionMeta(event),
     );
   }
