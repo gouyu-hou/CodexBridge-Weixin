@@ -4,12 +4,16 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   buildTurnSnapshotKey,
+  classifyTurnCompletionState,
   classifyAgentOutput,
+  extractTurnCommentaryText,
   extractItemId,
   extractNotificationTurnId,
   extractProgressUpdate,
+  extractTurnOutputText,
   isAssistantVisibleItem,
   isUserVisibleItem,
+  resolveTurnPreviewText,
 } from '../src/codex_app_events.js';
 
 test('event helpers normalize turn ids, phases, and visible message roles', () => {
@@ -102,6 +106,33 @@ test('buildTurnSnapshotKey captures only state used for settle detection', () =>
   }));
 });
 
+test('turn output helpers separate final answers, commentary, and interruption state', () => {
+  const turn = {
+    status: 'completed',
+    items: [
+      { type: 'userMessage', text: 'question' },
+      { type: 'agentMessage', phase: 'analysis', text: 'working' },
+      { type: 'message', role: 'assistant', phase: 'final_answer', text: 'done' },
+      { type: 'agentMessage', phase: 'final', text: 'more' },
+      { type: 'agentMessage', phase: 'final', text: 42 },
+    ],
+  };
+
+  assert.equal(extractTurnOutputText(turn), 'done\n\nmore\n\n42');
+  assert.equal(extractTurnCommentaryText(turn), 'working');
+  assert.equal(resolveTurnPreviewText(turn, {}), 'working');
+  assert.equal(resolveTurnPreviewText(turn, { commentaryText: 'streaming' }), 'streaming');
+  assert.equal(resolveTurnPreviewText(turn, {
+    commentaryText: 'streaming',
+    finalAnswerText: 'final stream',
+  }), 'final stream');
+  assert.equal(classifyTurnCompletionState({}), 'unknown');
+  assert.equal(classifyTurnCompletionState({ status: 'cancelled' }), 'interrupted');
+  assert.equal(classifyTurnCompletionState({ error: 'stopped by user' }), 'interrupted');
+  assert.equal(classifyTurnCompletionState({ error: '用户中断' }), 'interrupted');
+  assert.equal(classifyTurnCompletionState(turn), 'other');
+});
+
 test('both AppClient implementations delegate event mapping to the shared module', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..', '..', '..');
   const appClients = [
@@ -111,12 +142,16 @@ test('both AppClient implementations delegate event mapping to the shared module
   const sharedFunctions = [
     'buildTurnSnapshotKey',
     'classifyAgentOutput',
+    'classifyTurnCompletionState',
     'extractAgentPhase',
     'extractItemId',
     'extractNotificationTurnId',
     'extractProgressUpdate',
+    'extractTurnCommentaryText',
+    'extractTurnOutputText',
     'isAssistantVisibleItem',
     'isUserVisibleItem',
+    'resolveTurnPreviewText',
   ];
 
   for (const appClientPath of appClients) {

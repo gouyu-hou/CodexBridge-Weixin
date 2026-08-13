@@ -78,13 +78,17 @@ import type {
 } from '../../../packages/codex-native-api/src/codex_app_protocol.js';
 import {
   buildTurnSnapshotKey,
+  classifyTurnCompletionState,
   classifyAgentOutput,
   extractAgentPhase,
   extractItemId,
   extractNotificationTurnId,
   extractProgressUpdate,
+  extractTurnCommentaryText,
+  extractTurnOutputText,
   isAssistantVisibleItem,
   isUserVisibleItem,
+  resolveTurnPreviewText,
 } from '../../../packages/codex-native-api/src/codex_app_events.js';
 import type {
   CodexAppProgressState as ProgressState,
@@ -2842,47 +2846,6 @@ function buildApprovedExecutionStallError({
     return `Approval was accepted, but the approved ${kindLabel}${commandSuffix} produced no follow-up signal for ${idleSeconds} seconds. The provider may be stuck; use /retry to try again.`;
   }
   return `Approval was accepted, but the approved ${kindLabel}${commandSuffix} stopped making progress after ${entry.lastSignalKind} and stayed idle for ${idleSeconds} seconds. The provider may be stuck; use /retry to try again.`;
-}
-
-const INTERRUPTED_PATTERN = /interrupt|interrupted|cancel(?:led)?|aborted?|stopped by user|用户中断|已中断/i;
-
-function classifyTurnCompletionState(turn) {
-  const haystack = `${String(turn?.status ?? '')}\n${String(turn?.error ?? '')}`.trim();
-  if (!haystack) {
-    return 'unknown';
-  }
-  if (INTERRUPTED_PATTERN.test(haystack)) {
-    return 'interrupted';
-  }
-  return 'other';
-}
-
-function extractTurnOutputText(turn) {
-  return turn.items
-    .filter((item) =>
-      isAssistantVisibleItem(item)
-      && classifyAgentOutput(extractAgentPhase(item), true) === 'final_answer')
-    .map((item) => item.text)
-    .filter(Boolean)
-    .join('\n\n')
-    .trim();
-}
-
-function extractTurnCommentaryText(turn) {
-  return turn.items
-    .filter((item) =>
-      isAssistantVisibleItem(item)
-      && classifyAgentOutput(extractAgentPhase(item), true) !== 'final_answer')
-    .map((item) => item.text)
-    .filter(Boolean)
-    .join('\n\n')
-    .trim();
-}
-
-function resolveTurnPreviewText(turn, progressState: Partial<ProgressState> = {}) {
-  return progressState.finalAnswerText
-    || progressState.commentaryText
-    || extractTurnCommentaryText(turn);
 }
 
 function extractTurnOutputArtifacts(turn) {

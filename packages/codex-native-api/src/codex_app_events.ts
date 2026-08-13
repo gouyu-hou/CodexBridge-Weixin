@@ -17,6 +17,8 @@ export interface CodexAppProgressUpdate {
 
 type ProtocolRecord = Record<string, unknown>;
 
+const INTERRUPTED_PATTERN = /interrupt|interrupted|cancel(?:led)?|aborted?|stopped by user|用户中断|已中断/i;
+
 export function buildTurnSnapshotKey(turn: unknown): string {
   const record = asRecord(turn);
   const items = Array.isArray(record?.items) ? record.items : [];
@@ -140,6 +142,49 @@ export function extractAgentPhase(value: unknown): string | null {
     }
   }
   return null;
+}
+
+export function classifyTurnCompletionState(turn: unknown): 'unknown' | 'interrupted' | 'other' {
+  const record = asRecord(turn);
+  const haystack = `${String(record?.status ?? '')}\n${String(record?.error ?? '')}`.trim();
+  if (!haystack) {
+    return 'unknown';
+  }
+  if (INTERRUPTED_PATTERN.test(haystack)) {
+    return 'interrupted';
+  }
+  return 'other';
+}
+
+export function extractTurnOutputText(turn: { items: unknown[] }): string {
+  return turn.items
+    .filter((item) =>
+      isAssistantVisibleItem(item)
+      && classifyAgentOutput(extractAgentPhase(item), true) === 'final_answer')
+    .map((item) => asRecord(item)?.text)
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
+export function extractTurnCommentaryText(turn: { items: unknown[] }): string {
+  return turn.items
+    .filter((item) =>
+      isAssistantVisibleItem(item)
+      && classifyAgentOutput(extractAgentPhase(item), true) !== 'final_answer')
+    .map((item) => asRecord(item)?.text)
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+}
+
+export function resolveTurnPreviewText(
+  turn: { items: unknown[] },
+  progressState: Partial<Pick<CodexAppProgressState, 'finalAnswerText' | 'commentaryText'>> = {},
+): string {
+  return progressState.finalAnswerText
+    || progressState.commentaryText
+    || extractTurnCommentaryText(turn);
 }
 
 function extractNotificationDelta(params: ProtocolRecord): string | null {
