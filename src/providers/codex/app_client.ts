@@ -99,6 +99,13 @@ import type {
   CodexAppProgressState as ProgressState,
 } from '../../../packages/codex-native-api/src/codex_app_events.js';
 import {
+  extractTurnOutputArtifacts,
+  inferArtifactKindFromPath,
+  inferMimeTypeFromPath,
+  isLocalFilePath,
+  normalizeLegacyImageMedia,
+} from '../../../packages/codex-native-api/src/codex_app_artifacts.js';
+import {
   findCodexSessionIndexEntry,
   mergeCodexSessionIndexThreads,
   readCodexSessionIndex,
@@ -2055,7 +2062,7 @@ export class CodexAppClient extends EventEmitter {
               signalKind: 'turn_terminal',
               markCompleted: true,
             });
-            const outputArtifacts = extractTurnOutputArtifacts(turn);
+            const outputArtifacts = extractTurnOutputArtifacts(turn, extractOutputArtifactFromItem);
             const result = {
               turnId,
               threadId,
@@ -2071,7 +2078,7 @@ export class CodexAppClient extends EventEmitter {
             this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
             return result;
           }
-          const outputArtifacts = extractTurnOutputArtifacts(turn);
+          const outputArtifacts = extractTurnOutputArtifacts(turn, extractOutputArtifactFromItem);
           if (outputArtifacts.length > 0) {
             this.noteApprovedExecutionSignal({
               threadId,
@@ -2584,7 +2591,7 @@ function summarizeTurnSnapshot(turn: any) {
     itemCount: items.length,
     visibleItemCount: items.filter((item) => isAssistantVisibleItem(item) || isUserVisibleItem(item)).length,
     outputTextPresent: Boolean(extractTurnOutputText(turn)),
-    outputArtifactCount: extractTurnOutputArtifacts(turn).length,
+    outputArtifactCount: extractTurnOutputArtifacts(turn, extractOutputArtifactFromItem).length,
     error: typeof turn?.error === 'string' ? turn.error : null,
   };
 }
@@ -2853,24 +2860,6 @@ function buildApprovedExecutionStallError({
   return `Approval was accepted, but the approved ${kindLabel}${commandSuffix} stopped making progress after ${entry.lastSignalKind} and stayed idle for ${idleSeconds} seconds. The provider may be stuck; use /retry to try again.`;
 }
 
-function extractTurnOutputArtifacts(turn) {
-  const seen = new Set<string>();
-  return turn.items
-    .flatMap((item) => extractOutputArtifactFromItem(item))
-    .filter((item) => {
-      const key = `${item.kind}:${item.path}`;
-      if (seen.has(key)) {
-        return false;
-      }
-      seen.add(key);
-      return true;
-    });
-}
-
-function normalizeLegacyImageMedia(artifacts) {
-  return artifacts.filter((artifact) => artifact?.kind === 'image');
-}
-
 function extractOutputArtifactFromItem(item) {
   const savedPath = typeof item?.savedPath === 'string' ? item.savedPath.trim() : '';
   if (savedPath && fs.existsSync(savedPath)) {
@@ -2923,67 +2912,6 @@ function buildArtifactFromFilePath(filePath) {
     source: 'provider_native' as const,
     turnId: null,
   };
-}
-
-function inferArtifactKindFromPath(filePath) {
-  const extension = path.extname(String(filePath ?? '')).toLowerCase();
-  if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'].includes(extension)) {
-    return 'image';
-  }
-  if (['.mp4', '.mov', '.mkv', '.webm'].includes(extension)) {
-    return 'video';
-  }
-  if (['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.amr'].includes(extension)) {
-    return 'audio';
-  }
-  return 'file';
-}
-
-function inferMimeTypeFromPath(filePath) {
-  const extension = path.extname(String(filePath ?? '')).toLowerCase();
-  return ({
-    '.png': 'image/png',
-    '.jpg': 'image/jpeg',
-    '.jpeg': 'image/jpeg',
-    '.gif': 'image/gif',
-    '.webp': 'image/webp',
-    '.bmp': 'image/bmp',
-    '.pdf': 'application/pdf',
-    '.doc': 'application/msword',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.xls': 'application/vnd.ms-excel',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    '.csv': 'text/csv',
-    '.txt': 'text/plain',
-    '.md': 'text/markdown',
-    '.json': 'application/json',
-    '.html': 'text/html',
-    '.zip': 'application/zip',
-    '.tar': 'application/x-tar',
-    '.gz': 'application/gzip',
-    '.tgz': 'application/gzip',
-    '.mp4': 'video/mp4',
-    '.webm': 'video/webm',
-    '.mov': 'video/quicktime',
-    '.mp3': 'audio/mpeg',
-    '.wav': 'audio/wav',
-    '.ogg': 'audio/ogg',
-    '.m4a': 'audio/mp4',
-  })[extension] ?? null;
-}
-
-function isLocalFilePath(value) {
-  const normalized = String(value ?? '').trim();
-  if (!normalized) {
-    return false;
-  }
-  if (/^(?:https?:)?\/\//iu.test(normalized)) {
-    return false;
-  }
-  if (/^data:/iu.test(normalized)) {
-    return false;
-  }
-  return path.isAbsolute(normalized);
 }
 
 function extractAllAssistantVisibleText(turn) {
