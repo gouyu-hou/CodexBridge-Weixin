@@ -13,6 +13,7 @@ import {
   extractSessionErrorMessage,
   extractTurnOutputText,
   describeSessionRateLimitError,
+  findSessionRuntimeErrorForTurn,
   hasUnsettledAssistantActivity,
   isAssistantVisibleItem,
   isUserVisibleItem,
@@ -220,6 +221,49 @@ test('session error helpers normalize runtime failures and rate limit shapes', (
   assert.equal(describeSessionRateLimitError(null), null);
 });
 
+test('findSessionRuntimeErrorForTurn scans only the requested turn', () => {
+  const lines = [
+    JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'response_error', message: 'previous turn failure' },
+    }),
+    JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'task_started', turn_id: 'turn-1' },
+    }),
+    'not json',
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', text: 'ignored' } }),
+    JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        rateLimits: { secondary: { usedPercent: 100 } },
+      },
+    }),
+    JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'task_complete', turn_id: 'turn-1' },
+    }),
+  ];
+  assert.equal(
+    findSessionRuntimeErrorForTurn(lines, 5, 'turn-1'),
+    'Codex usage limit reached (codex weekly 100%).',
+  );
+
+  const cleanTurnLines = [
+    JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'response_error', message: 'must stay in previous turn' },
+    }),
+    JSON.stringify({ type: 'turn_context', payload: { turn_id: 'turn-2' } }),
+    JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'task_complete', turn_id: 'turn-2' },
+    }),
+  ];
+  assert.equal(findSessionRuntimeErrorForTurn(cleanTurnLines, 2, 'turn-2'), null);
+});
+
 test('both AppClient implementations delegate event mapping to the shared module', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..', '..', '..');
   const appClients = [
@@ -238,6 +282,7 @@ test('both AppClient implementations delegate event mapping to the shared module
     'extractTurnCommentaryText',
     'extractTurnOutputText',
     'describeSessionRateLimitError',
+    'findSessionRuntimeErrorForTurn',
     'hasUnsettledAssistantActivity',
     'isAssistantVisibleItem',
     'isUserVisibleItem',

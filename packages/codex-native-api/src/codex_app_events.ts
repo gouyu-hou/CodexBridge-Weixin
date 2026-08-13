@@ -297,6 +297,52 @@ export function describeSessionRateLimitError(rateLimits: unknown): string | nul
   return null;
 }
 
+export function findSessionRuntimeErrorForTurn(
+  lines: readonly string[],
+  taskCompleteIndex: number,
+  turnId: string,
+): string | null {
+  for (let index = taskCompleteIndex - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line) {
+      continue;
+    }
+    let entry: ProtocolRecord | null = null;
+    try {
+      entry = asRecord(JSON.parse(line));
+    } catch {
+      continue;
+    }
+    const payload = asRecord(entry?.payload);
+    if (entry?.type === 'turn_context') {
+      if (String(payload?.turn_id ?? '') === turnId) {
+        break;
+      }
+      continue;
+    }
+    if (entry?.type !== 'event_msg') {
+      continue;
+    }
+    const eventType = String(payload?.type ?? '');
+    if (eventType === 'task_started' && String(payload?.turn_id ?? '') === turnId) {
+      break;
+    }
+    if (eventType === 'token_count') {
+      const rateLimitError = describeSessionRateLimitError(
+        payload?.rate_limits ?? payload?.rateLimits ?? null,
+      );
+      if (rateLimitError) {
+        return rateLimitError;
+      }
+    }
+    const message = extractSessionErrorMessage(payload);
+    if (message) {
+      return message;
+    }
+  }
+  return null;
+}
+
 function normalizeRateLimitString(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;

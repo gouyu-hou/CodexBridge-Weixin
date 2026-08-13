@@ -80,14 +80,13 @@ import {
   buildTurnSnapshotKey,
   classifyTurnCompletionState,
   classifyAgentOutput,
-  describeSessionRateLimitError,
   extractAgentPhase,
   extractItemId,
   extractNotificationTurnId,
   extractProgressUpdate,
-  extractSessionErrorMessage,
   extractTurnCommentaryText,
   extractTurnOutputText,
+  findSessionRuntimeErrorForTurn,
   hasUnsettledAssistantActivity,
   isAssistantVisibleItem,
   isUserVisibleItem,
@@ -3158,46 +3157,6 @@ function extractToolSuggestResponseItemText(payload: any): string | null {
       ? '当前缺少所需插件。'
       : '当前缺少所需扩展能力。';
   return `${prefix}\n${reason}\n请先完成对应的安装或认证，再重试原请求。`;
-}
-
-function findSessionRuntimeErrorForTurn(lines: string[], taskCompleteIndex: number, turnId: string): string | null {
-  for (let index = taskCompleteIndex - 1; index >= 0; index -= 1) {
-    const line = lines[index]?.trim();
-    if (!line) {
-      continue;
-    }
-    let entry: any = null;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    const payload = entry?.payload ?? null;
-    if (entry?.type === 'turn_context') {
-      if (String(payload?.turn_id ?? '') === turnId) {
-        break;
-      }
-      continue;
-    }
-    if (entry?.type !== 'event_msg') {
-      continue;
-    }
-    const eventType = String(payload?.type ?? '');
-    if (eventType === 'task_started' && String(payload?.turn_id ?? '') === turnId) {
-      break;
-    }
-    if (eventType === 'token_count') {
-      const rateLimitError = describeSessionRateLimitError(payload?.rate_limits ?? payload?.rateLimits ?? null);
-      if (rateLimitError) {
-        return rateLimitError;
-      }
-    }
-    const message = extractSessionErrorMessage(payload);
-    if (message) {
-      return message;
-    }
-  }
-  return null;
 }
 
 function inspectSessionTurnArtifacts(lines, taskCompleteIndex, state) {
