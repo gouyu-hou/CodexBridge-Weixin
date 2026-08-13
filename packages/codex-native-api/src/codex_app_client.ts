@@ -21,7 +21,6 @@ import {
   extractStructuredText,
   extractTextCandidate,
   formatConfigKeyPath,
-  isAgentDeltaNotificationMethod,
   isThreadLevelApprovedExecutionSignal,
   isTurnTerminal,
   mapAppInfo,
@@ -76,6 +75,19 @@ import type {
   CodexAppSkillMetadata,
   PendingApproval,
 } from './codex_app_protocol.js';
+import {
+  buildTurnSnapshotKey,
+  classifyAgentOutput,
+  extractAgentPhase,
+  extractItemId,
+  extractNotificationTurnId,
+  extractProgressUpdate,
+  isAssistantVisibleItem,
+  isUserVisibleItem,
+} from './codex_app_events.js';
+import type {
+  CodexAppProgressState as ProgressState,
+} from './codex_app_events.js';
 import type {
   ProviderAppInfo,
   ProviderApprovalRequest,
@@ -152,13 +164,6 @@ interface CodexAppMcpOauthLoginResponse {
 interface PendingRequest {
   resolve: (value: any) => void;
   reject: (error: Error) => void;
-}
-
-interface ProgressState {
-  commentaryText: string;
-  finalAnswerText: string;
-  sawAssistantActivity: boolean;
-  lastAssistantActivityAt: number;
 }
 
 interface CodexAppClientOptions {
@@ -2956,199 +2961,6 @@ function hasUnsettledAssistantActivity(turn: any, progressState: Partial<Progres
   });
 }
 
-
-function buildTurnSnapshotKey(turn) {
-  const items = Array.isArray(turn?.items) ? turn.items : [];
-  return JSON.stringify({
-    status: turn?.status ?? '',
-    error: turn?.error ?? '',
-    items: items.map((item) => ({
-      type: item?.type ?? '',
-      role: item?.role ?? '',
-      phase: item?.phase ?? '',
-      text: item?.text ?? '',
-    })),
-  });
-}
-
-function extractProgressUpdate(notification, turnId, itemOutputKinds, progressState) {
-  if (!notification || typeof notification.method !== 'string') {
-    return null;
-  }
-  const params = notification.params ?? {};
-  const notificationTurnId = extractNotificationTurnId(params);
-  if (!notificationTurnId || notificationTurnId !== turnId) {
-    return null;
-  }
-  const method = notification.method;
-  if (method === 'item/started' || method === 'item/completed') {
-    const item = params?.item ?? params;
-    if (!isAssistantVisibleItem(item)) {
-      return null;
-    }
-    const itemId = extractItemId(item);
-    const outputKind = classifyAgentOutput(extractAgentPhase(item), method === 'item/completed');
-    if (itemId) {
-      itemOutputKinds.set(itemId, outputKind);
-    }
-    if (method === 'item/completed' && outputKind === 'final_answer') {
-      const nextText = extractCompletedAgentText(params) ?? item?.text ?? null;
-      return buildProgressUpdate(progressState.finalAnswerText, nextText, outputKind);
-    }
-    return null;
-  }
-  if (method !== 'item/agentMessage/delta') {
-    if (!isAgentDeltaNotificationMethod(method)) {
-      return null;
-    }
-  }
-  const delta = extractNotificationDelta(params);
-  if (!delta) {
-    return null;
-  }
-  const itemId = extractItemId(params);
-  const outputKind = resolveNotificationOutputKind(params, itemId, itemOutputKinds);
-  const currentText = outputKind === 'final_answer'
-    ? progressState.finalAnswerText
-    : progressState.commentaryText;
-  return buildProgressUpdate(currentText, `${currentText}${delta}`, outputKind);
-}
-
-function extractNotificationTurnId(params) {
-  const direct = typeof params?.turnId === 'string' ? params.turnId : null;
-  if (direct) {
-    return direct;
-  }
-  const nested = typeof params?.item?.turnId === 'string' ? params.item.turnId : null;
-  if (nested) {
-    return nested;
-  }
-  return typeof params?.event?.turnId === 'string' ? params.event.turnId : null;
-}
-
-function extractNotificationDelta(params) {
-  if (typeof params?.delta === 'string' && params.delta) {
-    return params.delta;
-  }
-  if (typeof params?.text === 'string' && params.text) {
-    return params.text;
-  }
-  if (typeof params?.item?.delta === 'string' && params.item.delta) {
-    return params.item.delta;
-  }
-  return null;
-}
-
-function extractNotificationPhase(params) {
-  if (typeof params?.phase === 'string') {
-    return params.phase;
-  }
-  if (typeof params?.item?.phase === 'string') {
-    return params.item.phase;
-  }
-  return null;
-}
-
-function resolveNotificationOutputKind(params, itemId, itemOutputKinds) {
-  const explicit = classifyAgentOutput(extractNotificationPhase(params), false);
-  if (explicit === 'final_answer') {
-    return explicit;
-  }
-  if (itemId && itemOutputKinds.has(itemId)) {
-    return itemOutputKinds.get(itemId);
-  }
-  return explicit;
-}
-
-function buildProgressUpdate(currentText, nextText, outputKind) {
-  const normalizedNextText = String(nextText ?? '');
-  if (!normalizedNextText) {
-    return null;
-  }
-  const previous = String(currentText ?? '');
-  const delta = normalizedNextText.startsWith(previous)
-    ? normalizedNextText.slice(previous.length)
-    : normalizedNextText;
-  if (!delta) {
-    return null;
-  }
-  return {
-    text: normalizedNextText,
-    delta,
-    outputKind,
-  };
-}
-
-function classifyAgentOutput(phase, completed) {
-  if (!phase) {
-    return completed ? 'final_answer' : 'commentary';
-  }
-  const normalized = phase.replace(/[^a-z]/gi, '').toLowerCase();
-  if (
-    normalized === 'final'
-    || normalized === 'answer'
-    || normalized === 'response'
-    || normalized === 'finalanswer'
-    || normalized === 'finalresponse'
-  ) {
-    return 'final_answer';
-  }
-  return 'commentary';
-}
-
-function normalizeEventItemType(item) {
-  return String(item?.type ?? '').replace(/[^a-z]/gi, '').toLowerCase();
-}
-
-function normalizeEventItemRole(item) {
-  return String(item?.role ?? '').replace(/[^a-z]/gi, '').toLowerCase();
-}
-
-function isAssistantVisibleItem(item) {
-  const itemType = normalizeEventItemType(item);
-  if (itemType === 'agentmessage' || itemType === 'assistantmessage') {
-    return true;
-  }
-  return itemType === 'message' && normalizeEventItemRole(item) === 'assistant';
-}
-
-function isUserVisibleItem(item) {
-  const itemType = normalizeEventItemType(item);
-  if (itemType.includes('user')) {
-    return true;
-  }
-  return itemType === 'message' && normalizeEventItemRole(item) === 'user';
-}
-
-function extractItemId(value) {
-  const candidates = [value?.itemId, value?.item_id, value?.id, value?.item?.id];
-  for (const candidate of candidates) {
-    if (candidate !== null && candidate !== undefined && String(candidate).trim()) {
-      return String(candidate);
-    }
-  }
-  return null;
-}
-
-function extractAgentPhase(value) {
-  const candidates = [value?.phase, value?.item?.phase];
-  for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim()) {
-      return candidate;
-    }
-  }
-  return null;
-}
-
-function extractCompletedAgentText(params) {
-  if (typeof params?.text === 'string' && params.text) {
-    return params.text;
-  }
-  if (typeof params?.item?.text === 'string' && params.item.text) {
-    return params.item.text;
-  }
-  return null;
-}
 
 function rememberCodexStderrLine(stderrTail: string[], text: string): void {
   stderrTail.push(text);
