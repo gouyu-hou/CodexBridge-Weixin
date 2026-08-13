@@ -31,12 +31,14 @@ try {
   autoUpdater = null;
 }
 
-const APP_ROOT = path.resolve(app.getAppPath());
+const ELECTRON_APP_ROOT = path.resolve(app.getAppPath());
 const {
+  appRoot: APP_ROOT,
   builtInRuntimeRoot: BUILTIN_RUNTIME_ROOT,
   dependencyRoot: DEPENDENCY_ROOT,
 } = resolveElectronRuntimeLayout({
-  appRoot: APP_ROOT,
+  appRoot: ELECTRON_APP_ROOT,
+  developmentRoot: path.resolve(__dirname, '..', '..'),
   isPackaged: app.isPackaged,
   resourcesPath: process.resourcesPath,
 });

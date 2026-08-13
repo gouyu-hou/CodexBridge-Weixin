@@ -2,13 +2,14 @@
 
 const path = require('node:path');
 
-function resolveElectronRuntimeLayout({ appRoot, isPackaged, resourcesPath }) {
+function resolveElectronRuntimeLayout({ appRoot, developmentRoot, isPackaged, resourcesPath }) {
   const resolvedAppRoot = path.resolve(appRoot);
   if (!isPackaged) {
+    const resolvedDevelopmentRoot = path.resolve(developmentRoot || resolvedAppRoot);
     return {
-      appRoot: resolvedAppRoot,
-      builtInRuntimeRoot: resolvedAppRoot,
-      dependencyRoot: resolvedAppRoot,
+      appRoot: resolvedDevelopmentRoot,
+      builtInRuntimeRoot: resolvedDevelopmentRoot,
+      dependencyRoot: resolvedDevelopmentRoot,
     };
   }
 

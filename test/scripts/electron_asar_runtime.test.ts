@@ -17,6 +17,7 @@ type RuntimeLayout = {
 type RuntimeLayoutModule = {
   resolveElectronRuntimeLayout: (input: {
     appRoot: string;
+    developmentRoot?: string;
     isPackaged: boolean;
     resourcesPath: string;
   }) => RuntimeLayout;
@@ -168,6 +169,25 @@ test('Electron runtime layout preserves the repository roots in development', ()
   });
 });
 
+test('Electron runtime layout uses the repository root when a source launcher passes the main script', () => {
+  const { resolveElectronRuntimeLayout } = require(
+    '../../scripts/electron/runtime-layout.cjs',
+  ) as RuntimeLayoutModule;
+  const repositoryRoot = path.resolve('.');
+  const scriptAppRoot = path.join(repositoryRoot, 'scripts', 'electron');
+
+  assert.deepEqual(resolveElectronRuntimeLayout({
+    appRoot: scriptAppRoot,
+    developmentRoot: repositoryRoot,
+    isPackaged: false,
+    resourcesPath: path.resolve('release/win-unpacked/resources'),
+  }), {
+    appRoot: repositoryRoot,
+    builtInRuntimeRoot: repositoryRoot,
+    dependencyRoot: repositoryRoot,
+  });
+});
+
 test('Electron main keeps UI assets in ASAR and passes external service roots explicitly', () => {
   const mainSource = fs.readFileSync(
     path.join(process.cwd(), 'scripts', 'electron', 'weixin-admin-main.cjs'),
@@ -175,6 +195,8 @@ test('Electron main keeps UI assets in ASAR and passes external service roots ex
   );
 
   assert.match(mainSource, /resolveElectronRuntimeLayout/u);
+  assert.match(mainSource, /const\s*\{\s*appRoot:\s*APP_ROOT,/u);
+  assert.match(mainSource, /developmentRoot:\s*path\.resolve\(__dirname,\s*['"]\.\.['"],\s*['"]\.\.['"]\)/u);
   assert.match(mainSource, /iconPath\s*=\s*path\.join\(APP_ROOT,/u);
   assert.match(mainSource, /preloadPath\s*=\s*path\.join\(APP_ROOT,/u);
   assert.match(mainSource, /['"]--base-root-dir['"],\s*BUILTIN_RUNTIME_ROOT/u);
