@@ -107,12 +107,11 @@ export { INSTRUCTIONS_COMMAND_SKILL_ACTIONS };
 import {
   findModelByIndexToken,
   findModelByToken,
-  formatModelEffortSourceLabel,
-  formatModelSourceLabel,
   formatReasoningEffortLabel,
   formatSupportedEfforts,
   parseConcatenatedModelEffortToken,
-  renderModelLines,
+  renderCurrentModelStateLines,
+  renderModelCatalogLines,
   resolveEffectiveModelSelection,
   resolveEffortForModel,
   resolveSessionModelForEffort,
@@ -4202,19 +4201,11 @@ export class BridgeCoordinator {
     const session = this.bridgeSessions.resolveScopeSession(scopeRef);
     const settings = session ? this.bridgeSessions.getSessionSettings(session.id) : null;
     const effectiveModelState = await this.resolveEffectiveModelState(providerProfile, settings, models);
-    return messageResponse([
-      this.t('coordinator.models.listTitle', { providerProfileId: providerProfile.id }),
-      this.t('coordinator.model.current', { value: effectiveModelState.modelValue }),
-      this.t('coordinator.model.currentSource', {
-        value: formatModelSourceLabel(effectiveModelState.modelSource, this.currentI18n),
-      }),
-      this.t('coordinator.models.helpHeader'),
-      ...(models.length === 0 ? [this.t('coordinator.models.empty')] : renderModelLines(models, {
-        activeModelId: effectiveModelState.modelId,
-        i18n: this.currentI18n,
-      })),
-      this.t('coordinator.model.usageHint'),
-    ], this.resolveScopedSessionMeta(scopeRef));
+    return messageResponse(renderModelCatalogLines({
+      providerProfileId: providerProfile.id,
+      models,
+      effectiveModelState,
+    }, this.currentI18n), this.resolveScopedSessionMeta(scopeRef));
   }
 
   async handleModelCommand(event, args) {
@@ -4228,40 +4219,10 @@ export class BridgeCoordinator {
     if (!normalizedArgs.length) {
       const settings = pendingNewSession?.settings ?? (session ? this.bridgeSessions.getSessionSettings(session.id) : null);
       const effectiveModelState = await this.resolveEffectiveModelState(providerProfile, settings);
-      const lines = [
-        this.t('coordinator.model.providerProfile', { value: providerProfile.id }),
-        this.t('coordinator.model.current', { value: effectiveModelState.modelValue }),
-        this.t('coordinator.model.currentSource', {
-          value: formatModelSourceLabel(effectiveModelState.modelSource, this.currentI18n),
-        }),
-      ];
-      if (effectiveModelState.description) {
-        lines.push(this.t('coordinator.model.currentDescription', {
-          value: effectiveModelState.description,
-        }));
-      }
-      lines.push(
-        this.t('coordinator.model.currentEffort', {
-          value: formatReasoningEffortLabel(effectiveModelState.effortValue),
-        }),
-        this.t('coordinator.model.currentEffortSource', {
-          value: formatModelEffortSourceLabel(effectiveModelState.effortSource, this.currentI18n),
-        }),
+      return messageResponse(
+        renderCurrentModelStateLines(providerProfile.id, effectiveModelState, this.currentI18n),
+        this.resolveScopedSessionMeta(scopeRef),
       );
-      if (effectiveModelState.defaultReasoningEffort) {
-        lines.push(this.t('coordinator.model.defaultEffort', {
-          value: formatReasoningEffortLabel(effectiveModelState.defaultReasoningEffort),
-        }));
-      }
-      lines.push(
-        this.t('coordinator.model.supportedEfforts', {
-          value: effectiveModelState.supportedEffortsText,
-        }),
-        this.t('coordinator.model.noArgHint', { providerProfileId: providerProfile.id }),
-      );
-      return messageResponse([
-        ...lines,
-      ], this.resolveScopedSessionMeta(scopeRef));
     }
     if (normalizedArgs.length > 2) {
       return messageResponse([

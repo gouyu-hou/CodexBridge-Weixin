@@ -229,6 +229,74 @@ export function renderModelLines(models: ProviderModelInfo[], {
   });
 }
 
+export function renderModelCatalogLines(
+  {
+    providerProfileId,
+    models,
+    effectiveModelState,
+  }: {
+    providerProfileId: string;
+    models: ProviderModelInfo[];
+    effectiveModelState: EffectiveModelState;
+  },
+  i18n: Translator,
+): string[] {
+  return [
+    i18n.t('coordinator.models.listTitle', { providerProfileId }),
+    i18n.t('coordinator.model.current', { value: effectiveModelState.modelValue }),
+    i18n.t('coordinator.model.currentSource', {
+      value: formatModelSourceLabel(effectiveModelState.modelSource, i18n),
+    }),
+    i18n.t('coordinator.models.helpHeader'),
+    ...(models.length === 0
+      ? [i18n.t('coordinator.models.empty')]
+      : renderModelLines(models, {
+        activeModelId: effectiveModelState.modelId,
+        i18n,
+      })),
+    i18n.t('coordinator.model.usageHint'),
+  ];
+}
+
+export function renderCurrentModelStateLines(
+  providerProfileId: string,
+  effectiveModelState: EffectiveModelState,
+  i18n: Translator,
+): string[] {
+  const lines = [
+    i18n.t('coordinator.model.providerProfile', { value: providerProfileId }),
+    i18n.t('coordinator.model.current', { value: effectiveModelState.modelValue }),
+    i18n.t('coordinator.model.currentSource', {
+      value: formatModelSourceLabel(effectiveModelState.modelSource, i18n),
+    }),
+  ];
+  if (effectiveModelState.description) {
+    lines.push(i18n.t('coordinator.model.currentDescription', {
+      value: effectiveModelState.description,
+    }));
+  }
+  lines.push(
+    i18n.t('coordinator.model.currentEffort', {
+      value: formatReasoningEffortLabel(effectiveModelState.effortValue),
+    }),
+    i18n.t('coordinator.model.currentEffortSource', {
+      value: formatModelEffortSourceLabel(effectiveModelState.effortSource, i18n),
+    }),
+  );
+  if (effectiveModelState.defaultReasoningEffort) {
+    lines.push(i18n.t('coordinator.model.defaultEffort', {
+      value: formatReasoningEffortLabel(effectiveModelState.defaultReasoningEffort),
+    }));
+  }
+  lines.push(
+    i18n.t('coordinator.model.supportedEfforts', {
+      value: effectiveModelState.supportedEffortsText,
+    }),
+    i18n.t('coordinator.model.noArgHint', { providerProfileId }),
+  );
+  return lines;
+}
+
 export function resolveEffectiveModelSelection({
   models,
   settings,

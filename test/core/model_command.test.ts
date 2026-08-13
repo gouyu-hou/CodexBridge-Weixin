@@ -10,6 +10,8 @@ import {
   formatSupportedEfforts,
   normalizeConfiguredModelToken,
   parseConcatenatedModelEffortToken,
+  renderCurrentModelStateLines,
+  renderModelCatalogLines,
   renderModelLines,
   resolveEffectiveModelSelection,
   resolveEffortForModel,
@@ -184,6 +186,70 @@ test('renderModelLines renders numbering, markers, efforts, and descriptions', (
   assert.notEqual(lines[0], lines[1]);
   const activeMarkerOnSecond = lines[1] !== '2. model-b';
   assert.ok(activeMarkerOnSecond, lines[1]);
+});
+
+test('renderModelCatalogLines includes current selection and empty state', () => {
+  const state = resolveEffectiveModelSelection({
+    models: [],
+    settings: null,
+    providerProfile: null,
+    i18n,
+  });
+  assert.deepEqual(renderModelCatalogLines({
+    providerProfileId: 'default',
+    models: [],
+    effectiveModelState: state,
+  }, i18n), [
+    i18n.t('coordinator.models.listTitle', { providerProfileId: 'default' }),
+    i18n.t('coordinator.model.current', { value: state.modelValue }),
+    i18n.t('coordinator.model.currentSource', {
+      value: formatModelSourceLabel(state.modelSource, i18n),
+    }),
+    i18n.t('coordinator.models.helpHeader'),
+    i18n.t('coordinator.models.empty'),
+    i18n.t('coordinator.model.usageHint'),
+  ]);
+
+  const models = [buildModel({ model: 'model-a', isDefault: true })];
+  const selected = resolveEffectiveModelSelection({
+    models,
+    settings: null,
+    providerProfile: null,
+    i18n,
+  });
+  const populated = renderModelCatalogLines({
+    providerProfileId: 'default',
+    models,
+    effectiveModelState: selected,
+  }, i18n);
+  assert.ok(populated.some((line) => line.startsWith('1. model-a')));
+});
+
+test('renderCurrentModelStateLines includes optional description and default effort', () => {
+  const model = buildModel({
+    model: 'effort-model',
+    description: 'Model description',
+    isDefault: true,
+    supportedReasoningEfforts: ['low', 'high'],
+    defaultReasoningEffort: 'low',
+  });
+  const state = resolveEffectiveModelSelection({
+    models: [model],
+    settings: { reasoningEffort: 'high' },
+    providerProfile: null,
+    i18n,
+  });
+  const lines = renderCurrentModelStateLines('default', state, i18n);
+  assert.ok(lines.includes(i18n.t('coordinator.model.providerProfile', { value: 'default' })));
+  assert.ok(lines.includes(i18n.t('coordinator.model.currentDescription', {
+    value: state.description,
+  })));
+  assert.ok(lines.includes(i18n.t('coordinator.model.defaultEffort', {
+    value: formatReasoningEffortLabel('low'),
+  })));
+  assert.equal(lines.at(-1), i18n.t('coordinator.model.noArgHint', {
+    providerProfileId: 'default',
+  }));
 });
 
 test('resolveEffectiveModelSelection prefers session model over profile and provider defaults', () => {
