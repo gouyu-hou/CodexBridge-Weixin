@@ -86,9 +86,13 @@ import {
   extractProgressUpdate,
   extractTurnCommentaryText,
   extractTurnOutputText,
+  hasUnsettledAssistantActivity,
   isAssistantVisibleItem,
   isUserVisibleItem,
   resolveTurnPreviewText,
+  shouldWaitForSessionTaskMaterialization,
+  shouldWaitForSettledOutputAfterTerminalTurn,
+  shouldWaitForTaskCompleteBeforeMissing,
 } from '../../../packages/codex-native-api/src/codex_app_events.js';
 import type {
   CodexAppProgressState as ProgressState,
@@ -3329,52 +3333,6 @@ function buildSessionTaskCompleteResult({
     status,
   };
 }
-
-function shouldWaitForSessionTaskMaterialization(sessionState, hasAssistantVisibleItems) {
-  return sessionState.hasTaskComplete
-    && !hasAssistantVisibleItems
-    && !sessionState.lastAgentMessage
-    && sessionState.outputArtifacts.length === 0;
-}
-
-function shouldWaitForTaskCompleteBeforeMissing(sessionPath, sessionState) {
-  return Boolean(String(sessionPath ?? '').trim()) && !sessionState.hasTaskComplete;
-}
-
-function shouldWaitForSettledOutputAfterTerminalTurn(turn: any, progressState: Partial<ProgressState> = {}) {
-  const visibleItems = turn.items.filter((item) => item.text);
-  if (visibleItems.length === 0) {
-    return true;
-  }
-  if (progressState.finalAnswerText) {
-    return true;
-  }
-  return visibleItems.every((item) => {
-    if (isUserVisibleItem(item)) {
-      return true;
-    }
-    if (!isAssistantVisibleItem(item)) {
-      return false;
-    }
-    return classifyAgentOutput(extractAgentPhase(item), true) !== 'final_answer';
-  });
-}
-
-function hasUnsettledAssistantActivity(turn: any, progressState: Partial<ProgressState> = {}) {
-  if (progressState.finalAnswerText) {
-    return true;
-  }
-  if (progressState.commentaryText || progressState.sawAssistantActivity) {
-    return true;
-  }
-  return turn.items.some((item) => {
-    if (!isAssistantVisibleItem(item)) {
-      return false;
-    }
-    return classifyAgentOutput(extractAgentPhase(item), true) !== 'final_answer' && Boolean(item.text);
-  });
-}
-
 
 function rememberCodexStderrLine(stderrTail: string[], text: string): void {
   stderrTail.push(text);

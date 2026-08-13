@@ -187,6 +187,68 @@ export function resolveTurnPreviewText(
     || extractTurnCommentaryText(turn);
 }
 
+export function shouldWaitForSessionTaskMaterialization(
+  sessionState: {
+    hasTaskComplete: boolean;
+    lastAgentMessage: unknown;
+    outputArtifacts: unknown[];
+  },
+  hasAssistantVisibleItems: boolean,
+): boolean {
+  return sessionState.hasTaskComplete
+    && !hasAssistantVisibleItems
+    && !sessionState.lastAgentMessage
+    && sessionState.outputArtifacts.length === 0;
+}
+
+export function shouldWaitForTaskCompleteBeforeMissing(
+  sessionPath: unknown,
+  sessionState: { hasTaskComplete: boolean },
+): boolean {
+  return Boolean(String(sessionPath ?? '').trim()) && !sessionState.hasTaskComplete;
+}
+
+export function shouldWaitForSettledOutputAfterTerminalTurn(
+  turn: { items: unknown[] },
+  progressState: Partial<CodexAppProgressState> = {},
+): boolean {
+  const visibleItems = turn.items.filter((item) => asRecord(item)?.text);
+  if (visibleItems.length === 0) {
+    return true;
+  }
+  if (progressState.finalAnswerText) {
+    return true;
+  }
+  return visibleItems.every((item) => {
+    if (isUserVisibleItem(item)) {
+      return true;
+    }
+    if (!isAssistantVisibleItem(item)) {
+      return false;
+    }
+    return classifyAgentOutput(extractAgentPhase(item), true) !== 'final_answer';
+  });
+}
+
+export function hasUnsettledAssistantActivity(
+  turn: { items: unknown[] },
+  progressState: Partial<CodexAppProgressState> = {},
+): boolean {
+  if (progressState.finalAnswerText) {
+    return true;
+  }
+  if (progressState.commentaryText || progressState.sawAssistantActivity) {
+    return true;
+  }
+  return turn.items.some((item) => {
+    if (!isAssistantVisibleItem(item)) {
+      return false;
+    }
+    return classifyAgentOutput(extractAgentPhase(item), true) !== 'final_answer'
+      && Boolean(asRecord(item)?.text);
+  });
+}
+
 function extractNotificationDelta(params: ProtocolRecord): string | null {
   const directDelta = readNonEmptyString(params.delta);
   if (directDelta) {

@@ -11,9 +11,13 @@ import {
   extractNotificationTurnId,
   extractProgressUpdate,
   extractTurnOutputText,
+  hasUnsettledAssistantActivity,
   isAssistantVisibleItem,
   isUserVisibleItem,
   resolveTurnPreviewText,
+  shouldWaitForSessionTaskMaterialization,
+  shouldWaitForSettledOutputAfterTerminalTurn,
+  shouldWaitForTaskCompleteBeforeMissing,
 } from '../src/codex_app_events.js';
 
 test('event helpers normalize turn ids, phases, and visible message roles', () => {
@@ -133,6 +137,63 @@ test('turn output helpers separate final answers, commentary, and interruption s
   assert.equal(classifyTurnCompletionState(turn), 'other');
 });
 
+test('turn settle helpers preserve session materialization and assistant activity decisions', () => {
+  const emptyProgress = {};
+  const userOnlyTurn = { items: [{ type: 'userMessage', text: 'question' }] };
+  const commentaryTurn = {
+    items: [{ type: 'agentMessage', phase: 'analysis', text: 'working' }],
+  };
+  const finalTurn = {
+    items: [{ type: 'agentMessage', phase: 'final_answer', text: 'done' }],
+  };
+  const unrelatedVisibleTurn = {
+    items: [{ type: 'toolResult', text: 'tool output' }],
+  };
+
+  assert.equal(shouldWaitForSettledOutputAfterTerminalTurn({ items: [] }, emptyProgress), true);
+  assert.equal(shouldWaitForSettledOutputAfterTerminalTurn(userOnlyTurn, emptyProgress), true);
+  assert.equal(shouldWaitForSettledOutputAfterTerminalTurn(commentaryTurn, emptyProgress), true);
+  assert.equal(shouldWaitForSettledOutputAfterTerminalTurn(finalTurn, emptyProgress), false);
+  assert.equal(shouldWaitForSettledOutputAfterTerminalTurn(unrelatedVisibleTurn, emptyProgress), false);
+  assert.equal(shouldWaitForSettledOutputAfterTerminalTurn(finalTurn, {
+    finalAnswerText: 'streamed final',
+  }), true);
+
+  assert.equal(hasUnsettledAssistantActivity(finalTurn, emptyProgress), false);
+  assert.equal(hasUnsettledAssistantActivity(commentaryTurn, emptyProgress), true);
+  assert.equal(hasUnsettledAssistantActivity({ items: [] }, { commentaryText: 'streaming' }), true);
+  assert.equal(hasUnsettledAssistantActivity({ items: [] }, { sawAssistantActivity: true }), true);
+
+  const completedWithoutMaterializedOutput = {
+    hasTaskComplete: true,
+    lastAgentMessage: null,
+    outputArtifacts: [],
+  };
+  assert.equal(shouldWaitForSessionTaskMaterialization(
+    completedWithoutMaterializedOutput,
+    false,
+  ), true);
+  assert.equal(shouldWaitForSessionTaskMaterialization(
+    { ...completedWithoutMaterializedOutput, lastAgentMessage: 'done' },
+    false,
+  ), false);
+  assert.equal(shouldWaitForSessionTaskMaterialization(
+    { ...completedWithoutMaterializedOutput, outputArtifacts: [{ path: 'result.md' }] },
+    false,
+  ), false);
+  assert.equal(shouldWaitForSessionTaskMaterialization(
+    completedWithoutMaterializedOutput,
+    true,
+  ), false);
+  assert.equal(shouldWaitForTaskCompleteBeforeMissing(' C:\\session.jsonl ', {
+    hasTaskComplete: false,
+  }), true);
+  assert.equal(shouldWaitForTaskCompleteBeforeMissing('', { hasTaskComplete: false }), false);
+  assert.equal(shouldWaitForTaskCompleteBeforeMissing('session.jsonl', {
+    hasTaskComplete: true,
+  }), false);
+});
+
 test('both AppClient implementations delegate event mapping to the shared module', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..', '..', '..');
   const appClients = [
@@ -149,9 +210,13 @@ test('both AppClient implementations delegate event mapping to the shared module
     'extractProgressUpdate',
     'extractTurnCommentaryText',
     'extractTurnOutputText',
+    'hasUnsettledAssistantActivity',
     'isAssistantVisibleItem',
     'isUserVisibleItem',
     'resolveTurnPreviewText',
+    'shouldWaitForSessionTaskMaterialization',
+    'shouldWaitForSettledOutputAfterTerminalTurn',
+    'shouldWaitForTaskCompleteBeforeMissing',
   ];
 
   for (const appClientPath of appClients) {
