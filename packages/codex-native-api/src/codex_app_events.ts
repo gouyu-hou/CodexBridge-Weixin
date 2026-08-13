@@ -1,4 +1,7 @@
-import { isAgentDeltaNotificationMethod } from './codex_app_protocol.js';
+import {
+  extractTextCandidate,
+  isAgentDeltaNotificationMethod,
+} from './codex_app_protocol.js';
 
 export type CodexAppOutputKind = 'commentary' | 'final_answer';
 
@@ -247,6 +250,80 @@ export function hasUnsettledAssistantActivity(
     return classifyAgentOutput(extractAgentPhase(item), true) !== 'final_answer'
       && Boolean(asRecord(item)?.text);
   });
+}
+
+export function extractSessionErrorMessage(payload: unknown): string | null {
+  const record = asRecord(payload);
+  const eventType = String(record?.type ?? '').toLowerCase();
+  if (!/error|failed|failure/.test(eventType)) {
+    return null;
+  }
+  return extractTextCandidate(record?.message)
+    ?? extractTextCandidate(record?.error)
+    ?? extractTextCandidate(record);
+}
+
+export function describeSessionRateLimitError(rateLimits: unknown): string | null {
+  const record = asRecord(rateLimits);
+  if (!record) {
+    return null;
+  }
+  const limitId = normalizeRateLimitString(record.limit_id ?? record.limitId) ?? 'codex';
+  const credits = asRecord(record.credits);
+  if (credits) {
+    const hasCredits = normalizeRateLimitBoolean(credits.has_credits ?? credits.hasCredits);
+    const unlimited = normalizeRateLimitBoolean(credits.unlimited) === true;
+    const balance = normalizeRateLimitString(credits.balance);
+    if (hasCredits === false && !unlimited) {
+      return `Codex subscription credits are exhausted (${limitId} balance ${balance ?? '0'}).`;
+    }
+  }
+  const reachedType = normalizeRateLimitString(
+    record.rate_limit_reached_type ?? record.rateLimitReachedType,
+  );
+  if (reachedType) {
+    return `Codex usage limit reached (${limitId}: ${reachedType}).`;
+  }
+  const primary = asRecord(record.primary);
+  const primaryUsed = normalizeRateLimitNumber(primary?.used_percent ?? primary?.usedPercent);
+  if (primaryUsed !== null && primaryUsed >= 100) {
+    return `Codex usage limit reached (${limitId} primary ${Math.round(primaryUsed)}%).`;
+  }
+  const secondary = asRecord(record.secondary);
+  const secondaryUsed = normalizeRateLimitNumber(secondary?.used_percent ?? secondary?.usedPercent);
+  if (secondaryUsed !== null && secondaryUsed >= 100) {
+    return `Codex usage limit reached (${limitId} weekly ${Math.round(secondaryUsed)}%).`;
+  }
+  return null;
+}
+
+function normalizeRateLimitString(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim();
+  return normalized || null;
+}
+
+function normalizeRateLimitBoolean(value: unknown): boolean | null {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') {
+      return true;
+    }
+    if (normalized === 'false') {
+      return false;
+    }
+  }
+  return null;
+}
+
+function normalizeRateLimitNumber(value: unknown): number | null {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function extractNotificationDelta(params: ProtocolRecord): string | null {

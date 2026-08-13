@@ -10,7 +10,9 @@ import {
   extractItemId,
   extractNotificationTurnId,
   extractProgressUpdate,
+  extractSessionErrorMessage,
   extractTurnOutputText,
+  describeSessionRateLimitError,
   hasUnsettledAssistantActivity,
   isAssistantVisibleItem,
   isUserVisibleItem,
@@ -194,6 +196,30 @@ test('turn settle helpers preserve session materialization and assistant activit
   }), false);
 });
 
+test('session error helpers normalize runtime failures and rate limit shapes', () => {
+  assert.equal(extractSessionErrorMessage({ type: 'task_complete', message: 'done' }), null);
+  assert.equal(extractSessionErrorMessage({ type: 'runtime_failed', message: 'request failed' }), 'request failed');
+  assert.equal(extractSessionErrorMessage({
+    type: 'response_error',
+    error: { message: 'nested failure' },
+  }), 'nested failure');
+
+  assert.equal(describeSessionRateLimitError({
+    limit_id: 'codex-paid',
+    credits: { has_credits: 'false', unlimited: false, balance: ' 0 ' },
+  }), 'Codex subscription credits are exhausted (codex-paid balance 0).');
+  assert.equal(describeSessionRateLimitError({
+    limitId: 'codex-weekly',
+    rateLimitReachedType: 'weekly',
+  }), 'Codex usage limit reached (codex-weekly: weekly).');
+  assert.equal(describeSessionRateLimitError({ primary: { usedPercent: '100.4' } }),
+    'Codex usage limit reached (codex primary 100%).');
+  assert.equal(describeSessionRateLimitError({ secondary: { used_percent: 101 } }),
+    'Codex usage limit reached (codex weekly 101%).');
+  assert.equal(describeSessionRateLimitError({ primary: { used_percent: 99.9 } }), null);
+  assert.equal(describeSessionRateLimitError(null), null);
+});
+
 test('both AppClient implementations delegate event mapping to the shared module', () => {
   const repositoryRoot = path.resolve(import.meta.dirname, '..', '..', '..');
   const appClients = [
@@ -208,8 +234,10 @@ test('both AppClient implementations delegate event mapping to the shared module
     'extractItemId',
     'extractNotificationTurnId',
     'extractProgressUpdate',
+    'extractSessionErrorMessage',
     'extractTurnCommentaryText',
     'extractTurnOutputText',
+    'describeSessionRateLimitError',
     'hasUnsettledAssistantActivity',
     'isAssistantVisibleItem',
     'isUserVisibleItem',

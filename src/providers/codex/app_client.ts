@@ -80,10 +80,12 @@ import {
   buildTurnSnapshotKey,
   classifyTurnCompletionState,
   classifyAgentOutput,
+  describeSessionRateLimitError,
   extractAgentPhase,
   extractItemId,
   extractNotificationTurnId,
   extractProgressUpdate,
+  extractSessionErrorMessage,
   extractTurnCommentaryText,
   extractTurnOutputText,
   hasUnsettledAssistantActivity,
@@ -3196,76 +3198,6 @@ function findSessionRuntimeErrorForTurn(lines: string[], taskCompleteIndex: numb
     }
   }
   return null;
-}
-
-function extractSessionErrorMessage(payload: any): string | null {
-  const eventType = String(payload?.type ?? '').toLowerCase();
-  if (!/error|failed|failure/.test(eventType)) {
-    return null;
-  }
-  return extractTextCandidate(payload?.message)
-    ?? extractTextCandidate(payload?.error)
-    ?? extractTextCandidate(payload);
-}
-
-function describeSessionRateLimitError(rateLimits: any): string | null {
-  if (!rateLimits || typeof rateLimits !== 'object') {
-    return null;
-  }
-  const limitId = normalizeRateLimitString(rateLimits.limit_id ?? rateLimits.limitId) ?? 'codex';
-  const credits = rateLimits.credits && typeof rateLimits.credits === 'object'
-    ? rateLimits.credits
-    : null;
-  if (credits) {
-    const hasCredits = normalizeRateLimitBoolean(credits.has_credits ?? credits.hasCredits);
-    const unlimited = normalizeRateLimitBoolean(credits.unlimited) === true;
-    const balance = normalizeRateLimitString(credits.balance);
-    if (hasCredits === false && !unlimited) {
-      return `Codex subscription credits are exhausted (${limitId} balance ${balance ?? '0'}).`;
-    }
-  }
-  const reachedType = normalizeRateLimitString(rateLimits.rate_limit_reached_type ?? rateLimits.rateLimitReachedType);
-  if (reachedType) {
-    return `Codex usage limit reached (${limitId}: ${reachedType}).`;
-  }
-  const primaryUsed = normalizeRateLimitNumber(rateLimits.primary?.used_percent ?? rateLimits.primary?.usedPercent);
-  if (primaryUsed !== null && primaryUsed >= 100) {
-    return `Codex usage limit reached (${limitId} primary ${Math.round(primaryUsed)}%).`;
-  }
-  const secondaryUsed = normalizeRateLimitNumber(rateLimits.secondary?.used_percent ?? rateLimits.secondary?.usedPercent);
-  if (secondaryUsed !== null && secondaryUsed >= 100) {
-    return `Codex usage limit reached (${limitId} weekly ${Math.round(secondaryUsed)}%).`;
-  }
-  return null;
-}
-
-function normalizeRateLimitString(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const normalized = value.trim();
-  return normalized ? normalized : null;
-}
-
-function normalizeRateLimitBoolean(value: unknown): boolean | null {
-  if (typeof value === 'boolean') {
-    return value;
-  }
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === 'true') {
-      return true;
-    }
-    if (normalized === 'false') {
-      return false;
-    }
-  }
-  return null;
-}
-
-function normalizeRateLimitNumber(value: unknown): number | null {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : null;
 }
 
 function inspectSessionTurnArtifacts(lines, taskCompleteIndex, state) {
