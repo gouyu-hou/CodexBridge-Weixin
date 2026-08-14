@@ -26,6 +26,7 @@
     "node_modules",
     "packages/**/dist",
     "packages/**/examples",
-    "packages/**/test"
+    "packages/**/test",
+    "src/platforms/weixin/admin_app"
   ]
 }

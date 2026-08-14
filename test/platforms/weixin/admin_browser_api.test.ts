@@ -26,4 +26,9 @@ test('Weixin admin uses the strict React TypeScript boundary', () => {
   assert.equal(config.compilerOptions?.allowJs, false);
   assert.equal(config.compilerOptions?.strict, true);
   assert.ok(config.include?.includes('src/platforms/weixin/admin_app/**/*.tsx'));
+
+  const rootConfig = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'tsconfig.json'), 'utf8'),
+  ) as { exclude?: string[] };
+  assert.ok(rootConfig.exclude?.includes('src/platforms/weixin/admin_app'));
 });
