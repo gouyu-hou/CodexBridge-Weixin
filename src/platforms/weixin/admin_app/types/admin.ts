@@ -95,10 +95,24 @@ export type ModelProviderSettings = JsonObject & {
   source?: string;
 };
 
+export type ConcurrencySettings = JsonObject & {
+  accountPollConcurrency?: number;
+  attachmentProcessingConcurrency?: number;
+  eventDispatchConcurrency?: number;
+  maxConcurrentTurns?: number;
+};
+
+export type LogCleanupSettings = JsonObject & {
+  enabled?: boolean;
+  intervalMinutes?: number;
+  maxBytes?: number;
+  retentionDays?: number;
+};
+
 export type AdminSettings = JsonObject & {
   alertWebhookUrl?: string;
-  concurrency?: JsonObject;
-  logCleanup?: JsonObject;
+  concurrency?: ConcurrencySettings;
+  logCleanup?: LogCleanupSettings;
   modelProvider?: ModelProviderSettings;
 };
 

@@ -10,13 +10,16 @@ import { usePageLifecycle } from './hooks/usePageLifecycle';
 import { useTheme } from './hooks/useTheme';
 import { AdminShell } from './layouts/AdminShell';
 import { AccountsPage } from './pages/accounts/AccountsPage';
+import { BackupPage } from './pages/backup/BackupPage';
 import { DiagnosticsPage } from './pages/diagnostics/DiagnosticsPage';
+import { PhoneGuidePage } from './pages/guide/PhoneGuidePage';
 import { MetricsPage } from './pages/metrics/MetricsPage';
 import { LogsPage } from './pages/logs/LogsPage';
 import { OverviewPage } from './pages/overview/OverviewPage';
 import { ProviderPage } from './pages/provider/ProviderPage';
 import { RuntimePage } from './pages/runtime/RuntimePage';
 import { SessionsPage } from './pages/sessions/SessionsPage';
+import { SettingsPage } from './pages/settings/SettingsPage';
 import { getAdminRoute } from './routes/adminRoutes';
 import type { DiagnosticsResult } from './types/admin';
 
@@ -141,6 +144,12 @@ export function App({ api: injectedApi }: AppProps = {}) {
     page = <SessionsPage accounts={stateResource.data?.accounts ?? []} api={api} />;
   } else if (route === 'logs') {
     page = <LogsPage api={api} />;
+  } else if (route === 'settings') {
+    page = <SettingsPage api={api} settings={stateResource.data?.settings ?? {}} onChanged={() => { void stateResource.refresh(); }} />;
+  } else if (route === 'backup') {
+    page = <BackupPage api={api} onChanged={() => { void stateResource.refresh(); }} />;
+  } else if (route === 'phone-guide') {
+    page = <PhoneGuidePage />;
   } else {
     const definition = getAdminRoute(route);
     page = <section className="page-placeholder" aria-label={definition.label}><p>{definition.subtitle}</p></section>;
