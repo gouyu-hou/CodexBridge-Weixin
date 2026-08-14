@@ -1,15 +1,4 @@
-:root {
-  color: #181c24;
-  background: #edf0f4;
-  font-family: Inter, "Microsoft YaHei", "Segoe UI", sans-serif;
-}
-
-body {
-  margin: 0;
-}
-
-.admin-bootstrap {
-  min-height: 100vh;
-  display: grid;
-  place-items: center;
-}
+@import './tokens.css';
+@import './base.css';
+@import './shell.css';
+@import './components.css';
