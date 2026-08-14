@@ -17,3 +17,4 @@ test-output.log
 *.log
 reports/
 reference/
+.superpowers/
