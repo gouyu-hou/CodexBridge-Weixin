@@ -2,6 +2,34 @@
   min-width: 0;
 }
 
+.accounts-table {
+  min-width: 980px;
+}
+
+.accounts-table th:nth-child(1) { width: 21%; }
+.accounts-table th:nth-child(2) { width: 28%; }
+.accounts-table th:nth-child(3) { width: 14%; }
+.accounts-table th:nth-child(4) { width: 12%; }
+.accounts-table th:nth-child(5) { width: 25%; }
+
+.accounts-table td {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.account-table-value {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-table-value--mono {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
 .account-name-cell strong,
 .account-name-cell span {
   display: block;

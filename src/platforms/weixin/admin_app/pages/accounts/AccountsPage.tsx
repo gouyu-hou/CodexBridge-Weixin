@@ -45,8 +45,22 @@ export function AccountsPage({ accounts, api, onChanged, profiles }: AccountsPag
         </div>
       ),
     },
-    { key: 'userId', header: '用户', render: (account) => account.userId || '-' },
-    { key: 'role', header: '角色', render: (account) => account.primary ? '主账号' : account.role || '普通用户' },
+    {
+      key: 'userId',
+      header: '用户',
+      render: (account) => {
+        const userId = account.userId || '-';
+        return <span className="account-table-value account-table-value--mono" title={userId}>{userId}</span>;
+      },
+    },
+    {
+      key: 'role',
+      header: '角色',
+      render: (account) => {
+        const role = account.primary ? '主账号' : account.role || '普通用户';
+        return <span className="account-table-value" title={role}>{role}</span>;
+      },
+    },
     {
       key: 'disabled',
       header: '状态',
@@ -93,7 +107,7 @@ export function AccountsPage({ accounts, api, onChanged, profiles }: AccountsPag
         subtitle={`已接入 ${accounts.length} 个账号`}
         actions={<Button variant="primary" icon={<Plus />} onClick={() => setPairing(true)}>添加微信账号</Button>}
       >
-        <DataTable columns={columns} emptyText="尚未添加微信账号" rows={accounts} rowKey={(account) => account.accountId} />
+        <DataTable className="accounts-table" columns={columns} emptyText="尚未添加微信账号" rows={accounts} rowKey={(account) => account.accountId} />
       </Panel>
       {editing && (
         <AccountEditor account={editing} api={api} profiles={profiles} onClose={() => setEditing(null)} onSaved={onChanged} />

@@ -244,17 +244,22 @@ export type SessionHistoryResponse = JsonObject & {
 };
 
 export type AdminLogFile = JsonObject & {
+  kind?: string;
   label?: string;
   lines?: string[];
   path?: string;
   size?: number;
+  sizeBytes?: number;
+  text?: string;
   updatedAt?: string;
 };
 
 export type AdminLogs = JsonObject & {
   files?: AdminLogFile[];
   lines?: string[];
+  text?: string;
   totalBytes?: number;
+  totalSizeBytes?: number;
 };
 
 export type BasicMutationResponse = JsonObject & {

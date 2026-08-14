@@ -9,6 +9,7 @@ export type DataTableColumn<T> = {
 
 type DataTableProps<T> = {
   bodyId?: string;
+  className?: string;
   columns: readonly DataTableColumn<T>[];
   emptyText?: string;
   loading?: boolean;
@@ -18,6 +19,7 @@ type DataTableProps<T> = {
 
 export function DataTable<T>({
   bodyId,
+  className,
   columns,
   emptyText = '暂无数据',
   loading = false,
@@ -26,7 +28,7 @@ export function DataTable<T>({
 }: DataTableProps<T>) {
   return (
     <div className="data-table-wrap">
-      <table className="data-table">
+      <table className={`data-table${className ? ` ${className}` : ''}`}>
         <thead>
           <tr>
             {columns.map((column) => (

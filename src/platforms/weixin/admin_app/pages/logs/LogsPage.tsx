@@ -24,6 +24,27 @@ function responseLogs(value: JsonObject): AdminLogs | null {
   return logs && typeof logs === 'object' && !Array.isArray(logs) ? logs as AdminLogs : null;
 }
 
+function splitLogText(text: unknown): string[] {
+  return typeof text === 'string' && text.length > 0 ? text.split(/\r?\n/u) : [];
+}
+
+function readLogLines(logs: AdminLogs | null | undefined): string[] {
+  if (!logs) return [];
+  if (Array.isArray(logs.lines)) return logs.lines;
+  const combined = splitLogText(logs.text);
+  if (combined.length > 0) return combined;
+  return logs.files?.flatMap((file) => (
+    Array.isArray(file.lines) ? file.lines : splitLogText(file.text)
+  )) ?? [];
+}
+
+function readLogBytes(logs: AdminLogs | null | undefined): number {
+  if (!logs) return 0;
+  if (typeof logs.totalSizeBytes === 'number') return logs.totalSizeBytes;
+  if (typeof logs.totalBytes === 'number') return logs.totalBytes;
+  return logs.files?.reduce((total, file) => total + Number(file.sizeBytes ?? file.size ?? 0), 0) ?? 0;
+}
+
 export function LogsPage({ api }: LogsPageProps) {
   const [level, setLevel] = useState('all');
   const [query, setQuery] = useState('');
@@ -35,7 +56,7 @@ export function LogsPage({ api }: LogsPageProps) {
   const loadLogs = useCallback(() => api.getLogs(500), [api]);
   const resource = useAsyncResource(loadLogs);
   const logs = cleanupLogs ?? resource.data;
-  const lines = logs?.lines ?? logs?.files?.flatMap((file) => file.lines ?? []) ?? [];
+  const lines = readLogLines(logs);
   const filteredLines = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return lines.filter((line) => {
@@ -86,7 +107,7 @@ export function LogsPage({ api }: LogsPageProps) {
     <div className="page-stack logs-page">
       <Panel
         title="运行日志"
-        subtitle={`${lines.length} 行 · ${Math.round((logs?.totalBytes ?? 0) / 1024)} KiB`}
+        subtitle={`${lines.length} 行 · ${Math.round(readLogBytes(logs) / 1024)} KiB`}
         actions={(
           <div className="table-actions">
             <IconButton label="复制日志" disabled={!filteredLines.length} onClick={() => { void copyLogs(); }}><Copy /></IconButton>

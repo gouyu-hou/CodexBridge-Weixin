@@ -7,21 +7,25 @@ import { LogsPage } from './LogsPage';
 const longLine = `[debug] ${'x'.repeat(600)}`;
 
 function createApi(getLogs = vi.fn(async () => ({
-  files: [{ label: 'bridge.log', path: 'D:/logs/bridge.log', size: 4096, lines: [] }],
-  lines: [
-    '[info] bridge started',
-    '[warn] queue is busy',
-    '[error] request failed',
-    longLine,
-  ],
-  totalBytes: 4096,
+  files: [{
+    kind: 'stdout',
+    path: 'D:/logs/weixin-bridge.out.log',
+    sizeBytes: 4096,
+    text: ['[info] bridge started', '[warn] queue is busy', '[error] request failed', longLine].join('\n'),
+  }],
+  text: ['== stdout: D:/logs/weixin-bridge.out.log ==', '[info] bridge started', '[warn] queue is busy', '[error] request failed', longLine].join('\n'),
+  totalSizeBytes: 4096,
 }))) {
   return {
     getLogs,
     cleanupLogs: vi.fn(async () => ({
       ok: true,
       cleanup: { actions: ['removed old.log'] },
-      logs: { lines: ['[info] bridge started'], totalBytes: 1024 },
+      logs: {
+        files: [{ kind: 'stdout', path: 'D:/logs/weixin-bridge.out.log', sizeBytes: 1024, text: '[info] bridge started' }],
+        text: '== stdout: D:/logs/weixin-bridge.out.log ==\n[info] bridge started',
+        totalSizeBytes: 1024,
+      },
     })),
   } as unknown as AdminApi;
 }
@@ -32,6 +36,7 @@ describe('LogsPage', () => {
     render(<LogsPage api={api} />);
 
     expect(await screen.findByText('[error] request failed')).toBeVisible();
+    expect(screen.getByText('5 行 · 4 KiB')).toBeVisible();
     expect(screen.getByTestId('log-viewer')).toHaveClass('log-viewer');
     expect(screen.getByText(longLine)).toHaveClass('log-line');
 

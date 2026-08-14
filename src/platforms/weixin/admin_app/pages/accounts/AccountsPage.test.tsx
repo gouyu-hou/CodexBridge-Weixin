@@ -22,6 +22,7 @@ const accounts: AdminAccount[] = [
   {
     accountId: 'wx-friend',
     displayName: '朋友',
+    userId: 'o9cq801U4S_b8cXVtdr8llR_1dja@im.wechat',
     primary: false,
     role: 'member',
     permissions: { canChat: true, canUpload: false, canExecuteCommands: false },
@@ -95,5 +96,14 @@ describe('AccountsPage', () => {
     expect(screen.getByText('配对成功')).toBeVisible();
     await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
     expect(api.getPairing).toHaveBeenCalledOnce();
+  });
+
+  it('contains long account identifiers inside their own table columns', () => {
+    render(<AccountsPage accounts={accounts} api={createApi()} profiles={profiles} onChanged={vi.fn()} />);
+
+    const userId = screen.getByText('o9cq801U4S_b8cXVtdr8llR_1dja@im.wechat');
+    expect(userId).toHaveClass('account-table-value');
+    expect(userId).toHaveAttribute('title', 'o9cq801U4S_b8cXVtdr8llR_1dja@im.wechat');
+    expect(userId.closest('table')).toHaveClass('accounts-table');
   });
 });
