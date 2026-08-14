@@ -18,3 +18,4 @@ test-output.log
 reports/
 reference/
 .superpowers/
+.worktrees/
