@@ -22,6 +22,7 @@ type AdminShellProps = {
   onNavigate: (route: AdminRouteId) => void;
   onRefresh: () => void;
   onToggleTheme: () => void;
+  pageAction?: ReactNode;
   route: AdminRouteId;
   serviceState?: ServiceState;
   theme: AdminTheme;
@@ -40,6 +41,7 @@ export function AdminShell({
   onNavigate,
   onRefresh,
   onToggleTheme,
+  pageAction,
   route,
   serviceState = 'unknown',
   theme,
@@ -135,7 +137,8 @@ export function AdminShell({
             <p>{currentRoute.subtitle}</p>
           </div>
           <div className="header-actions">
-            <span className="service-badge" data-state={serviceState}>{serviceLabels[serviceState]}</span>
+            <span className="service-badge" data-state={serviceState} id="service-state">{serviceLabels[serviceState]}</span>
+            {pageAction}
             <button
               className="icon-button"
               type="button"

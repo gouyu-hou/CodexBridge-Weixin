@@ -111,9 +111,21 @@ export function createAdminApi(fetchFn: FetchLike = window.fetch.bind(window), a
     testAlert: (payload: JsonObject = {}) => mutation('/api/alert/test', payload),
     importBackup: (payload: JsonObject) => mutation('/api/import', payload),
     cleanupLogs: () => mutation('/api/logs/cleanup'),
-    heartbeat: (pageId: string) => mutation('/api/page/heartbeat', { pageId }),
-    closePage: (pageId: string, reason: string) => mutation('/api/page/close', { pageId, reason }),
-    shutdownService: (reason: string) => mutation('/api/service/shutdown', { reason }),
+    heartbeat: (pageId: string) => requestJson<BasicMutationResponse>('/api/page/heartbeat', {
+      method: 'POST',
+      body: JSON.stringify({ pageId, shutdownOnClose: true }),
+      keepalive: true,
+    }),
+    closePage: (pageId: string, reason: string) => requestJson<BasicMutationResponse>('/api/page/close', {
+      method: 'POST',
+      body: JSON.stringify({ closedAt: Date.now(), pageId, reason, shutdownOnClose: true }),
+      keepalive: true,
+    }),
+    shutdownService: (reason: string) => requestJson<BasicMutationResponse>('/api/service/shutdown', {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+      keepalive: true,
+    }),
   } as const;
 }
 

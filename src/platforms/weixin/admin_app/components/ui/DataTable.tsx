@@ -8,6 +8,7 @@ export type DataTableColumn<T> = {
 };
 
 type DataTableProps<T> = {
+  bodyId?: string;
   columns: readonly DataTableColumn<T>[];
   emptyText?: string;
   loading?: boolean;
@@ -16,6 +17,7 @@ type DataTableProps<T> = {
 };
 
 export function DataTable<T>({
+  bodyId,
   columns,
   emptyText = '暂无数据',
   loading = false,
@@ -32,7 +34,7 @@ export function DataTable<T>({
             ))}
           </tr>
         </thead>
-        <tbody>
+        <tbody id={bodyId}>
           {loading && Array.from({ length: 3 }, (_, index) => (
             <tr key={`skeleton-${index}`} data-testid="table-skeleton-row">
               {columns.map((column) => (
