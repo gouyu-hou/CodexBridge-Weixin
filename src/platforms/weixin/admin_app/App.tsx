@@ -1,8 +1,10 @@
-import { useCallback, useMemo, useState } from 'react';
-import { Play, RotateCw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Play, RotateCw, Square } from 'lucide-react';
 import { createAdminApi, sanitizeAdminError, type AdminApi } from './api/adminApi';
 import { Button } from './components/ui/Button';
 import { InlineAlert } from './components/ui/Feedback';
+import { IconButton } from './components/ui/IconButton';
+import { SupportDialog } from './components/SupportDialog';
 import { useToast } from './context/ToastContext';
 import { useAdminRoute } from './hooks/useAdminRoute';
 import { useAsyncResource } from './hooks/useAsyncResource';
@@ -10,6 +12,7 @@ import { usePageLifecycle } from './hooks/usePageLifecycle';
 import { useTheme } from './hooks/useTheme';
 import { AdminShell } from './layouts/AdminShell';
 import { AccountsPage } from './pages/accounts/AccountsPage';
+import { PairingDialog } from './pages/accounts/PairingDialog';
 import { BackupPage } from './pages/backup/BackupPage';
 import { DiagnosticsPage } from './pages/diagnostics/DiagnosticsPage';
 import { PhoneGuidePage } from './pages/guide/PhoneGuidePage';
@@ -20,6 +23,7 @@ import { ProviderPage } from './pages/provider/ProviderPage';
 import { RuntimePage } from './pages/runtime/RuntimePage';
 import { SessionsPage } from './pages/sessions/SessionsPage';
 import { SettingsPage } from './pages/settings/SettingsPage';
+import { SetupWizard } from './pages/setup/SetupWizard';
 import { UpdatesPage } from './pages/updates/UpdatesPage';
 import { getAdminRoute } from './routes/adminRoutes';
 import type { DiagnosticsResult } from './types/admin';
@@ -39,12 +43,23 @@ export function App({ api: injectedApi }: AppProps = {}) {
   const stateResource = useAsyncResource(loadState);
   const metricsResource = useAsyncResource(loadMetrics);
   const [bridgeCommand, setBridgeCommand] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [supportOpen, setSupportOpen] = useState(false);
+  const [pairingOpen, setPairingOpen] = useState(false);
+  const setupAutoOpened = useRef(false);
   const [retrying, setRetrying] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [diagnosing, setDiagnosing] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
 
   const reportError = (value: unknown) => toast.error(sanitizeAdminError(value instanceof Error ? value.message : value));
+
+  useEffect(() => {
+    if (stateResource.data?.setup?.needsSetup && !setupAutoOpened.current) {
+      setupAutoOpened.current = true;
+      setSetupOpen(true);
+    }
+  }, [stateResource.data?.setup?.needsSetup]);
 
   const refreshAll = async () => {
     await Promise.all([stateResource.refresh(), metricsResource.refresh()]);
@@ -60,6 +75,19 @@ export function App({ api: injectedApi }: AppProps = {}) {
         await api.startBridge();
         toast.success('微信桥接已启动');
       }
+      await stateResource.refresh();
+    } catch (error) {
+      reportError(error);
+    } finally {
+      setBridgeCommand(false);
+    }
+  };
+
+  const stopBridge = async () => {
+    setBridgeCommand(true);
+    try {
+      await api.stopBridge();
+      toast.success('微信桥接已停止');
       await stateResource.refresh();
     } catch (error) {
       reportError(error);
@@ -167,17 +195,26 @@ export function App({ api: injectedApi }: AppProps = {}) {
       theme={theme}
       serviceState={bridgeRunning ? 'running' : stateResource.loading ? 'starting' : 'stopped'}
       pageAction={(
-        <Button
-          id={bridgeRunning ? 'bridge-restart' : 'bridge-start'}
-          variant="primary"
-          busy={bridgeCommand}
-          icon={bridgeRunning ? <RotateCw /> : <Play />}
-          onClick={() => { void runBridgeCommand(); }}
-        >
-          {bridgeRunning ? '重启微信桥接' : '启动微信桥接'}
-        </Button>
+        <div className="bridge-actions">
+          {bridgeRunning && (
+            <IconButton label="停止微信桥接" disabled={bridgeCommand} onClick={() => { void stopBridge(); }}>
+              <Square />
+            </IconButton>
+          )}
+          <Button
+            id={bridgeRunning ? 'bridge-restart' : 'bridge-start'}
+            variant="primary"
+            busy={bridgeCommand}
+            icon={bridgeRunning ? <RotateCw /> : <Play />}
+            onClick={() => { void runBridgeCommand(); }}
+          >
+            {bridgeRunning ? '重启微信桥接' : '启动微信桥接'}
+          </Button>
+        </div>
       )}
       onNavigate={navigate}
+      onOpenSetup={() => setSetupOpen(true)}
+      onOpenSupport={() => setSupportOpen(true)}
       onRefresh={() => { void refreshAll(); }}
       onToggleTheme={toggleTheme}
     >
@@ -187,6 +224,32 @@ export function App({ api: injectedApi }: AppProps = {}) {
         </div>
       )}
       {page}
+      <SetupWizard
+        api={api}
+        open={setupOpen}
+        setup={stateResource.data?.setup}
+        onClose={() => setSetupOpen(false)}
+        onComplete={() => { void stateResource.refresh(); }}
+        onOpenProvider={() => {
+          setSetupOpen(false);
+          navigate('provider');
+        }}
+        onOpenPairing={() => {
+          setSetupOpen(false);
+          setPairingOpen(true);
+        }}
+      />
+      {pairingOpen && (
+        <PairingDialog
+          api={api}
+          onClose={() => setPairingOpen(false)}
+          onPaired={() => {
+            setPairingOpen(false);
+            void stateResource.refresh();
+          }}
+        />
+      )}
+      <SupportDialog open={supportOpen} onClose={() => setSupportOpen(false)} />
     </AdminShell>
   );
 }

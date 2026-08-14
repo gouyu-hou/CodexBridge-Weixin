@@ -4,6 +4,7 @@ import {
   Menu,
   Moon,
   RefreshCw,
+  Settings2,
   Sun,
   X,
 } from 'lucide-react';
@@ -20,6 +21,8 @@ type ServiceState = 'running' | 'stopped' | 'starting' | 'error' | 'unknown';
 type AdminShellProps = {
   children: ReactNode;
   onNavigate: (route: AdminRouteId) => void;
+  onOpenSetup: () => void;
+  onOpenSupport: () => void;
   onRefresh: () => void;
   onToggleTheme: () => void;
   pageAction?: ReactNode;
@@ -39,6 +42,8 @@ const serviceLabels: Record<ServiceState, string> = {
 export function AdminShell({
   children,
   onNavigate,
+  onOpenSetup,
+  onOpenSupport,
   onRefresh,
   onToggleTheme,
   pageAction,
@@ -106,7 +111,7 @@ export function AdminShell({
           ))}
         </nav>
 
-        <button className="support-button support-button--compact" type="button">
+        <button className="support-button support-button--compact" type="button" onClick={onOpenSupport}>
           <Heart aria-hidden="true" />
           <span>支持项目</span>
         </button>
@@ -139,6 +144,15 @@ export function AdminShell({
           <div className="header-actions">
             <span className="service-badge" data-state={serviceState} id="service-state">{serviceLabels[serviceState]}</span>
             {pageAction}
+            <button
+              className="icon-button"
+              type="button"
+              aria-label="打开配置向导"
+              title="打开配置向导"
+              onClick={onOpenSetup}
+            >
+              <Settings2 aria-hidden="true" />
+            </button>
             <button
               className="icon-button"
               type="button"

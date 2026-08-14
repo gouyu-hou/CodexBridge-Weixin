@@ -17,6 +17,7 @@ describe('App operational wiring', () => {
       heartbeat: vi.fn(async () => ({ ok: true })),
       closePage: vi.fn(async () => ({ ok: true })),
       shutdownService: vi.fn(async () => ({ ok: true })),
+      stopBridge: vi.fn(async () => ({ ok: true })),
       restartBridge: vi.fn(async () => ({ ok: true })),
       retryDeliveryOutbox: vi.fn(async () => ({ ok: true })),
       resetMetrics: vi.fn(async () => ({ ok: true })),
@@ -28,9 +29,25 @@ describe('App operational wiring', () => {
     await waitFor(() => expect(screen.getByText('12')).toBeVisible());
     await userEvent.click(screen.getByRole('button', { name: '重启微信桥接' }));
     expect(api.restartBridge).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole('button', { name: '停止微信桥接' }));
+    expect(api.stopBridge).toHaveBeenCalledOnce();
 
     await userEvent.click(screen.getByRole('link', { name: '运行状态' }));
     expect(screen.getByRole('heading', { name: '运行状态' })).toBeVisible();
     expect(screen.getByText('D:/BridgeData')).toBeVisible();
+  });
+
+  it('opens setup automatically when the backend reports first-run setup is needed', async () => {
+    const api = {
+      getState: vi.fn(async () => ({ bridge: { running: false }, setup: { needsSetup: true } })),
+      getMetrics: vi.fn(async () => ({})),
+      heartbeat: vi.fn(async () => ({ ok: true })),
+      closePage: vi.fn(async () => ({ ok: true })),
+      shutdownService: vi.fn(async () => ({ ok: true })),
+    } as unknown as AdminApi;
+
+    render(<ToastProvider><App api={api} /></ToastProvider>);
+
+    expect(await screen.findByRole('dialog', { name: '首次配置向导' })).toBeVisible();
   });
 });

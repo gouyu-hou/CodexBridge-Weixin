@@ -5,19 +5,23 @@ import { AdminShell } from './AdminShell';
 
 function renderShell() {
   const onNavigate = vi.fn();
+  const onOpenSetup = vi.fn();
+  const onOpenSupport = vi.fn();
   render(
     <AdminShell
       route="provider"
       theme="light"
       serviceState="running"
       onNavigate={onNavigate}
+      onOpenSetup={onOpenSetup}
+      onOpenSupport={onOpenSupport}
       onRefresh={vi.fn()}
       onToggleTheme={vi.fn()}
     >
       <div>页面内容</div>
     </AdminShell>,
   );
-  return { onNavigate };
+  return { onNavigate, onOpenSetup, onOpenSupport };
 }
 
 describe('AdminShell', () => {
@@ -46,10 +50,14 @@ describe('AdminShell', () => {
     expect(screen.getByTestId('admin-sidebar')).toHaveAttribute('data-open', 'false');
   });
 
-  it('exposes named theme and refresh icon controls', () => {
-    renderShell();
+  it('exposes named theme and refresh icon controls', async () => {
+    const { onOpenSetup, onOpenSupport } = renderShell();
     expect(screen.getByRole('button', { name: '切换到暗色主题' })).toBeVisible();
     expect(screen.getByRole('button', { name: '刷新当前页面' })).toBeVisible();
     expect(screen.getByText('运行中')).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: '打开配置向导' }));
+    expect(onOpenSetup).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole('button', { name: '支持项目' }));
+    expect(onOpenSupport).toHaveBeenCalledOnce();
   });
 });

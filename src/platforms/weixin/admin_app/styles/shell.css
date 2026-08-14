@@ -185,6 +185,12 @@
   gap: 8px;
 }
 
+.bridge-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .service-badge {
   display: inline-flex;
   min-height: 30px;

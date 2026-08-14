@@ -126,6 +126,28 @@ export type PairingState = JsonObject & {
   status?: string;
 };
 
+export type SetupCheck = JsonObject & {
+  detail?: string;
+  label?: string;
+  ok?: boolean;
+  path?: string;
+};
+
+export type SetupState = JsonObject & {
+  checks?: {
+    codex?: SetupCheck;
+    codexHome?: SetupCheck;
+    dataDir?: SetupCheck;
+    modelProvider?: SetupCheck;
+    node?: SetupCheck;
+    serviceEnvFile?: SetupCheck;
+    weixinAccount?: SetupCheck;
+  };
+  completedAt?: string;
+  needsSetup?: boolean;
+  skippedAt?: string;
+};
+
 export type AdminState = JsonObject & {
   accounts?: AdminAccount[];
   adminUrl?: string | null;
@@ -136,7 +158,7 @@ export type AdminState = JsonObject & {
   providerProfiles?: ProviderProfile[];
   service?: { shutdownAvailable?: boolean };
   settings?: AdminSettings;
-  setup?: JsonObject;
+  setup?: SetupState;
   stateDir?: string;
 };
 
