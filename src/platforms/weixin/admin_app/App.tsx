@@ -13,6 +13,7 @@ import { AccountsPage } from './pages/accounts/AccountsPage';
 import { DiagnosticsPage } from './pages/diagnostics/DiagnosticsPage';
 import { MetricsPage } from './pages/metrics/MetricsPage';
 import { OverviewPage } from './pages/overview/OverviewPage';
+import { ProviderPage } from './pages/provider/ProviderPage';
 import { RuntimePage } from './pages/runtime/RuntimePage';
 import { getAdminRoute } from './routes/adminRoutes';
 import type { DiagnosticsResult } from './types/admin';
@@ -124,6 +125,14 @@ export function App({ api: injectedApi }: AppProps = {}) {
     );
   } else if (route === 'metrics') {
     page = <MetricsPage metrics={metricsResource.data} resetting={resetting} onReset={() => { void resetMetrics(); }} />;
+  } else if (route === 'provider') {
+    page = (
+      <ProviderPage
+        api={api}
+        state={stateResource.data ?? {}}
+        onChanged={() => { void stateResource.refresh(); }}
+      />
+    );
   } else if (route === 'diagnostics') {
     page = <DiagnosticsPage result={diagnostics} running={diagnosing} onRun={() => { void runDiagnostics(); }} />;
   } else {

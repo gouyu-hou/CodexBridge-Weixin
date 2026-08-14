@@ -1,0 +1,108 @@
+.provider-editor {
+  display: grid;
+  gap: 20px;
+}
+
+.form-grid--provider-editor {
+  grid-template-columns: minmax(220px, 0.8fr) minmax(260px, 1.2fr);
+}
+
+.provider-current-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-subtle);
+}
+
+.provider-current-facts span {
+  min-width: 0;
+  padding: 12px 14px;
+  border-right: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.provider-current-facts span:last-child {
+  border-right: 0;
+}
+
+.provider-current-facts strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.provider-actions {
+  gap: 8px;
+  margin-top: 0;
+}
+
+.provider-usage {
+  display: grid;
+  gap: 16px;
+}
+
+.provider-usage__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.provider-usage__head strong,
+.provider-usage__head span {
+  display: block;
+}
+
+.provider-usage__head span {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.provider-usage__empty {
+  display: grid;
+  min-height: 92px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-muted);
+  background: var(--panel-subtle);
+}
+
+.provider-usage__window {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-subtle);
+}
+
+.provider-usage__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .form-grid--provider-editor,
+  .provider-current-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .provider-current-facts span {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .provider-current-facts span:last-child {
+    border-bottom: 0;
+  }
+}

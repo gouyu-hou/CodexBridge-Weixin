@@ -33,10 +33,14 @@ export type AdminAccount = JsonObject & {
 
 export type ProviderProfile = JsonObject & {
   baseUrl?: string;
+  defaultModel?: string;
+  displayName?: string;
   id?: string;
   label?: string;
   model?: string;
+  models?: string[];
   provider?: string;
+  providerKind?: string;
   providerProfileId?: string;
 };
 
@@ -56,25 +60,46 @@ export type ProviderModelCatalog = JsonObject & {
 };
 
 export type ProviderUsageWindow = JsonObject & {
-  label?: string;
-  limit?: number;
-  remaining?: number;
+  name?: string;
   resetAfterSeconds?: number;
-  used?: number;
+  usedPercent?: number;
 };
 
 export type ProviderUsage = JsonObject & {
-  available?: boolean;
+  providerKind?: string;
+  refreshFailed?: boolean;
+  report?: JsonObject & {
+    buckets?: Array<JsonObject & { name?: string; windows?: ProviderUsageWindow[] }>;
+    plan?: string;
+    provider?: string;
+  };
+  source?: string;
+  status?: string;
   message?: string;
   providerProfileId?: string;
   windows?: ProviderUsageWindow[];
+};
+
+export type ModelProviderSettings = JsonObject & {
+  apiKeyConfigured?: boolean;
+  apiKeyMasked?: string;
+  baseUrl?: string;
+  capabilities?: string;
+  ccswitch?: JsonObject;
+  model?: string;
+  modelIds?: string;
+  profileId?: string;
+  providerId?: string;
+  providerName?: string;
+  serviceEnvFile?: string;
+  source?: string;
 };
 
 export type AdminSettings = JsonObject & {
   alertWebhookUrl?: string;
   concurrency?: JsonObject;
   logCleanup?: JsonObject;
-  modelProvider?: JsonObject;
+  modelProvider?: ModelProviderSettings;
 };
 
 export type PairingState = JsonObject & {
