@@ -291,17 +291,15 @@ test('packaged smoke drives the real admin DOM through loopback-only CDP', () =>
   assert.match(smokeSource, /domStatus:\s*['"]ok['"]/u);
   assert.match(smokeSource, /Page\.addScriptToEvaluateOnNewDocument/u);
   assert.match(smokeSource, /Page\.reload/u);
-  for (const requiredId of [
-    'accounts-body',
-    'provider-model',
-    'update-check',
-    'sessions-body',
-    'logs-box',
-    'settings-save',
-    'setup-refresh',
+  for (const requiredSelector of [
+    '#admin-root',
+    '.admin-shell',
+    '.admin-sidebar',
+    'a[href="#runtime"]',
   ]) {
-    assert.match(smokeSource, new RegExp(`['"]${requiredId}['"]`, 'u'), requiredId);
+    assert.ok(smokeSource.includes(requiredSelector), requiredSelector);
   }
+  assert.match(smokeSource, /dataset\.adminReady\s*===\s*['"]true['"]/u);
   assert.match(mainSource, /const smokeTestUi\s*=\s*Boolean\(args\.smokeTestUi\)/u);
   assert.match(mainSource, /smokeTest\s*&&\s*!smokeTestUi/u);
 });
@@ -313,13 +311,11 @@ test('packaged DOM smoke reloads with initialization error capture installed', a
   const cdp = {
     evaluate: async () => ({
       activeRuntime: true,
+      adminReady: true,
       hash: '#runtime',
-      loadStateReady: true,
       loading: false,
-      missingIds: [],
+      missingSelectors: [],
       pageErrors: ['initialization exploded'],
-      refreshEnteredBusy: true,
-      refreshReady: true,
       refreshRequestStartedImmediately: true,
       refreshRequestObserved: true,
       refreshSucceeded: true,
@@ -348,13 +344,11 @@ test('packaged DOM smoke rejects an unrelated state poll as refresh evidence', a
   const cdp = {
     evaluate: async () => ({
       activeRuntime: true,
+      adminReady: true,
       hash: '#runtime',
-      loadStateReady: true,
       loading: false,
-      missingIds: [],
+      missingSelectors: [],
       pageErrors: [],
-      refreshEnteredBusy: true,
-      refreshReady: true,
       refreshRequestStartedImmediately: false,
       refreshRequestObserved: true,
       refreshSucceeded: true,
@@ -425,11 +419,11 @@ test('packaged smoke loads and validates both Weixin admin assets', async () => 
     const url = String(input);
     requestedUrls.push(url);
     if (url.endsWith('/admin/admin.css')) {
-      return new Response('.provider-usage-toolbar {}', {
+      return new Response('.admin-shell {}', {
         headers: { 'content-type': 'text/css; charset=utf-8' },
       });
     }
-    return new Response('function loadProviderUsage() {}', {
+    return new Response('document.documentElement.dataset.adminReady = "true";', {
       headers: { 'content-type': 'text/javascript; charset=utf-8' },
     });
   }) as typeof fetch;

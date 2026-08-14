@@ -25,4 +25,6 @@ createRoot(root).render(
     </AppErrorBoundary>
   </StrictMode>,
 );
-document.documentElement.dataset.adminReady = 'true';
+window.requestAnimationFrame(() => {
+  document.documentElement.dataset.adminReady = 'true';
+});

@@ -6,72 +6,36 @@ import { renderAdminHtml } from '../../../src/platforms/weixin/admin_page.js';
 
 const adminCssPath = path.join(process.cwd(), 'assets', 'weixin-admin', 'admin.css');
 const adminScriptPath = path.join(process.cwd(), 'assets', 'weixin-admin', 'admin.js');
-const adminScript = fs.readFileSync(adminScriptPath, 'utf8');
 
-test('renderAdminHtml preserves token, CSP nonce, icons, and a valid external script', () => {
+test('renderAdminHtml returns a minimal nonce-authorized React host', () => {
   const html = renderAdminHtml('admin-token-123', 'nonce-456');
 
   assert.match(html, /name="codexbridge-admin-token" content="admin-token-123"/u);
+  assert.match(html, /<div id="admin-root">/u);
   assert.match(html, /<link rel="stylesheet" href="\/admin\/admin\.css\?v=\d+" \/>/u);
   assert.match(html, /<script nonce="nonce-456" src="\/admin\/admin\.js\?v=\d+"><\/script>/u);
-  assert.match(html, /href="\/favicon\.ico\?v=\d+"/u);
-  assert.match(html, /href="\/favicon\.png\?v=\d+"/u);
-  assert.match(html, /id="provider-usage-profile"/u);
-  assert.match(html, /id="provider-usage-refresh"/u);
-  assert.match(adminScript, /function loadProviderUsage/u);
-  assert.match(adminScript, /\/usage\/refresh/u);
-  assert.match(html, /id="metric-recovery"/u);
-  assert.match(adminScript, /turnRecovery/u);
-  assert.match(adminScript, /暂不支持用量查询/u);
-
-  assert.doesNotThrow(() => new Function(adminScript));
+  assert.match(html, /document\.documentElement\.dataset\.theme/u);
+  assert.ok(html.indexOf('dataset.theme') < html.indexOf('/admin/admin.css'));
+  assert.doesNotMatch(html, /id="provider-usage-profile"|id="bridge-start"|data-page-panel/u);
 });
 
-test('renderAdminHtml lets the stacked mobile header scroll away from page controls', () => {
+test('renderAdminHtml escapes token and nonce attributes', () => {
+  const html = renderAdminHtml('token"<&', 'nonce"<&');
+
+  assert.match(html, /content="token&quot;&lt;&amp;"/u);
+  assert.match(html, /nonce="nonce&quot;&lt;&amp;"/u);
+  assert.doesNotMatch(html, /content="token"<&"/u);
+});
+
+test('committed React assets expose the shell, themes, and ready marker', () => {
   const css = fs.readFileSync(adminCssPath, 'utf8');
+  const script = fs.readFileSync(adminScriptPath, 'utf8');
 
-  assert.match(
-    css,
-    /@media \(max-width: 860px\) \{[\s\S]*?header \{\s*position: static;\s*\}/u,
-  );
-});
-
-test('renderAdminHtml stacks provider usage controls on narrow mobile screens', () => {
-  const css = fs.readFileSync(adminCssPath, 'utf8');
-
-  assert.match(
-    css,
-    /@media \(max-width: 560px\) \{[\s\S]*?\.provider-usage-toolbar \{\s*grid-template-columns: minmax\(0, 1fr\);\s*\}/u,
-  );
-  assert.match(
-    css,
-    /@media \(max-width: 560px\) \{[\s\S]*?\.provider-usage-toolbar button \{\s*width: 100%;\s*\}/u,
-  );
-});
-
-test('renderAdminHtml loads the extracted admin stylesheet', () => {
-  const html = renderAdminHtml('admin-token-123', 'nonce-456');
-
-  assert.match(html, /<link rel="stylesheet" href="\/admin\/admin\.css\?v=\d+" \/>/u);
-  assert.doesNotMatch(html, /<style nonce=/u);
-
-  const css = fs.readFileSync(adminCssPath, 'utf8');
-  assert.match(css, /@media \(max-width: 860px\)/u);
-  assert.match(css, /\.provider-usage-toolbar/u);
-});
-
-test('renderAdminHtml loads the extracted nonce-authorized admin script', () => {
-  const html = renderAdminHtml('admin-token-123', 'nonce-456');
-
-  assert.match(
-    html,
-    /<script nonce="nonce-456" src="\/admin\/admin\.js\?v=\d+"><\/script>/u,
-  );
-  assert.doesNotMatch(html, /<script nonce="nonce-456">/u);
-
-  assert.doesNotThrow(() => new Function(adminScript));
-  assert.match(adminScript, /function loadProviderUsage/u);
-  assert.match(adminScript, /function sendShutdownRequest/u);
-  assert.match(adminScript, /\/api\/delivery-outbox\/retry/u);
-  assert.doesNotMatch(adminScript, /admin-token-123|nonce-456/u);
+  assert.match(css, /\.admin-shell/u);
+  assert.match(css, /\[data-theme=(?:['"])?dark(?:['"])?\]/u);
+  assert.match(css, /@media\(max-width:940px\)/u);
+  assert.match(script, /createRoot/u);
+  assert.match(script, /adminReady/u);
+  assert.doesNotThrow(() => new Function(script));
+  assert.doesNotMatch(script, /admin-token-123|nonce-456/u);
 });

@@ -1279,7 +1279,7 @@ test('WeixinAdminServer serves the fixed admin stylesheet with security headers'
     assert.equal(response.headers.get('content-type'), 'text/css; charset=utf-8');
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
-    assert.match(await response.text(), /\.provider-usage-toolbar/u);
+    assert.match(await response.text(), /\.admin-shell/u);
   } finally {
     await server.stop();
   }
@@ -1298,7 +1298,7 @@ test('WeixinAdminServer serves the fixed admin script with security headers', as
     assert.equal(response.headers.get('content-type'), 'text/javascript; charset=utf-8');
     assert.equal(response.headers.get('cache-control'), 'no-store');
     assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
-    assert.match(await response.text(), /function loadProviderUsage/u);
+    assert.match(await response.text(), /adminReady/u);
   } finally {
     await server.stop();
   }

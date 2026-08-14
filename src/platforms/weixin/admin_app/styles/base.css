@@ -24,6 +24,14 @@ body {
   color: var(--text-primary);
 }
 
+.admin-boot {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 button,
 input,
 select,

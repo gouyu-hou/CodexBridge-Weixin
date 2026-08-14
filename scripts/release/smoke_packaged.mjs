@@ -368,20 +368,17 @@ export async function verifyPackagedAdminDom(cdp) {
   while (true) {
     try {
       status = await cdp.evaluate(`(async () => {
-    const requiredIds = [
-      'refresh-btn',
-      'service-state',
-      'metric-turns',
-      'status-updated',
-      'accounts-body',
-      'provider-model',
-      'update-check',
-      'sessions-body',
-      'logs-box',
-      'settings-save',
-      'setup-refresh'
+    const requiredSelectors = [
+      '#admin-root',
+      '.admin-shell',
+      '.admin-sidebar',
+      '.admin-content',
+      '#refresh-btn',
+      '#service-state',
+      'nav[aria-label="管理页面"]',
+      'a[href="#runtime"]'
     ];
-    const missingIds = requiredIds.filter((id) => !document.getElementById(id));
+    const missingSelectors = requiredSelectors.filter((selector) => !document.querySelector(selector));
     const resourcePath = (value) => {
       try {
         return new URL(String(value || ''), window.location.href).pathname;
@@ -395,16 +392,16 @@ export async function verifyPackagedAdminDom(cdp) {
       resourcePath(script.src) === '/admin/admin.js');
     const styleHrefs = Array.from(document.styleSheets).map((sheet) => String(sheet.href || ''));
     const scriptSrcs = Array.from(document.scripts).map((script) => String(script.src || ''));
-    const loadStateReady = typeof loadState === 'function';
+    const adminReady = document.documentElement.dataset.adminReady === 'true';
     const smokeBootstrapReady = window.__codexbridgeSmokeBootstrapReady === true;
     const serviceState = String(document.getElementById('service-state')?.textContent || '').trim();
-    const loading = !smokeBootstrapReady || !styleLoaded || !scriptLoaded || !loadStateReady
-      || !serviceState || serviceState === '-' || serviceState === '...' || serviceState === '加载中';
-    if (loading || missingIds.length > 0) {
+    const loading = !smokeBootstrapReady || !styleLoaded || !scriptLoaded || !adminReady
+      || !serviceState || serviceState === '状态未知';
+    if (loading || missingSelectors.length > 0) {
       return {
-        loadStateReady,
+        adminReady,
         loading,
-        missingIds,
+        missingSelectors,
         scriptLoaded,
         scriptSrcs,
         serviceState,
@@ -413,17 +410,13 @@ export async function verifyPackagedAdminDom(cdp) {
         styleLoaded,
       };
     }
-    const runtimeLink = document.querySelector('.side-nav a[data-page="runtime"]');
+    const runtimeLink = document.querySelector('a[href="#runtime"]');
     const refreshButton = document.getElementById('refresh-btn');
     const requestStart = Array.isArray(window.__codexbridgeSmokeRequests)
       ? window.__codexbridgeSmokeRequests.length
       : 0;
     if (runtimeLink) runtimeLink.click();
     if (refreshButton) refreshButton.click();
-    const refreshEnteredBusy = Boolean(
-      refreshButton
-      && (refreshButton.disabled || refreshButton.classList.contains('refreshing')),
-    );
     const refreshRequestStartedImmediately = (window.__codexbridgeSmokeRequests || [])
       .slice(requestStart)
       .some((request) => request.pathname === '/api/state');
@@ -433,23 +426,19 @@ export async function verifyPackagedAdminDom(cdp) {
       refreshRequests = (window.__codexbridgeSmokeRequests || [])
         .slice(requestStart)
         .filter((request) => request.pathname === '/api/state');
-      if (refreshRequests.length > 0 && refreshButton && !refreshButton.disabled) break;
+      if (refreshRequests.some((request) => request.ok !== null)) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
-    const runtimePanel = document.querySelector('[data-page-panel="runtime"]');
-    const messageColor = String(document.getElementById('message')?.style.color || '');
+    const pageTitle = String(document.querySelector('.page-heading h1')?.textContent || '').trim();
     return {
-      activeRuntime: Boolean(runtimePanel && runtimePanel.classList.contains('active')),
+      activeRuntime: pageTitle === '运行状态',
+      adminReady,
       hash: window.location.hash,
-      loadStateReady,
-      missingIds,
+      missingSelectors,
       pageErrors: window.__codexbridgeSmokeErrors,
-      refreshEnteredBusy,
-      refreshReady: Boolean(refreshButton && !refreshButton.disabled),
       refreshRequestStartedImmediately,
       refreshRequestObserved: refreshRequests.length > 0,
       refreshSucceeded: refreshRequests.some((request) => request.ok),
-      refreshMessageDanger: messageColor === 'rgb(225, 29, 72)' || messageColor === '#e11d48',
       scriptLoaded,
       serviceState,
       smokeBootstrapReady,
@@ -473,15 +462,13 @@ export async function verifyPackagedAdminDom(cdp) {
   }
   const problems = [];
   if (!status?.styleLoaded) problems.push('admin stylesheet is not loaded');
-  if (!status?.scriptLoaded || !status?.loadStateReady) problems.push('admin script is not running');
-  if (status?.missingIds?.length) problems.push(`missing controls: ${status.missingIds.join(', ')}`);
+  if (!status?.scriptLoaded || !status?.adminReady) problems.push('React admin is not ready');
+  if (status?.missingSelectors?.length) problems.push(`missing controls: ${status.missingSelectors.join(', ')}`);
   if (!status?.activeRuntime || status?.hash !== '#runtime') problems.push('runtime navigation failed');
-  if (!status?.refreshEnteredBusy) problems.push('refresh did not enter busy state');
   if (!status?.refreshRequestStartedImmediately) problems.push('refresh did not start a state request');
-  if (!status?.refreshReady) problems.push('refresh control did not settle');
   if (!status?.refreshRequestObserved) problems.push('refresh did not request current state');
-  if (!status?.refreshSucceeded || status?.refreshMessageDanger) problems.push('refresh request failed');
-  if (!status?.serviceState || status.serviceState === '-' || status.serviceState === '...') {
+  if (!status?.refreshSucceeded) problems.push('refresh request failed');
+  if (!status?.serviceState || status.serviceState === '状态未知') {
     problems.push('service state is still loading');
   }
   if (status?.pageErrors?.length) problems.push(`page errors: ${status.pageErrors.join('; ')}`);
@@ -508,14 +495,14 @@ async function tryFetch(fetchFn, url, kind) {
     } else if (kind === 'admin-css') {
       const contentType = response.headers.get('content-type') ?? '';
       const content = await response.text();
-      if (!/^text\/css(?:;|$)/iu.test(contentType) || !/\.provider-usage-toolbar/u.test(content)) {
+      if (!/^text\/css(?:;|$)/iu.test(contentType) || !/\.admin-shell/u.test(content)) {
         return null;
       }
     } else if (kind === 'admin-script') {
       const contentType = response.headers.get('content-type') ?? '';
       const content = await response.text();
       if (!/^(?:application|text)\/javascript(?:;|$)/iu.test(contentType)
-        || !/function loadProviderUsage/u.test(content)) {
+        || !/adminReady/u.test(content)) {
         return null;
       }
     }
