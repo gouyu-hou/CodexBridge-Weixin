@@ -34,6 +34,7 @@ test('committed React assets expose the shell, themes, and ready marker', () => 
   assert.match(css, /\.admin-shell/u);
   assert.match(css, /\[data-theme=(?:['"])?dark(?:['"])?\]/u);
   assert.match(css, /@media\(max-width:940px\)/u);
+  assert.match(css, /\.icon-button\.mobile-menu,\.icon-button\.sidebar-close\{display:none\}/u);
   assert.match(script, /createRoot/u);
   assert.match(script, /adminReady/u);
   assert.doesNotThrow(() => new Function(script));

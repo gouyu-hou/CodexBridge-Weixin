@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useId, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { IconButton } from './IconButton';
 
@@ -58,7 +59,7 @@ export function Dialog({ children, footer, onClose, open, title }: DialogProps) 
   }, [onClose, open]);
 
   if (!open) return null;
-  return (
+  return createPortal(
     <div className="dialog-backdrop" role="presentation" onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose();
     }}>
@@ -77,6 +78,7 @@ export function Dialog({ children, footer, onClose, open, title }: DialogProps) 
         <div className="dialog__body">{children}</div>
         {footer && <footer className="dialog__footer">{footer}</footer>}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

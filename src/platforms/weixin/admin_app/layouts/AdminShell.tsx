@@ -111,6 +111,10 @@ export function AdminShell({
           ))}
         </nav>
 
+        <button className="support-button support-button--compact setup-sidebar-button" type="button" onClick={onOpenSetup}>
+          <Settings2 aria-hidden="true" />
+          <span>配置向导</span>
+        </button>
         <button className="support-button support-button--compact" type="button" onClick={onOpenSupport}>
           <Heart aria-hidden="true" />
           <span>支持项目</span>
@@ -145,7 +149,7 @@ export function AdminShell({
             <span className="service-badge" data-state={serviceState} id="service-state">{serviceLabels[serviceState]}</span>
             {pageAction}
             <button
-              className="icon-button"
+              className="icon-button setup-header-button"
               type="button"
               aria-label="打开配置向导"
               title="打开配置向导"

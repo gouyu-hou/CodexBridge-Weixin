@@ -101,7 +101,9 @@ describe('admin UI primitives', () => {
 
     render(<Harness />);
     await user.click(screen.getByRole('button', { name: '打开编辑' }));
-    expect(screen.getByRole('dialog', { name: '编辑账号' })).toBeVisible();
+    const dialog = screen.getByRole('dialog', { name: '编辑账号' });
+    expect(dialog).toBeVisible();
+    expect(dialog.closest('.dialog-backdrop')?.parentElement).toBe(document.body);
     await user.keyboard('{Escape}');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(triggerRef.current).toHaveFocus();
