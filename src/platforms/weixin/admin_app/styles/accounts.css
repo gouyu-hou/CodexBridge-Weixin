@@ -1,0 +1,106 @@
+.account-name-cell {
+  min-width: 0;
+}
+
+.account-name-cell strong,
+.account-name-cell span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-name-cell span {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
+.table-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.table-actions .icon-button {
+  width: 32px;
+  height: 32px;
+}
+
+.account-editor,
+.pairing-layout {
+  display: grid;
+  gap: 20px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.form-grid--two,
+.form-grid--provider {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.permission-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-subtle);
+}
+
+.model-field-with-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  align-items: end;
+  gap: 8px;
+}
+
+.pairing-status-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.pairing-qr {
+  display: grid;
+  width: min(280px, 100%);
+  aspect-ratio: 1;
+  place-items: center;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: var(--panel-subtle);
+  text-align: center;
+}
+
+.pairing-qr img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.pairing-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+@media (max-width: 680px) {
+  .form-grid--two,
+  .form-grid--provider,
+  .permission-grid,
+  .pairing-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

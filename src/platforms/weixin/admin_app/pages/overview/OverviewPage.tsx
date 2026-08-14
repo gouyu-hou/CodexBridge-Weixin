@@ -22,7 +22,7 @@ const accountColumns: readonly DataTableColumn<AdminAccount>[] = [
   {
     key: 'enabled',
     header: '状态',
-    render: (account) => <StatusBadge tone={account.enabled === false ? 'warning' : 'success'}>{account.enabled === false ? '已停用' : '可用'}</StatusBadge>,
+    render: (account) => <StatusBadge tone={account.disabled ? 'warning' : 'success'}>{account.disabled ? '已停用' : '可用'}</StatusBadge>,
   },
 ];
 

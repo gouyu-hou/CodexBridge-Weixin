@@ -9,6 +9,7 @@ import { useAsyncResource } from './hooks/useAsyncResource';
 import { usePageLifecycle } from './hooks/usePageLifecycle';
 import { useTheme } from './hooks/useTheme';
 import { AdminShell } from './layouts/AdminShell';
+import { AccountsPage } from './pages/accounts/AccountsPage';
 import { DiagnosticsPage } from './pages/diagnostics/DiagnosticsPage';
 import { MetricsPage } from './pages/metrics/MetricsPage';
 import { OverviewPage } from './pages/overview/OverviewPage';
@@ -112,6 +113,15 @@ export function App({ api: injectedApi }: AppProps = {}) {
     );
   } else if (route === 'runtime') {
     page = <RuntimePage state={stateResource.data} />;
+  } else if (route === 'users') {
+    page = (
+      <AccountsPage
+        accounts={stateResource.data?.accounts ?? []}
+        api={api}
+        profiles={stateResource.data?.providerProfiles ?? []}
+        onChanged={() => { void stateResource.refresh(); }}
+      />
+    );
   } else if (route === 'metrics') {
     page = <MetricsPage metrics={metricsResource.data} resetting={resetting} onReset={() => { void resetMetrics(); }} />;
   } else if (route === 'diagnostics') {

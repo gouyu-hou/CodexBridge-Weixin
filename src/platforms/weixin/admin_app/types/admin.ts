@@ -10,25 +10,34 @@ export type BridgeStatus = JsonObject & {
 
 export type AdminAccount = JsonObject & {
   accountId: string;
-  allowChat?: boolean;
-  allowCommands?: boolean;
-  allowUploads?: boolean;
+  baseUrl?: string;
   displayName?: string;
-  enabled?: boolean;
-  model?: string;
+  disabled?: boolean;
+  group?: string;
+  modelProvider?: {
+    model?: string;
+    providerProfileId?: string;
+    reasoningEffort?: string;
+  };
+  permissions?: {
+    canChat?: boolean;
+    canExecuteCommands?: boolean;
+    canUpload?: boolean;
+  };
   primary?: boolean;
-  providerProfileId?: string;
-  reasoningEffort?: string;
   role?: string;
+  savedAt?: string;
+  syncUpdatedAt?: string;
   userId?: string;
 };
 
 export type ProviderProfile = JsonObject & {
   baseUrl?: string;
-  id: string;
+  id?: string;
   label?: string;
   model?: string;
   provider?: string;
+  providerProfileId?: string;
 };
 
 export type ProviderModel = JsonObject & {
@@ -71,8 +80,9 @@ export type AdminSettings = JsonObject & {
 export type PairingState = JsonObject & {
   account?: AdminAccount;
   error?: string;
+  accountId?: string;
   expiresAt?: string;
-  qrCodeDataUrl?: string;
+  qrImageDataUrl?: string;
   qrUrl?: string;
   status?: string;
 };
