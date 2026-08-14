@@ -1973,36 +1973,27 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     await server.stop();
   }
 });
-
-test('WeixinAdminServer renders separated Z Token and official provider presets', async () => {
+test('WeixinAdminServer serves provider profiles through state instead of embedding presets', async () => {
   const stateDir = makeTempStateDir();
   const accountStore = new WeixinAccountStore({
     rootDir: path.join(stateDir, 'weixin', 'accounts'),
   });
-  const server = new WeixinAdminServer({
-    accountStore,
-    stateDir,
-    env: {},
-    port: 0,
-  });
+  const server = new WeixinAdminServer({ accountStore, stateDir, env: {}, port: 0 });
 
   const binding = await server.start();
   try {
-    const response = await fetch(binding.url);
-    assert.equal(response.status, 200);
-    const html = await response.text();
-    const pageSource = `${html}\n${adminScript}`;
-    assert.match(html, /<option value="default">Z Token - Codex<\/option>/u);
-    assert.match(html, /<option value="ztoken-claude">Z Token - Claude<\/option>/u);
-    assert.match(html, /<option value="official-codex">官网 Codex<\/option>/u);
-    assert.match(html, /<option value="official-claude-code">官网 Claude Code<\/option>/u);
-    assert.match(pageSource, /models: \['gpt-5\.6-sol', 'gpt-5\.6-terra', 'gpt-5\.6-luna', 'gpt-5\.5', 'gpt-5\.4', 'gpt-5\.4-mini', 'gpt-5\.3-codex', 'gpt-5\.2'\]/u);
-    assert.match(pageSource, /models: \['claude-fable-5', 'claude-haiku-4-5-20251001', 'claude-opus-4-5-20251101', 'claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-sonnet-4-5-20250929', 'claude-sonnet-4-6'\]/u);
-    assert.match(pageSource, /capabilities: 'claude'/u);
-    assert.match(html, /id="refresh-btn">刷新列表<\/button>/u);
-    assert.match(adminCss, /\.refresh-spin/u);
-    assert.match(pageSource, /function runRefreshList\(\)/u);
-    assert.match(pageSource, /刷新中\.\.\./u);
+    const [pageResponse, stateResponse] = await Promise.all([
+      fetch(binding.url),
+      fetch(`${binding.url}/api/state`),
+    ]);
+    assert.equal(pageResponse.status, 200);
+    assert.equal(stateResponse.status, 200);
+    const html = await pageResponse.text();
+    const state = await stateResponse.json() as any;
+    assert.match(html, /id="admin-root"/u);
+    assert.doesNotMatch(html, /<option value=/u);
+    assert.equal(Array.isArray(state.providerProfiles), true);
+    assert.match(adminScript, /Provider Profiles/u);
   } finally {
     await server.stop();
   }
@@ -2539,183 +2530,26 @@ test('WeixinAdminServer deduplicates close and shutdown requests from the same p
     await server.stop();
   }
 });
-
-test('WeixinAdminServer admin page enables shutdown-on-close by default', async () => {
+test('WeixinAdminServer serves the React lifecycle client by default', async () => {
   const stateDir = makeTempStateDir();
   const accountStore = new WeixinAccountStore({
     rootDir: path.join(stateDir, 'weixin', 'accounts'),
   });
-  const server = new WeixinAdminServer({
-    accountStore,
-    stateDir,
-    port: 0,
-  });
+  const server = new WeixinAdminServer({ accountStore, stateDir, port: 0 });
 
   const binding = await server.start();
   try {
     const response = await fetch(binding.url);
     assert.equal(response.status, 200);
-    const html = `${await response.text()}\n${adminScript}`;
+    const html = await response.text();
     assert.match(html, /rel="icon" type="image\/png" href="\/favicon\.png\?v=/u);
-    assert.match(html, /rel="icon" type="image\/x-icon" href="\/favicon\.ico\?v=/u);
-    assert.match(html, /rel="shortcut icon" href="\/favicon\.ico\?v=/u);
-    assert.match(html, /rel="apple-touch-icon" href="\/favicon\.png\?v=/u);
-    assert.match(html, /shutdownOnClose:\s*queryParams\.get\('shutdownOnClose'\)\s*!==\s*'0'/u);
-    assert.match(html, /function pageLifecycleUrl/u);
-    assert.match(html, /function sendShutdownRequest/u);
-    assert.match(html, /id="setup-modal"/u);
-    assert.match(html, /id="setup-open"/u);
-    assert.match(html, /function renderSetup/u);
-    assert.match(html, /\/api\/setup\/complete/u);
-    assert.match(html, /id="provider-source"/u);
-    assert.match(html, /id="provider-ccswitch-sync"/u);
-    assert.match(html, /id="setup-provider-key-status"/u);
-    assert.match(html, /function providerKeyStatusText/u);
-    assert.match(html, /renderSetupProvider\(syncedProvider\)/u);
-    assert.match(html, /\/api\/model-provider\/sync-ccswitch/u);
-    assert.match(html, /providerModelCatalogs:\s*new Map\(\)/u);
-    assert.match(html, /providerModelCatalogPromises:\s*new Map\(\)/u);
-    assert.match(html, /providerModelCatalogGenerations:\s*new Map\(\)/u);
-    assert.match(html, /function reloadAccountsAfterProviderChange/u);
-    assert.equal([...html.matchAll(/reloadAccountsAfterProviderChange\(/gu)].length, 4);
-    assert.match(html, /\/api\/provider-profiles\//u);
-    assert.match(html, /\/models\/refresh/u);
-    assert.match(html, /account-model-control/u);
-    assert.match(html, /account-model-refresh/u);
-    assert.match(html, /id="delivery-retry-now"/u);
-    assert.match(html, /\/api\/delivery-outbox\/retry/u);
-    assert.match(adminCss, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*34px/u);
-    assert.match(adminCss, /\.table-wrap\s*\{[^}]*max-width:\s*100%;[^}]*overflow-x:\s*auto;/su);
-    assert.match(html, /if\s*\(provider\.value\s*!==\s*requestedProviderProfileId\)\s*return/u);
-    assert.match(html, /setAttribute\('aria-label',\s*'刷新模型'\)/u);
-    for (const visibleText of [
-      '正在刷新模型列表...',
-      '正在加载模型列表...',
-      '模型刷新失败，已保留当前选择',
-      '模型加载失败，已保留当前选择',
-      '（不可用）',
-      '支持的推理强度',
-      '推理默认',
-      '模型刷新失败，使用备用列表',
-      '已使用缓存模型',
-      '已使用配置模型',
-    ]) {
-      assert.equal(html.includes(visibleText), true, `missing visible Task 5 string: ${visibleText}`);
-    }
-    for (const mojibake of [
-      '姝ｅ湪鍒锋柊妯″瀷鍒楄〃...',
-      '姝ｅ湪鍔犺浇妯″瀷鍒楄〃...',
-      '妯″瀷鍒锋柊澶辫触锛屽凡淇濈暀宸蹭繚瀛樺€�',
-      '妯″瀷鍔犺浇澶辫触锛屽凡淇濈暀宸蹭繚瀛樺€�',
-      '涓嶅彲鐢?',
-      '鏀寔鐨勬帹鐞嗗己搴?',
-      '鎺ㄧ悊榛樿',
-      '妯″瀷鍒锋柊澶辫触锛屼娇鐢ㄥ鐢ㄥ垪琛?',
-      '宸蹭娇鐢ㄧ紦瀛樻ā鍨嬪垪琛?',
-      '宸蹭娇鐢ㄧ悗澶囨ā鍨嬪垪琛?',
-    ]) {
-      assert.equal(html.includes(mojibake), false, `unexpected Task 5 mojibake: ${mojibake}`);
-    }
-    assert.match(html, /supportedReasoningEfforts/u);
-    assert.match(html, /setAccountModelStatus\(modelStatus,\s*'',\s*false\);\s*setAccountModelControlsLoading\(rowState,\s*false\);\s*updateAccountModelSaveState\(rowState\);\s*return;/u);
-    assert.match(html, /populateAccountModelOptions\(model,\s*requestedProviderProfileId,\s*null,\s*selectedModel\)/u);
-    assert.match(html, /populateAccountReasoningEffortOptions\(effort,\s*null,\s*selectedEffort\)/u);
-    assert.match(html, /data-page="diagnostics"/u);
-    assert.match(html, /id="diagnostics-run"/u);
-    assert.match(html, /\/api\/diagnostics\/run/u);
-    assert.match(html, /function renderDiagnostics/u);
-    assert.match(html, /data-page="updates"/u);
-    assert.match(html, /id="update-check"/u);
-    assert.match(html, /id="update-download"/u);
-    assert.match(html, /id="update-install"/u);
-    assert.match(html, /window\.codexbridgeUpdater/u);
-    assert.match(html, /data-page="phone-guide"/u);
-    assert.match(html, /手机使用 Codex/u);
-    assert.match(html, /Claude Code（Z Token）/u);
-    assert.match(html, /CC-Switch-v3\.14\.1-Windows\.msi/u);
-    assert.match(html, /CC-Switch-v3\.14\.1-macOS\.dmg/u);
-    assert.match(html, /\/project D:\\IT_learn\\codex_weixin\\CodexBridge/u);
-    assert.match(html, /id="metrics-reset"/u);
-    assert.match(html, /id="metric-errors-hour"/u);
-    assert.match(html, /id="metric-errors-total"/u);
-    assert.match(html, /id="metric-reply-failures"/u);
-    assert.match(html, /\/api\/metrics\/reset/u);
-    assert.match(html, /角色说明/u);
-    assert.match(html, /主账号：<\/b>你的账号，权限最高/u);
-    assert.match(html, /管理员：<\/b>适合可信任的人/u);
-    assert.match(html, /普通用户：<\/b>适合一般朋友/u);
-    assert.match(html, /只读用户：<\/b>限制最多/u);
-    assert.match(html, /实际权限以“可聊天 \/ 可上传 \/ 可执行命令”三个开关为准/u);
-    assert.match(html, /\/api\/service\/shutdown/u);
-    assert.match(html, /new Image\(\)/u);
-    assert.match(html, /window\.addEventListener\('unload', closePage\)/u);
-    assert.doesNotThrow(() => new Function(adminScript));
-    const accountScript = adminScript;
-    const catalogHelperStart = accountScript.indexOf('function invalidateProviderModelCatalogCache');
-    const catalogHelperEnd = accountScript.indexOf('function accountModelDisplayText', catalogHelperStart);
-    assert.ok(catalogHelperStart >= 0);
-    assert.ok(catalogHelperEnd > catalogHelperStart);
-    const browserCatalogState = {
-      providerModelCatalogs: new Map([['profile-1', { models: [{ id: 'expired' }], expiresAt: Date.now() - 1 }]]),
-      providerModelCatalogPromises: new Map(),
-      providerModelCatalogGenerations: new Map(),
-    };
-    const pendingCatalogRequests: Array<(catalog: any) => void> = [];
-    const browserCatalogHelpers = new Function(
-      'state',
-      'requestJson',
-      `${accountScript.slice(catalogHelperStart, catalogHelperEnd)}\nreturn { invalidateProviderModelCatalogCache, loadProviderModelCatalog };`,
-    )(
-      browserCatalogState,
-      () => new Promise((resolve) => pendingCatalogRequests.push(resolve)),
-    ) as {
-      invalidateProviderModelCatalogCache(providerProfileId: string): void;
-      loadProviderModelCatalog(providerProfileId: string, forceRefresh: boolean): Promise<any>;
-    };
-    const invalidatedRequest = browserCatalogHelpers.loadProviderModelCatalog('profile-1', false);
-    assert.equal(pendingCatalogRequests.length, 1);
-    browserCatalogHelpers.invalidateProviderModelCatalogCache('profile-1');
-    const currentRequest = browserCatalogHelpers.loadProviderModelCatalog('profile-1', false);
-    assert.equal(pendingCatalogRequests.length, 2);
-    pendingCatalogRequests[0]?.({ models: [{ id: 'old' }], expiresAt: Date.now() + 60_000 });
-    await assert.rejects(invalidatedRequest, /invalidated/u);
-    const currentCatalog = { models: [{ id: 'current' }], expiresAt: Date.now() + 60_000 };
-    pendingCatalogRequests[1]?.(currentCatalog);
-    assert.deepEqual(await currentRequest, currentCatalog);
-    assert.deepEqual(await browserCatalogHelpers.loadProviderModelCatalog('profile-1', false), currentCatalog);
-    assert.equal(pendingCatalogRequests.length, 2);
-    const helperStart = accountScript.indexOf('function findAccountCatalogModel');
-    const helperEnd = accountScript.indexOf('function syncAccountModelControlState', helperStart);
-    assert.ok(helperStart >= 0);
-    assert.ok(helperEnd > helperStart);
-    const canSaveAccountModelSelection = new Function(
-      'state',
-      `${accountScript.slice(helperStart, helperEnd)}\nreturn canSaveAccountModelSelection(state.rowState);`,
-    )({
-      providerProfiles: [{ providerProfileId: 'profile-1' }],
-      rowState: {
-        provider: { value: 'profile-1' },
-        model: { value: '' },
-        effort: { value: 'high' },
-        savedTriple: {
-          providerProfileId: 'profile-1',
-          model: 'saved-model',
-          reasoningEffort: 'medium',
-        },
-        catalog: { models: [] },
-      },
-    });
-    assert.equal(canSaveAccountModelSelection, true);
-    const faviconResponse = await fetch(`${binding.url}/favicon.ico`);
-    assert.equal(faviconResponse.status, 200);
-    assert.equal(faviconResponse.headers.get('content-type'), 'image/x-icon');
-    const faviconBytes = Buffer.from(await faviconResponse.arrayBuffer());
-    assert.ok(faviconBytes.length > 0);
-    const faviconPngResponse = await fetch(`${binding.url}/favicon.png`);
-    assert.equal(faviconPngResponse.status, 200);
-    assert.equal(faviconPngResponse.headers.get('content-type'), 'image/png');
-    const faviconPngBytes = Buffer.from(await faviconPngResponse.arrayBuffer());
-    assert.ok(faviconPngBytes.length > 0);
+    assert.match(html, /id="admin-root"/u);
+    assert.match(html, /src="\/admin\/admin\.js\?v=/u);
+    assert.match(adminScript, /shutdownOnClose/u);
+    assert.match(adminScript, /\/api\/page\/heartbeat/u);
+    assert.match(adminScript, /\/api\/page\/close/u);
+    assert.match(adminScript, /\/api\/service\/shutdown/u);
+    assert.doesNotMatch(html, /id="setup-modal"|id="provider-source"/u);
   } finally {
     await server.stop();
   }
