@@ -12,9 +12,11 @@ import { AdminShell } from './layouts/AdminShell';
 import { AccountsPage } from './pages/accounts/AccountsPage';
 import { DiagnosticsPage } from './pages/diagnostics/DiagnosticsPage';
 import { MetricsPage } from './pages/metrics/MetricsPage';
+import { LogsPage } from './pages/logs/LogsPage';
 import { OverviewPage } from './pages/overview/OverviewPage';
 import { ProviderPage } from './pages/provider/ProviderPage';
 import { RuntimePage } from './pages/runtime/RuntimePage';
+import { SessionsPage } from './pages/sessions/SessionsPage';
 import { getAdminRoute } from './routes/adminRoutes';
 import type { DiagnosticsResult } from './types/admin';
 
@@ -135,6 +137,10 @@ export function App({ api: injectedApi }: AppProps = {}) {
     );
   } else if (route === 'diagnostics') {
     page = <DiagnosticsPage result={diagnostics} running={diagnosing} onRun={() => { void runDiagnostics(); }} />;
+  } else if (route === 'sessions') {
+    page = <SessionsPage accounts={stateResource.data?.accounts ?? []} api={api} />;
+  } else if (route === 'logs') {
+    page = <LogsPage api={api} />;
   } else {
     const definition = getAdminRoute(route);
     page = <section className="page-placeholder" aria-label={definition.label}><p>{definition.subtitle}</p></section>;
