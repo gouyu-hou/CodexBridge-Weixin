@@ -159,11 +159,46 @@
 .guide-troubleshooting span { display: grid; gap: 3px; }
 .guide-troubleshooting small { color: var(--text-muted); line-height: 18px; }
 
+.update-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-subtle);
+}
+
+.update-facts > div {
+  display: grid;
+  min-height: 74px;
+  align-content: center;
+  gap: 5px;
+  padding: 12px 16px;
+  border-right: 1px solid var(--border);
+}
+
+.update-facts > div:last-child { border-right: 0; }
+.update-facts span:first-child { color: var(--text-muted); font-size: 11px; }
+.update-facts strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.update-progress { margin-top: 20px; }
+.update-command-row { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+.release-notes { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); }
+.release-notes > span { color: var(--text-muted); font-size: 11px; font-weight: 650; }
+.release-notes pre { max-height: 160px; margin: 8px 0 0; overflow: auto; color: var(--text-secondary); font-family: inherit; font-size: 12px; line-height: 19px; white-space: pre-wrap; }
+
+.local-update-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; margin-top: 20px; }
+.update-history-table { min-width: 900px; }
+.history-key { display: block; max-width: 150px; overflow: hidden; color: var(--text-secondary); font-family: "Cascadia Mono", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+
 @media (max-width: 980px) {
   .maintenance-form-grid,
-  .guide-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .guide-flow,
+  .update-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .guide-flow > div:nth-child(2) { border-right: 0; }
   .guide-flow > div:nth-child(-n + 2) { border-bottom: 1px solid var(--border); }
+  .update-facts > div:nth-child(2) { border-right: 0; }
+  .update-facts > div:nth-child(-n + 2) { border-bottom: 1px solid var(--border); }
 }
 
 @media (max-width: 620px) {
@@ -171,8 +206,12 @@
   .backup-actions,
   .backup-import-row,
   .webhook-control,
-  .guide-flow { grid-template-columns: 1fr; }
+  .guide-flow,
+  .local-update-row,
+  .update-facts { grid-template-columns: 1fr; }
   .guide-flow > div { border-right: 0; border-bottom: 1px solid var(--border); }
   .guide-flow > div:last-child { border-bottom: 0; }
+  .update-facts > div { border-right: 0; border-bottom: 1px solid var(--border); }
+  .update-facts > div:last-child { border-bottom: 0; }
   .command-list > div { grid-template-columns: 1fr; gap: 3px; padding: 9px 0; }
 }

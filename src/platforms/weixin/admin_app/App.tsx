@@ -20,6 +20,7 @@ import { ProviderPage } from './pages/provider/ProviderPage';
 import { RuntimePage } from './pages/runtime/RuntimePage';
 import { SessionsPage } from './pages/sessions/SessionsPage';
 import { SettingsPage } from './pages/settings/SettingsPage';
+import { UpdatesPage } from './pages/updates/UpdatesPage';
 import { getAdminRoute } from './routes/adminRoutes';
 import type { DiagnosticsResult } from './types/admin';
 
@@ -150,6 +151,8 @@ export function App({ api: injectedApi }: AppProps = {}) {
     page = <BackupPage api={api} onChanged={() => { void stateResource.refresh(); }} />;
   } else if (route === 'phone-guide') {
     page = <PhoneGuidePage />;
+  } else if (route === 'updates') {
+    page = <UpdatesPage />;
   } else {
     const definition = getAdminRoute(route);
     page = <section className="page-placeholder" aria-label={definition.label}><p>{definition.subtitle}</p></section>;
