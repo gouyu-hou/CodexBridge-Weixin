@@ -1,8 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-set "CODEX_REAL_BIN=C:\Users\cully\AppData\Roaming\npm\codex.cmd"
-set "CODEX_APP_SERVER_TRANSPORT=stdio"
-set "CODEXBRIDGE_DEFAULT_CWD=D:\cully\Documents"
-set "CODEXBRIDGE_LOCALE=zh-CN"
+if not defined CODEX_APP_SERVER_TRANSPORT set "CODEX_APP_SERVER_TRANSPORT=stdio"
+if not defined CODEXBRIDGE_LOCALE set "CODEXBRIDGE_LOCALE=zh-CN"
+if not defined CODEXBRIDGE_DEFAULT_CWD if defined USERPROFILE if exist "%USERPROFILE%\Documents\" set "CODEXBRIDGE_DEFAULT_CWD=%USERPROFILE%\Documents"
+if not defined CODEXBRIDGE_DEFAULT_CWD set "CODEXBRIDGE_DEFAULT_CWD=%CD%"
 npm run weixin:login -- --timeout-sec 480
