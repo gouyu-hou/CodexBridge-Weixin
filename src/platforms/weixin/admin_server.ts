@@ -1138,12 +1138,16 @@ export class WeixinAdminServer {
       ?? normalizeEnvString(this.readAdminPreferences().ccswitchCodexHome)
       ?? this.codexHome
       ?? normalizeEnvString(this.env.CODEX_HOME);
+    const persistSource = normalizeBooleanFlag(body.persistSource);
     const result = this.syncCcswitchProvider({
       codexHome,
-      persistSource: normalizeBooleanFlag(body.persistSource),
+      persistSource,
       force: true,
       reason: 'manual',
     });
+    if (result.ok && persistSource) {
+      this.startCcswitchSyncScheduler({ runImmediately: false });
+    }
     if (result.ok && result.changed) {
       this.clearSessionModelOverrides();
       await this.bridgeControl?.restart?.();

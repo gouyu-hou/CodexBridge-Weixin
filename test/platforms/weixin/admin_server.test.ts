@@ -2215,6 +2215,7 @@ test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config
     assert.equal(preference.modelProviderSource, 'ccswitch');
     assert.equal(preference.ccswitchCodexHome, codexHome);
     assert.equal(restartCount, 1);
+    assert.ok((server as any).ccswitchSyncTimer);
     const syncedSessionSettings = repositories.sessionSettings.getByBridgeSessionId('session-1');
     assert.equal(syncedSessionSettings?.model, null);
     assert.equal(syncedSessionSettings?.reasoningEffort, null);
