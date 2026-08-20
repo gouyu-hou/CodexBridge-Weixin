@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { AdminApi } from '../../api/adminApi';
@@ -33,6 +33,81 @@ function createApi(usage: unknown = { status: 'unsupported' }) {
 }
 
 describe('ProviderPage', () => {
+  it('restores the built-in provider presets and prefills a selected provider', async () => {
+    const api = createApi();
+    render(<ProviderPage api={api} state={state} onChanged={vi.fn()} />);
+
+    const preset = screen.getByLabelText('供应商预设');
+    expect(within(preset).getByRole('option', { name: 'OpenAI' })).toBeVisible();
+    expect(within(preset).getByRole('option', { name: 'DeepSeek' })).toBeVisible();
+    expect(within(preset).getByRole('option', { name: 'Qwen' })).toBeVisible();
+    expect(within(preset).getByRole('option', { name: 'OpenRouter' })).toBeVisible();
+    expect(within(preset).getByRole('option', { name: '自定义' })).toBeVisible();
+
+    await userEvent.selectOptions(preset, 'deepseek');
+
+    expect(screen.getByLabelText('供应商名称')).toHaveValue('DeepSeek');
+    expect(screen.getByLabelText('Profile ID')).toHaveValue('deepseek');
+    expect(screen.getByLabelText('接口地址 Base URL')).toHaveValue('https://api.deepseek.com/v1');
+    expect(screen.getByRole('option', { name: 'deepseek-chat' })).toBeVisible();
+  });
+
+  it('saves a preset provider while leaving a blank API key unchanged', async () => {
+    const api = createApi();
+    const onChanged = vi.fn();
+    render(<ProviderPage api={api} state={state} onChanged={onChanged} />);
+
+    await userEvent.selectOptions(screen.getByLabelText('供应商预设'), 'deepseek');
+    await userEvent.selectOptions(screen.getByLabelText('默认模型'), 'deepseek-chat');
+    await userEvent.click(screen.getByRole('button', { name: '保存 Provider 配置' }));
+
+    expect(api.updateSettings).toHaveBeenCalledWith({
+      modelProvider: expect.objectContaining({
+        profileId: 'deepseek',
+        providerId: 'deepseek',
+        providerName: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/v1',
+        model: 'deepseek-chat',
+        modelIds: 'deepseek-chat',
+        capabilities: 'deepseek',
+        source: 'manual',
+      }),
+    });
+    expect(api.updateSettings).not.toHaveBeenCalledWith({
+      modelProvider: expect.objectContaining({ apiKey: expect.anything() }),
+    });
+    expect(onChanged).toHaveBeenCalledOnce();
+  });
+
+  it('allows a custom provider and bootstrap model to be configured', async () => {
+    const api = createApi();
+    render(<ProviderPage api={api} state={state} onChanged={vi.fn()} />);
+
+    await userEvent.selectOptions(screen.getByLabelText('供应商预设'), 'custom');
+    await userEvent.clear(screen.getByLabelText('供应商名称'));
+    await userEvent.type(screen.getByLabelText('供应商名称'), 'My Gateway');
+    await userEvent.clear(screen.getByLabelText('Profile ID'));
+    await userEvent.type(screen.getByLabelText('Profile ID'), 'my-gateway');
+    await userEvent.clear(screen.getByLabelText('接口地址 Base URL'));
+    await userEvent.type(screen.getByLabelText('接口地址 Base URL'), 'https://gateway.example.com/v1');
+    await userEvent.type(screen.getByLabelText('模型 ID'), 'my-model');
+    await userEvent.type(screen.getByLabelText('API Key'), 'secret-key');
+    await userEvent.click(screen.getByRole('button', { name: '保存 Provider 配置' }));
+
+    expect(api.updateSettings).toHaveBeenCalledWith({
+      modelProvider: expect.objectContaining({
+        profileId: 'my-gateway',
+        providerId: 'openai-compatible',
+        providerName: 'My Gateway',
+        baseUrl: 'https://gateway.example.com/v1',
+        model: 'my-model',
+        modelIds: 'my-model',
+        capabilities: 'default',
+        apiKey: 'secret-key',
+      }),
+    });
+  });
+
   it('autoloads models and only saves a catalog model', async () => {
     const api = createApi();
     const onChanged = vi.fn();

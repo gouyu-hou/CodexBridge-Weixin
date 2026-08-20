@@ -4,6 +4,7 @@ import { DataTable, type DataTableColumn } from '../../components/ui/DataTable';
 import { Panel } from '../../components/ui/Panel';
 import { StatusBadge } from '../../components/ui/StatusBadge';
 import type { AdminState, ProviderProfile } from '../../types/admin';
+import { ProviderConfiguration } from './ProviderConfiguration';
 import { ProviderEditor } from './ProviderEditor';
 import { ProviderUsage } from './ProviderUsage';
 
@@ -40,6 +41,14 @@ export function ProviderPage({ api, onChanged, state }: ProviderPageProps) {
   ];
   return (
     <div className="page-stack">
+      <Panel title="供应商配置" subtitle="选择预设快速配置，也可以接入任意 OpenAI 兼容服务">
+        <ProviderConfiguration
+          api={api}
+          current={current}
+          onChanged={onChanged}
+          onConfigured={setProfileId}
+        />
+      </Panel>
       <Panel title="Provider Profiles" subtitle={`共 ${profiles.length} 个可用配置`}>
         <DataTable columns={columns} emptyText="尚无 Provider Profile" rows={profiles} rowKey={getProfileId} />
       </Panel>
