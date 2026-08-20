@@ -11,7 +11,6 @@ test('release verification covers the root project and every packaged workspace'
   const requiredScripts = [
     'typecheck',
     'typecheck:js',
-    'web:verify',
     'test',
     'build',
     'codex-gateway:check-boundary',
@@ -131,62 +130,32 @@ test('CI audits production dependencies against the official npm advisory servic
   assert.match(workflow, /npm run audit:prod/u);
 });
 
-test('CI builds the Web console and its README matches the implemented surface', () => {
+test('the retired Web console stays outside the active product and release surface', () => {
   const workflow = fs.readFileSync(
     path.join(process.cwd(), '.github', 'workflows', 'ci.yml'),
     'utf8',
   );
-  const webPackage = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'apps', 'web', 'package.json'), 'utf8'),
-  ) as {
-    scripts?: Record<string, string>;
-  };
-  const clientStrictConfig = JSON.parse(
-    fs.readFileSync(path.join(process.cwd(), 'apps', 'web', 'tsconfig.client-strict.json'), 'utf8'),
-  ) as {
-    compilerOptions?: {
-      incremental?: boolean;
-      strict?: boolean;
-    };
-    include?: string[];
-  };
   const rootPackage = JSON.parse(
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
   ) as { scripts?: Record<string, string> };
-  const webPnpmConfig = fs.readFileSync(
-    path.join(process.cwd(), 'apps', 'web', 'pnpm-workspace.yaml'),
+  const dependabot = fs.readFileSync(
+    path.join(process.cwd(), '.github', 'dependabot.yml'),
     'utf8',
   );
-  const readme = fs.readFileSync(path.join(process.cwd(), 'apps', 'web', 'README.md'), 'utf8');
-
-  assert.match(workflow, /^\s*uses:\s*pnpm\/action-setup@v6\s*$/mu);
-  assert.doesNotMatch(workflow, /^\s*uses:\s*pnpm\/action-setup@(?!v6\s*$)\S+\s*$/mu);
-  assert.match(workflow, /pnpm --dir apps\/web install --frozen-lockfile/u);
-  assert.match(workflow, /CI:\s*['"]?true['"]?/u);
-  assert.match(rootPackage.scripts?.['verify:release'] ?? '', /npm run web:verify/u);
-  assert.equal(
-    rootPackage.scripts?.['web:verify'],
-    'npm run web:typecheck:server-strict && npm run web:typecheck:client-strict && npm run web:typecheck && npm run web:build',
+  const releaseDocs = fs.readFileSync(
+    path.join(process.cwd(), 'docs', 'RELEASE_PROCESS.md'),
+    'utf8',
   );
-  assert.equal(webPackage.scripts?.typecheck, 'tsc --noEmit');
-  assert.match(webPackage.scripts?.['typecheck:client-strict'] ?? '', /tsconfig\.client-strict\.json/u);
-  assert.match(webPackage.scripts?.['typecheck:server-strict'] ?? '', /tsconfig\.server-strict\.json/u);
-  assert.equal(clientStrictConfig.compilerOptions?.strict, true);
-  assert.equal(clientStrictConfig.compilerOptions?.incremental, false);
-  assert.deepEqual(clientStrictConfig.include, [
-    'components/**/*.ts',
-    'components/**/*.tsx',
-    'hooks/**/*.ts',
-    'hooks/**/*.tsx',
-  ]);
-  assert.match(webPackage.scripts?.build ?? '', /scripts\/next-build\.mjs/u);
-  assert.match(webPnpmConfig, /allowBuilds:[\s\S]*sharp:\s*true/u);
-  assert.match(readme, /typecheck:client-strict/u);
-  for (const route of ['/login', '/sessions', '/automations', '/runtime', '/api/codex-threads']) {
-    assert.match(readme, new RegExp(escapeRegExp(route), 'u'), route);
-  }
-  assert.match(readme, /reply|stream|SSE/iu);
-  assert.doesNotMatch(readme, /read-only JSON APIs|does not yet provide|尚未|只读/iu);
+
+  assert.equal(fs.existsSync(path.join(process.cwd(), 'apps', 'web')), false);
+  assert.deepEqual(
+    Object.keys(rootPackage.scripts ?? {}).filter((name) => name.startsWith('web:')),
+    [],
+  );
+  assert.doesNotMatch(rootPackage.scripts?.['verify:release'] ?? '', /web:verify/u);
+  assert.doesNotMatch(workflow, /apps\/web|Web console/iu);
+  assert.doesNotMatch(dependabot, /\/apps\/web|deps\(web\)/u);
+  assert.doesNotMatch(releaseDocs, /apps\/web|Web 控制台|web:verify/iu);
 });
 
 function escapeRegExp(value: string): string {

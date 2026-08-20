@@ -84,8 +84,7 @@ Draft 中只有缺失资产会被补传；已有资产大小或 SHA-256 不一�
 如果本地原始打包资产已经丢失或被修改，应先人工恢复原始 `release/` 目录，
 不要让脚本静默重新生成并替换已记录的资产。
 
-CI 会在 Ubuntu 和 Windows 上执行 `npm ci`，使用 Web 独立 lockfile 安装
-`apps/web` 依赖，然后执行完整 `verify:release`。Windows
+CI 会在 Ubuntu 和 Windows 上执行 `npm ci` 和完整 `verify:release`。Windows
 还会生成安装包并运行打包应用冒烟测试；CI 不创建 Tag、不推送 Git，也不发布
 GitHub Release。
 
@@ -177,10 +176,9 @@ Write-Host "准备发布 v$Version"
 npm run verify:release
 ```
 
-只有命令完整退出且返回码为 `0` 后才能继续。该脚本会依次验证根项目与 Web 控制台，
-再验证 Gateway、Provider Relay、Native API 和 Mission Control 的边界、类型、测试
-与构建，并在最后执行 `git diff --check`。Web 控制台会执行 TypeScript 检查和 Next.js
-生产构建；首次运行前需要先执行 `pnpm --dir apps/web install --frozen-lockfile`。
+只有命令完整退出且返回码为 `0` 后才能继续。该脚本会验证根项目，再验证 Gateway、
+Provider Relay、Native API 和 Mission Control 的边界、类型、测试与构建，并在最后
+执行 `git diff --check`。
 
 排查失败步骤时，可以先单独执行对应命令，例如：
 
