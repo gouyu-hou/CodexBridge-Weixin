@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Save } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Save, Shuffle } from 'lucide-react';
 import type { AdminApi } from '../../api/adminApi';
 import { sanitizeAdminError } from '../../api/adminApi';
 import { Button } from '../../components/ui/Button';
@@ -70,13 +70,38 @@ function customDraft(): ProviderDraft {
   };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function readSyncedProvider(value: unknown): ModelProviderSettings | null {
+  if (!isRecord(value)) return null;
+  const state = isRecord(value.state) ? value.state : null;
+  const settings = state && isRecord(state.settings)
+    ? state.settings
+    : isRecord(value.settings)
+      ? value.settings
+      : null;
+  return settings && isRecord(settings.modelProvider)
+    ? settings.modelProvider as ModelProviderSettings
+    : null;
+}
+
 export function ProviderConfiguration({ api, current, onChanged, onConfigured }: ProviderConfigurationProps) {
   const detectedPreset = findProviderPreset(current);
   const [presetKey, setPresetKey] = useState(detectedPreset?.key ?? CUSTOM_PROVIDER_PRESET);
   const [draft, setDraft] = useState<ProviderDraft>(() => draftFromCurrent(current));
+  const [keyState, setKeyState] = useState<ModelProviderSettings>(current);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
   const preset = PROVIDER_PRESETS.find((item) => item.key === presetKey);
+
+  useEffect(() => {
+    setPresetKey(findProviderPreset(current)?.key ?? CUSTOM_PROVIDER_PRESET);
+    setDraft(draftFromCurrent(current));
+    setKeyState(current);
+  }, [current]);
 
   const patchDraft = (patch: Partial<ProviderDraft>) => setDraft((value) => ({ ...value, ...patch }));
   const selectPreset = (key: string) => {
@@ -126,9 +151,30 @@ export function ProviderConfiguration({ api, current, onChanged, onConfigured }:
     }
   };
 
+  const syncCcswitch = async () => {
+    setSyncing(true);
+    setError('');
+    try {
+      const result = await api.syncCcswitch({ persistSource: true });
+      const provider = readSyncedProvider(result);
+      if (provider) {
+        setPresetKey(findProviderPreset(provider)?.key ?? CUSTOM_PROVIDER_PRESET);
+        setDraft(draftFromCurrent(provider));
+        setKeyState(provider);
+        const profileId = String(provider.profileId || '');
+        if (profileId) onConfigured(profileId);
+      }
+      onChanged();
+    } catch (value) {
+      setError(sanitizeAdminError(value instanceof Error ? value.message : value));
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   return (
     <div className="provider-configuration">
-      {error && <InlineAlert tone="error" title="Provider 配置未保存">{error}</InlineAlert>}
+      {error && <InlineAlert tone="error" title="Provider 操作失败">{error}</InlineAlert>}
       <div className="form-grid provider-configuration__grid">
         <SelectField
           label="供应商预设"
@@ -190,14 +236,17 @@ export function ProviderConfiguration({ api, current, onChanged, onConfigured }:
             type="password"
             autoComplete="off"
             value={draft.apiKey}
-            placeholder={current.apiKeyConfigured ? `留空则保留 ${current.apiKeyMasked || '当前密钥'}` : '输入供应商 API Key'}
+            placeholder={keyState.apiKeyConfigured ? `留空则保留 ${keyState.apiKeyMasked || '当前密钥'}` : '输入供应商 API Key'}
             onChange={(event) => patchDraft({ apiKey: event.target.value })}
           />
         </div>
       </div>
       <div className="provider-configuration__footer">
-        <span>保存后会重启微信桥接并刷新模型目录。</span>
-        <Button variant="primary" busy={saving} icon={<Save />} onClick={() => { void save(); }}>保存 Provider 配置</Button>
+        <span>同步或保存后会重启微信桥接并刷新模型目录。</span>
+        <div className="provider-configuration__actions">
+          <Button busy={syncing} disabled={saving} icon={<Shuffle />} onClick={() => { void syncCcswitch(); }}>同步 CCSwitch</Button>
+          <Button variant="primary" busy={saving} disabled={syncing} icon={<Save />} onClick={() => { void save(); }}>保存 Provider 配置</Button>
+        </div>
       </div>
     </div>
   );

@@ -108,6 +108,55 @@ describe('ProviderPage', () => {
     });
   });
 
+  it('imports and immediately displays the active CCSwitch provider', async () => {
+    const api = createApi();
+    const onChanged = vi.fn();
+    vi.mocked(api.syncCcswitch).mockResolvedValueOnce({
+      ok: true,
+      state: {
+        settings: {
+          modelProvider: {
+            profileId: 'deepseek',
+            providerId: 'deepseek',
+            providerName: 'DeepSeek',
+            baseUrl: 'https://api.deepseek.com/v1',
+            model: 'deepseek-chat',
+            modelIds: 'deepseek-chat',
+            capabilities: 'deepseek',
+            source: 'ccswitch',
+            apiKeyConfigured: true,
+            apiKeyMasked: 'deep...7890',
+          },
+        },
+      },
+    });
+    render(<ProviderPage api={api} state={state} onChanged={onChanged} />);
+
+    await userEvent.click(screen.getByRole('button', { name: '同步 CCSwitch' }));
+
+    expect(api.syncCcswitch).toHaveBeenCalledWith({ persistSource: true });
+    expect(screen.getByLabelText('供应商预设')).toHaveValue('deepseek');
+    expect(screen.getByLabelText('配置来源')).toHaveValue('ccswitch');
+    expect(screen.getByLabelText('供应商名称')).toHaveValue('DeepSeek');
+    expect(screen.getByLabelText('Profile ID')).toHaveValue('deepseek');
+    expect(screen.getByLabelText('接口地址 Base URL')).toHaveValue('https://api.deepseek.com/v1');
+    expect(screen.getByLabelText('默认模型')).toHaveValue('deepseek-chat');
+    expect(onChanged).toHaveBeenCalledOnce();
+  });
+
+  it('preserves an unsaved provider draft when CCSwitch synchronization fails', async () => {
+    const api = createApi();
+    vi.mocked(api.syncCcswitch).mockRejectedValueOnce(new Error('token=sync-secret'));
+    render(<ProviderPage api={api} state={state} onChanged={vi.fn()} />);
+
+    await userEvent.clear(screen.getByLabelText('供应商名称'));
+    await userEvent.type(screen.getByLabelText('供应商名称'), 'Unsaved Gateway');
+    await userEvent.click(screen.getByRole('button', { name: '同步 CCSwitch' }));
+
+    expect(await screen.findByText('token=[redacted]')).toBeVisible();
+    expect(screen.getByLabelText('供应商名称')).toHaveValue('Unsaved Gateway');
+  });
+
   it('autoloads models and only saves a catalog model', async () => {
     const api = createApi();
     const onChanged = vi.fn();

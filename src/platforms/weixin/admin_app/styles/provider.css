@@ -27,6 +27,12 @@
   line-height: 18px;
 }
 
+.provider-configuration__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 10px;
+}
+
 .provider-editor {
   display: grid;
   gap: 20px;
@@ -136,8 +142,13 @@
     flex-direction: column;
   }
 
-  .provider-configuration__footer .button {
-    width: 100%;
+  .provider-configuration__actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .provider-configuration__actions .button {
+    width: auto;
   }
 
   .provider-current-facts span {
