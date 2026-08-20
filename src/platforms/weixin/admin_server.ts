@@ -1144,6 +1144,10 @@ export class WeixinAdminServer {
       force: true,
       reason: 'manual',
     });
+    if (result.ok && result.changed) {
+      this.clearSessionModelOverrides();
+      await this.bridgeControl?.restart?.();
+    }
     this.writeJson(res, result.ok ? 200 : 409, {
       ...result,
       settings: this.buildSettings(),

@@ -2147,6 +2147,25 @@ test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config
     CODEX_DEFAULT_PROVIDER_PROFILE_ID: 'openai-default',
   };
   const repositories = createFileJsonRepositories(path.join(stateDir, 'runtime'));
+  repositories.bridgeSessions.save({
+    id: 'session-1',
+    providerProfileId: 'openai-default',
+    codexThreadId: 'thread-1',
+    cwd: null,
+    title: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  repositories.sessionSettings.save({
+    bridgeSessionId: 'session-1',
+    model: 'gpt-5.4',
+    reasoningEffort: 'high',
+    serviceTier: null,
+    locale: 'zh-CN',
+    metadata: {},
+    updatedAt: Date.now(),
+  });
+  let restartCount = 0;
   const catalog = makeProviderModelCatalogFake();
   const server = new WeixinAdminServer({
     accountStore,
@@ -2156,6 +2175,16 @@ test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config
     providerModelCatalog: catalog,
     codexHome,
     port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() {},
+      async restart() {
+        restartCount += 1;
+      },
+      status() {
+        return { running: true };
+      },
+    },
   });
 
   const binding = await server.start();
@@ -2185,6 +2214,11 @@ test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config
     const preference = JSON.parse(fs.readFileSync(path.join(stateDir, 'runtime', 'weixin-admin-preferences.json'), 'utf8'));
     assert.equal(preference.modelProviderSource, 'ccswitch');
     assert.equal(preference.ccswitchCodexHome, codexHome);
+    assert.equal(restartCount, 1);
+    const syncedSessionSettings = repositories.sessionSettings.getByBridgeSessionId('session-1');
+    assert.equal(syncedSessionSettings?.model, null);
+    assert.equal(syncedSessionSettings?.reasoningEffort, null);
+    assert.equal(syncedSessionSettings?.metadata.modelOverrideClearedReason, 'model-provider-updated');
 
     const invalidationsAfterManualSync = catalog.invalidations.length;
     const unchangedSync = (server as any).syncCcswitchProvider({ codexHome, reason: 'interval' });
