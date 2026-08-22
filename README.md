@@ -27,7 +27,7 @@ CodexBridge Weixin Admin 是一个面向 Windows 的微信 Bot 桥接与本地�
 
 到 GitHub Release 页面下载 Windows 安装包：
 
-[CodexBridge Weixin Admin v0.1.1](https://github.com/gouyu-hou/CodexBridge-Weixin/releases/tag/v0.1.8)
+[CodexBridge Weixin Admin v0.1.8](https://github.com/gouyu-hou/CodexBridge-Weixin/releases/tag/v0.1.8)
 
 
 普通用户只需要下载：
