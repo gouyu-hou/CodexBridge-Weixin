@@ -1027,10 +1027,40 @@ export class BridgeCoordinator {
       buildSessionMeta: (event) => this.buildScopedSessionMeta(event),
       messageResponse,
       renderList: (event, typeFilter, query = '') => this.renderAssistantList(event, typeFilter, query),
-      show: (event, args, typeFilter) => this.handleAssistantShowCommand(event, args, typeFilter),
-      complete: (event, args, typeFilter) => this.handleAssistantDoneCommand(event, args, typeFilter),
-      archive: (event, args, typeFilter) => this.handleAssistantDeleteCommand(event, args, typeFilter),
-      cancelRecord: (event, args, typeFilter) => this.handleAssistantCancelRecordCommand(event, args, typeFilter),
+      resolveRecord: (event, args, typeFilter) => this.assistantRecords.resolveForScope(
+        toScopeRef(event),
+        String(args[0] ?? '').trim(),
+        typeFilter,
+      ),
+      renderRecordDetail: (record) => this.renderAssistantDetailLines(record),
+      completeRecord: (record) => this.assistantRecords.completeRecord(record.id),
+      archiveRecord: (record) => this.assistantRecords.archiveRecord(record.id),
+      cancelRecordMutation: (record) => this.assistantRecords.cancelRecord(record.id),
+      renderRecordMutation: (action, record) => {
+        const key = action === 'complete'
+          ? 'coordinator.assistant.done'
+          : action === 'archive'
+            ? 'coordinator.assistant.deleted'
+            : 'coordinator.assistant.cancelled';
+        return [this.t(key, { title: record.title })];
+      },
+      getPendingRecord: (event, typeFilter) => this.assistantRecords.getLatestPendingForScope(
+        toScopeRef(event),
+        typeFilter,
+      ),
+      normalizeEdit: (event, draft, input, forcedType) => this.normalizeAssistantRecordUpdateDraft(
+        event,
+        draft,
+        input,
+        forcedType,
+      ),
+      editPendingRecord: (event, record, input, forcedType) => this.editAssistantPendingRecord(
+        event,
+        record,
+        input,
+        forcedType,
+      ),
+      renderPendingRecord: (record, commandName) => this.renderAssistantPendingLines(record, commandName),
       rejectMutation: (event) => this.rejectIfActiveTurnForCommand(event, 'assistant'),
       applyUpdateDraft: (draft) => this.applyAssistantRecordUpdateDraft(draft),
       renderUpdateDraft: (draft, commandName) => this.renderAssistantUpdateDraftLines(draft, commandName),
@@ -1038,7 +1068,6 @@ export class BridgeCoordinator {
       renderNoPending: (event, typeFilter, action) => action === 'confirm'
         ? this.handleAssistantConfirmPendingRecordCommand(event, typeFilter)
         : this.handleAssistantCancelPendingRecordCommand(event, typeFilter),
-      editPending: (event, args, forcedType) => this.handleAssistantEditPendingCommand(event, args, forcedType),
       natural: (event, rawInput, forcedType) => this.handleAssistantNaturalCommand(event, rawInput, forcedType),
     });
   }
@@ -2365,55 +2394,6 @@ export class BridgeCoordinator {
     });
   }
 
-  async handleAssistantShowCommand(event, args, typeFilter: AssistantRecordType | null) {
-    const scopeRef = toScopeRef(event);
-    const token = String(args[0] ?? '').trim();
-    const record = this.assistantRecords.resolveForScope(scopeRef, token, typeFilter);
-    if (!record) {
-      return messageResponse([this.t('coordinator.assistant.notFound')], this.buildScopedSessionMeta(event));
-    }
-    return messageResponse(this.renderAssistantDetailLines(record), this.buildScopedSessionMeta(event));
-  }
-
-  async handleAssistantDoneCommand(event, args, typeFilter: AssistantRecordType | null) {
-    const scopeRef = toScopeRef(event);
-    const token = String(args[0] ?? '').trim();
-    const record = this.assistantRecords.resolveForScope(scopeRef, token, typeFilter);
-    if (!record) {
-      return messageResponse([this.t('coordinator.assistant.notFound')], this.buildScopedSessionMeta(event));
-    }
-    const updated = this.assistantRecords.completeRecord(record.id);
-    return messageResponse([
-      this.t('coordinator.assistant.done', { title: updated.title }),
-    ], this.buildScopedSessionMeta(event));
-  }
-
-  async handleAssistantDeleteCommand(event, args, typeFilter: AssistantRecordType | null) {
-    const scopeRef = toScopeRef(event);
-    const token = String(args[0] ?? '').trim();
-    const record = this.assistantRecords.resolveForScope(scopeRef, token, typeFilter);
-    if (!record) {
-      return messageResponse([this.t('coordinator.assistant.notFound')], this.buildScopedSessionMeta(event));
-    }
-    const updated = this.assistantRecords.archiveRecord(record.id);
-    return messageResponse([
-      this.t('coordinator.assistant.deleted', { title: updated.title }),
-    ], this.buildScopedSessionMeta(event));
-  }
-
-  async handleAssistantCancelRecordCommand(event, args, typeFilter: AssistantRecordType | null) {
-    const scopeRef = toScopeRef(event);
-    const token = String(args[0] ?? '').trim();
-    const record = this.assistantRecords.resolveForScope(scopeRef, token, typeFilter);
-    if (!record) {
-      return messageResponse([this.t('coordinator.assistant.notFound')], this.buildScopedSessionMeta(event));
-    }
-    const updated = this.assistantRecords.cancelRecord(record.id);
-    return messageResponse([
-      this.t('coordinator.assistant.cancelled', { title: updated.title }),
-    ], this.buildScopedSessionMeta(event));
-  }
-
   async handleAssistantConfirmCommand(event, typeFilter: AssistantRecordType | null) {
     return this.assistantRecordCommands.confirm(event, typeFilter);
   }
@@ -2450,47 +2430,45 @@ export class BridgeCoordinator {
     ], this.buildScopedSessionMeta(event));
   }
 
-  async handleAssistantEditPendingCommand(event, args, forcedType: AssistantRecordType | null) {
-    const input = args.join(' ').trim();
-    if (!input) {
-      return messageResponse([
-        this.t('coordinator.assistant.editNeedsText'),
-      ], this.buildScopedSessionMeta(event));
-    }
+  async normalizeAssistantRecordUpdateDraft(
+    event,
+    updateDraft: PendingAssistantRecordUpdateDraft,
+    input: string,
+    forcedType: AssistantRecordType | null,
+  ): Promise<PendingAssistantRecordUpdateDraft | null> {
     const scopeRef = toScopeRef(event);
-    const updateDraft = this.assistantRecordCommands.getPendingUpdateDraftForType(scopeRef, forcedType);
-    if (updateDraft) {
-      if (shouldCreateAssistantRecordInsteadOfUpdating(input)) {
-        this.assistantRecordCommands.clearPendingUpdateDraft(scopeRef);
-        return this.handleAssistantCommand(event, [input], forcedType);
-      }
-      const instructions = [...updateDraft.instructions, input];
-      const baseRecord = this.assistantRecords.getById(updateDraft.targetRecordId) ?? updateDraft.matchedRecord;
-      const updatedRecord = await this.previewAssistantRecordAction(event, scopeRef, baseRecord, instructions, updateDraft.action, forcedType);
-      const updatedDraft: PendingAssistantRecordUpdateDraft = {
-        ...updateDraft,
-        rawInput: instructions.join('\n'),
-        instructions,
-        matchedRecord: cloneAssistantRecord(baseRecord),
-        updatedRecord: updatedRecord.record,
-        normalizedBy: updatedRecord.normalizedBy,
-        changeSummary: updatedRecord.changeSummary,
-      };
-      this.assistantRecordCommands.setPendingUpdateDraft(scopeRef, updatedDraft);
-      return messageResponse(
-        this.renderAssistantUpdateDraftLines(updatedDraft, assistantCommandNameForType(forcedType)),
-        this.buildScopedSessionMeta(event),
-      );
-    }
-    const record = this.assistantRecords.getLatestPendingForScope(scopeRef, forcedType ?? null);
-    if (!record) {
-      return messageResponse([this.t('coordinator.assistant.noPending')], this.buildScopedSessionMeta(event));
-    }
+    const instructions = [...updateDraft.instructions, input];
+    const baseRecord = this.assistantRecords.getById(updateDraft.targetRecordId) ?? updateDraft.matchedRecord;
+    const updatedRecord = await this.previewAssistantRecordAction(
+      event,
+      scopeRef,
+      baseRecord,
+      instructions,
+      updateDraft.action,
+      forcedType,
+    );
+    return {
+      ...updateDraft,
+      rawInput: instructions.join('\n'),
+      instructions,
+      matchedRecord: cloneAssistantRecord(baseRecord),
+      updatedRecord: updatedRecord.record,
+      normalizedBy: updatedRecord.normalizedBy,
+      changeSummary: updatedRecord.changeSummary,
+    };
+  }
+
+  async editAssistantPendingRecord(
+    event,
+    record: AssistantRecord,
+    input: string,
+    forcedType: AssistantRecordType | null,
+  ): Promise<AssistantRecord> {
+    const scopeRef = toScopeRef(event);
     const preview = await this.previewAssistantRecordAction(event, scopeRef, record, [input], 'update', forcedType);
-    const updated = this.saveAssistantRecordPreview(record, preview.record, {
+    return this.saveAssistantRecordPreview(record, preview.record, {
       status: 'pending',
     });
-    return messageResponse(this.renderAssistantPendingLines(updated, assistantCommandNameForType(forcedType)), this.buildScopedSessionMeta(event));
   }
 
   async buildAssistantRecordUpdateDraft(
@@ -15722,47 +15700,6 @@ function inferAssistantRecordNaturalAction(input: string): AssistantRecordUpdate
     return 'update';
   }
   return null;
-}
-
-function isExplicitAssistantCreateRequest(input: string): boolean {
-  const value = compactWhitespace(input);
-  if (!value) {
-    return false;
-  }
-  return /(?:^|[，,。；;\s])(?:新增|新建|添加|增加|记一条新的|记一个新的|新记一条|再记一条|再加一条|另记一条|另加一条).{0,24}(?:待办|todo|提醒|reminder|日志|log|笔记|note|事项|任务)/u.test(value)
-    || /^(?:新增|新建|添加|增加)(?:一个|一条)?(?:待办|todo|提醒|reminder|日志|log|笔记|note)/u.test(value);
-}
-
-function shouldCreateAssistantRecordInsteadOfUpdating(input: string): boolean {
-  const value = compactWhitespace(input);
-  if (!value) {
-    return false;
-  }
-  if (isExplicitAssistantCreateRequest(value)) {
-    return true;
-  }
-  if (isDisavowingExistingAssistantMatch(value)) {
-    return true;
-  }
-  if (hasAssistantRecordTypeCreateIntent(value) && !hasExplicitExistingAssistantRecordReference(value)) {
-    return true;
-  }
-  return false;
-}
-
-function isDisavowingExistingAssistantMatch(input: string): boolean {
-  return /(?:完全新的|全新的|新的内容|另一件事|另一个事项|跟.+?(?:没关系|无关|不相关)|不是(?:这个|那个|原来|之前|已有).{0,12}(?:todo|待办|记录|提醒|事项))/iu.test(input);
-}
-
-function hasAssistantRecordTypeCreateIntent(input: string): boolean {
-  return /(?:设为|设置为|标记为|作为|做成|归为|类型(?:是|为)|这是(?:一个)?|这个是|我这是).{0,24}(?:提醒|remind|代办|todo|日志|log|笔记|note)/iu.test(input)
-    || /(?:提醒我|给我.{0,16}提醒|发.{0,12}消息.{0,12}提醒|remind\s+me)/iu.test(input);
-}
-
-function hasExplicitExistingAssistantRecordReference(input: string): boolean {
-  return /(?:记录|条目|事项)\s*#?\d+/iu.test(input)
-    || /(?:第|#)\s*\d+\s*(?:条|个|项)?/iu.test(input)
-    || /(?:刚才|上面|上一条|当前|这个|这条|该|原来|之前|已有).{0,10}(?:记录|条|事项|todo|待办|提醒|日志|笔记)/iu.test(input);
 }
 
 function findBestAssistantRecordMatch(records: AssistantRecord[], input: string): { record: AssistantRecord; score: number } | null {

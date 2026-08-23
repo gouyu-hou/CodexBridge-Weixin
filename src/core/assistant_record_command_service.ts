@@ -9,6 +9,7 @@ import type { InboundTextEvent } from '../types/platform.js';
 
 export type AssistantRecordUpdateAction = 'update' | 'complete' | 'cancel' | 'archive';
 type AssistantRecordTerminalAction = 'confirm' | 'cancel';
+type AssistantRecordExplicitMutationAction = 'complete' | 'archive' | 'cancel';
 
 export type PendingAssistantRecordUpdateDraft = {
   createdAt: number;
@@ -34,10 +35,30 @@ export type AssistantRecordCommandDependencies<Response> = {
   buildSessionMeta(event: InboundTextEvent): unknown;
   messageResponse(lines: string[], session?: unknown): Response;
   renderList(event: InboundTextEvent, typeFilter: AssistantRecordType | null, query?: string): Response;
-  show(event: InboundTextEvent, args: unknown[], typeFilter: AssistantRecordType | null): Promise<Response>;
-  complete(event: InboundTextEvent, args: unknown[], typeFilter: AssistantRecordType | null): Promise<Response>;
-  archive(event: InboundTextEvent, args: unknown[], typeFilter: AssistantRecordType | null): Promise<Response>;
-  cancelRecord(event: InboundTextEvent, args: unknown[], typeFilter: AssistantRecordType | null): Promise<Response>;
+  resolveRecord(
+    event: InboundTextEvent,
+    args: unknown[],
+    typeFilter: AssistantRecordType | null,
+  ): AssistantRecord | null;
+  renderRecordDetail(record: AssistantRecord): string[];
+  completeRecord(record: AssistantRecord): AssistantRecord;
+  archiveRecord(record: AssistantRecord): AssistantRecord;
+  cancelRecordMutation(record: AssistantRecord): AssistantRecord;
+  renderRecordMutation(action: AssistantRecordExplicitMutationAction, record: AssistantRecord): string[];
+  getPendingRecord(event: InboundTextEvent, typeFilter: AssistantRecordType | null): AssistantRecord | null;
+  normalizeEdit(
+    event: InboundTextEvent,
+    draft: PendingAssistantRecordUpdateDraft,
+    input: string,
+    forcedType: AssistantRecordType | null,
+  ): Promise<PendingAssistantRecordUpdateDraft | null>;
+  editPendingRecord(
+    event: InboundTextEvent,
+    record: AssistantRecord,
+    input: string,
+    forcedType: AssistantRecordType | null,
+  ): Promise<AssistantRecord>;
+  renderPendingRecord(record: AssistantRecord, commandName: string): string[];
   rejectMutation(event: InboundTextEvent): Promise<Response | null>;
   applyUpdateDraft(draft: PendingAssistantRecordUpdateDraft): AssistantRecord | null;
   renderUpdateDraft(draft: PendingAssistantRecordUpdateDraft, commandName: string): string[];
@@ -47,7 +68,6 @@ export type AssistantRecordCommandDependencies<Response> = {
     typeFilter: AssistantRecordType | null,
     action: AssistantRecordTerminalAction,
   ): Promise<Response>;
-  editPending(event: InboundTextEvent, args: unknown[], forcedType: AssistantRecordType | null): Promise<Response>;
   natural(event: InboundTextEvent, rawInput: string, forcedType: AssistantRecordType | null): Promise<Response>;
 };
 
@@ -83,24 +103,24 @@ export class AssistantRecordCommandService<Response> {
       return this.dependencies.renderList(event, localTypeFilter, query);
     }
     if (action === 'show') {
-      return this.dependencies.show(event, args.slice(1), localTypeFilter);
+      return this.show(event, args.slice(1), localTypeFilter);
     }
     if (['done', 'complete'].includes(action)) {
-      return this.dependencies.complete(event, args.slice(1), localTypeFilter);
+      return this.mutateRecord(event, args.slice(1), localTypeFilter, 'complete');
     }
     if (['del', 'delete', 'archive'].includes(action)) {
-      return this.dependencies.archive(event, args.slice(1), localTypeFilter);
+      return this.mutateRecord(event, args.slice(1), localTypeFilter, 'archive');
     }
     if (action === 'ok' || action === 'confirm') {
       return this.confirm(event, typeFilter);
     }
     if (action === 'cancel') {
       return args[1]
-        ? this.dependencies.cancelRecord(event, args.slice(1), localTypeFilter)
+        ? this.mutateRecord(event, args.slice(1), localTypeFilter, 'cancel')
         : this.cancel(event, typeFilter);
     }
     if (action === 'edit') {
-      return this.dependencies.editPending(event, args.slice(1), forcedType);
+      return this.edit(event, args.slice(1), forcedType);
     }
     const rawInput = args.join(' ').trim();
     if (!rawInput) {
@@ -146,6 +166,89 @@ export class AssistantRecordCommandService<Response> {
     return this.handleTerminalAction(event, typeFilter, 'cancel');
   }
 
+  private async show(
+    event: InboundTextEvent,
+    args: unknown[],
+    typeFilter: AssistantRecordType | null,
+  ): Promise<Response> {
+    const record = this.dependencies.resolveRecord(event, args, typeFilter);
+    if (!record) {
+      return this.notFound(event);
+    }
+    return this.dependencies.messageResponse(
+      this.dependencies.renderRecordDetail(record),
+      this.dependencies.buildSessionMeta(event),
+    );
+  }
+
+  private async mutateRecord(
+    event: InboundTextEvent,
+    args: unknown[],
+    typeFilter: AssistantRecordType | null,
+    action: AssistantRecordExplicitMutationAction,
+  ): Promise<Response> {
+    const record = this.dependencies.resolveRecord(event, args, typeFilter);
+    if (!record) {
+      return this.notFound(event);
+    }
+    const updatedRecord = action === 'complete'
+      ? this.dependencies.completeRecord(record)
+      : action === 'archive'
+        ? this.dependencies.archiveRecord(record)
+        : this.dependencies.cancelRecordMutation(record);
+    return this.dependencies.messageResponse(
+      this.dependencies.renderRecordMutation(action, updatedRecord),
+      this.dependencies.buildSessionMeta(event),
+    );
+  }
+
+  private async edit(
+    event: InboundTextEvent,
+    args: unknown[],
+    forcedType: AssistantRecordType | null,
+  ): Promise<Response> {
+    const input = args.join(' ').trim();
+    if (!input) {
+      return this.dependencies.messageResponse([
+        this.dependencies.getTranslator().t('coordinator.assistant.editNeedsText'),
+      ], this.dependencies.buildSessionMeta(event));
+    }
+    const scopeRef = toAssistantRecordScopeRef(event);
+    const updateDraft = this.getPendingUpdateDraftForType(scopeRef, forcedType);
+    if (updateDraft) {
+      if (shouldCreateAssistantRecordInsteadOfUpdating(input)) {
+        this.clearPendingUpdateDraft(scopeRef);
+        return this.handle(event, [input], forcedType);
+      }
+      const updatedDraft = await this.dependencies.normalizeEdit(event, updateDraft, input, forcedType);
+      if (!updatedDraft) {
+        return this.notFound(event);
+      }
+      this.setPendingUpdateDraft(scopeRef, updatedDraft);
+      return this.dependencies.messageResponse(
+        this.dependencies.renderUpdateDraft(updatedDraft, assistantCommandNameForType(forcedType)),
+        this.dependencies.buildSessionMeta(event),
+      );
+    }
+    const record = this.dependencies.getPendingRecord(event, forcedType);
+    if (!record) {
+      return this.dependencies.messageResponse([
+        this.dependencies.getTranslator().t('coordinator.assistant.noPending'),
+      ], this.dependencies.buildSessionMeta(event));
+    }
+    const updatedRecord = await this.dependencies.editPendingRecord(event, record, input, forcedType);
+    return this.dependencies.messageResponse(
+      this.dependencies.renderPendingRecord(updatedRecord, assistantCommandNameForType(forcedType)),
+      this.dependencies.buildSessionMeta(event),
+    );
+  }
+
+  private notFound(event: InboundTextEvent): Response {
+    return this.dependencies.messageResponse([
+      this.dependencies.getTranslator().t('coordinator.assistant.notFound'),
+    ], this.dependencies.buildSessionMeta(event));
+  }
+
   private async handleTerminalAction(
     event: InboundTextEvent,
     typeFilter: AssistantRecordType | null,
@@ -179,6 +282,40 @@ export class AssistantRecordCommandService<Response> {
       this.dependencies.buildSessionMeta(event),
     );
   }
+}
+
+function shouldCreateAssistantRecordInsteadOfUpdating(input: string): boolean {
+  const value = compactWhitespace(input);
+  if (!value) {
+    return false;
+  }
+  return isExplicitAssistantCreateRequest(value)
+    || isDisavowingExistingAssistantMatch(value)
+    || (hasAssistantRecordTypeCreateIntent(value) && !hasExplicitExistingAssistantRecordReference(value));
+}
+
+function isExplicitAssistantCreateRequest(input: string): boolean {
+  const value = compactWhitespace(input);
+  if (!value) {
+    return false;
+  }
+  return /(?:^|[，,。；;\s])(?:新增|新建|添加|增加|记一条新的|记一个新的|新记一条|再记一条|再加一条|另记一条|另加一条).{0,24}(?:待办|todo|提醒|reminder|日志|log|笔记|note|事项|任务)/u.test(value)
+    || /^(?:新增|新建|添加|增加)(?:一个|一条)?(?:待办|todo|提醒|reminder|日志|log|笔记|note)/u.test(value);
+}
+
+function isDisavowingExistingAssistantMatch(input: string): boolean {
+  return /(?:完全新的|全新的|新的内容|另一件事|另一个事项|跟.+?(?:没关系|无关|不相关)|不是(?:这个|那个|原来|之前|已有).{0,12}(?:todo|待办|记录|提醒|事项))/iu.test(input);
+}
+
+function hasAssistantRecordTypeCreateIntent(input: string): boolean {
+  return /(?:设为|设置为|标记为|作为|做成|归为|类型(?:是|为)|这是(?:一个)?|这个是|我这是).{0,24}(?:提醒|remind|代办|todo|日志|log|笔记|note)/iu.test(input)
+    || /(?:提醒我|给我.{0,16}提醒|发.{0,12}消息.{0,12}提醒|remind\s+me)/iu.test(input);
+}
+
+function hasExplicitExistingAssistantRecordReference(input: string): boolean {
+  return /(?:记录|条目|事项)\s*#?\d+/iu.test(input)
+    || /(?:第|#)\s*\d+\s*(?:条|个|项)?/iu.test(input)
+    || /(?:刚才|上面|上一条|当前|这个|这条|该|原来|之前|已有).{0,10}(?:记录|条|事项|todo|待办|提醒|日志|笔记)/iu.test(input);
 }
 
 export function assistantCommandNameForType(type: AssistantRecordType | null): string {

@@ -33,32 +33,29 @@ function createCommandHarness({ supported = true } = {}) {
     isSupported: () => supported,
     getTranslator: () => createI18n('en'),
     buildSessionMeta: (currentEvent) => ({ scope: currentEvent.externalScopeId }),
-    messageResponse: (lines, session) => respond('messageResponse', lines, session),
+    messageResponse: (lines, session) => respond(
+      ['show', 'complete', 'archive', 'cancelRecord', 'editPending'].includes(lines[0] ?? '')
+        ? lines[0]
+        : 'messageResponse',
+      lines,
+      session,
+    ),
     renderList: (currentEvent, typeFilter, query) => respond(
       'renderList',
       currentEvent,
       typeFilter,
       query,
     ),
-    show: async (currentEvent, args, typeFilter) => respond('show', currentEvent, args, typeFilter),
-    complete: async (currentEvent, args, typeFilter) => respond(
-      'complete',
-      currentEvent,
-      args,
-      typeFilter,
-    ),
-    archive: async (currentEvent, args, typeFilter) => respond(
-      'archive',
-      currentEvent,
-      args,
-      typeFilter,
-    ),
-    cancelRecord: async (currentEvent, args, typeFilter) => respond(
-      'cancelRecord',
-      currentEvent,
-      args,
-      typeFilter,
-    ),
+    resolveRecord: () => ({ id: 'record-1', type: 'todo' } as AssistantRecord),
+    renderRecordDetail: () => ['show'],
+    completeRecord: (record) => record,
+    archiveRecord: (record) => record,
+    cancelRecordMutation: (record) => record,
+    renderRecordMutation: (action) => [action === 'complete' ? 'complete' : action === 'archive' ? 'archive' : 'cancelRecord'],
+    getPendingRecord: () => ({ id: 'record-1', type: 'todo' } as AssistantRecord),
+    normalizeEdit: async () => null,
+    editPendingRecord: async (_event, record) => record,
+    renderPendingRecord: () => ['editPending'],
     rejectMutation: async () => null,
     applyUpdateDraft: () => null,
     renderUpdateDraft: () => ['update-draft'],
@@ -68,12 +65,6 @@ function createCommandHarness({ supported = true } = {}) {
       currentEvent,
       typeFilter,
       action,
-    ),
-    editPending: async (currentEvent, args, forcedType) => respond(
-      'editPending',
-      currentEvent,
-      args,
-      forcedType,
     ),
     natural: async (currentEvent, rawInput, forcedType) => respond(
       'natural',
@@ -136,11 +127,16 @@ function createTerminalHarness({
       return cancelledResponse;
     },
     renderList: () => 'response:list',
-    show: async () => 'response:show',
-    complete: async () => 'response:complete',
-    archive: async () => 'response:archive',
-    cancelRecord: async () => 'response:cancel-record',
-    editPending: async () => 'response:edit',
+    resolveRecord: () => null,
+    renderRecordDetail: () => ['detail'],
+    completeRecord: (record) => record,
+    archiveRecord: (record) => record,
+    cancelRecordMutation: (record) => record,
+    renderRecordMutation: () => ['mutation'],
+    getPendingRecord: () => null,
+    normalizeEdit: async () => null,
+    editPendingRecord: async (_event, record) => record,
+    renderPendingRecord: () => ['pending'],
     natural: async () => 'response:natural',
     rejectMutation: async () => {
       calls.push('reject-active');
@@ -277,8 +273,10 @@ test('assistant record command router preserves explicit action aliases', async 
     assert.equal(response, `response:${current.expectedName}`, current.action);
     assert.equal(calls.length, 1, current.action);
     assert.equal(calls[0].name, current.expectedName, current.action);
-    assert.equal(calls[0].args[0], event, current.action);
-    assert.deepEqual(calls[0].args.slice(1), current.expectedTail, current.action);
+    if (!['show', 'complete', 'archive', 'cancelRecord', 'editPending'].includes(current.expectedName)) {
+      assert.equal(calls[0].args[0], event, current.action);
+      assert.deepEqual(calls[0].args.slice(1), current.expectedTail, current.action);
+    }
   }
 });
 
@@ -446,4 +444,115 @@ test('assistant record terminal cancellation clears only the current scope after
   assert.deepEqual(calls, ['reject-active']);
   assert.equal(service.getPendingUpdateDraft(event), null);
   assert.equal(service.getPendingUpdateDraft(otherScope)?.targetRecordId, 'record-2');
+});
+
+test('assistant record service orchestrates explicit record commands through domain callbacks', async () => {
+  const calls: string[] = [];
+  const event: InboundTextEvent = {
+    platform: 'weixin',
+    externalScopeId: 'assistant-explicit-command-scope',
+    text: '',
+  };
+  const record = { id: 'record-2', type: 'todo', title: 'Prepare estimate' } as AssistantRecord;
+  const draft: PendingAssistantRecordUpdateDraft = {
+    createdAt: 1,
+    rawInput: 'make it urgent',
+    instructions: ['make it urgent'],
+    targetRecordId: record.id,
+    matchedRecord: record,
+    action: 'update',
+    updatedRecord: record,
+    matchedScore: 100,
+    normalizedBy: 'local',
+    changeSummary: null,
+  };
+  const editedDraft: PendingAssistantRecordUpdateDraft = {
+    ...draft,
+    instructions: [...draft.instructions, 'add a client summary'],
+    rawInput: 'make it urgent\nadd a client summary',
+    updatedRecord: { ...record, title: 'Prepare urgent estimate' },
+    normalizedBy: 'provider',
+    changeSummary: 'Added a client summary.',
+  };
+  const dependencies: AssistantRecordCommandDependencies<string> = {
+    isSupported: () => true,
+    getTranslator: () => createI18n('en'),
+    buildSessionMeta: (currentEvent) => ({ scope: currentEvent.externalScopeId }),
+    messageResponse: (lines) => `message:${lines.join('|')}`,
+    renderList: () => 'response:list',
+    rejectMutation: async () => null,
+    applyUpdateDraft: () => null,
+    renderUpdateDraft: (currentDraft) => [`draft:${currentDraft.updatedRecord.title}`],
+    renderUpdateApplied: () => ['update-applied'],
+    renderNoPending: async () => 'response:no-pending',
+    natural: async () => 'response:natural',
+    resolveRecord: (_event, args, typeFilter) => {
+      calls.push(`resolve:${String(args[0] ?? '')}:${typeFilter}`);
+      return String(args[0] ?? '') === '2' ? record : null;
+    },
+    renderRecordDetail: (resolvedRecord) => {
+      calls.push(`detail:${resolvedRecord.id}`);
+      return [`detail:${resolvedRecord.title}`];
+    },
+    completeRecord: (resolvedRecord) => {
+      calls.push(`complete:${resolvedRecord.id}`);
+      return { ...resolvedRecord, status: 'done' } as AssistantRecord;
+    },
+    archiveRecord: (resolvedRecord) => {
+      calls.push(`archive:${resolvedRecord.id}`);
+      return { ...resolvedRecord, status: 'archived' } as AssistantRecord;
+    },
+    cancelRecordMutation: (resolvedRecord) => {
+      calls.push(`cancel:${resolvedRecord.id}`);
+      return { ...resolvedRecord, status: 'cancelled' } as AssistantRecord;
+    },
+    renderRecordMutation: (action, updatedRecord) => {
+      calls.push(`render:${action}:${updatedRecord.id}`);
+      return [`${action}:${updatedRecord.title}`];
+    },
+    getPendingRecord: () => null,
+    normalizeEdit: async (_event, currentDraft, input, typeFilter) => {
+      calls.push(`normalize:${currentDraft.targetRecordId}:${input}:${typeFilter}`);
+      return editedDraft;
+    },
+    editPendingRecord: async () => record,
+    renderPendingRecord: () => ['pending'],
+  };
+  const service = new AssistantRecordCommandService(dependencies);
+
+  assert.equal(await service.handle(event, ['show', '2'], 'todo'), 'message:detail:Prepare estimate');
+  assert.deepEqual(calls.splice(0), ['resolve:2:todo', 'detail:record-2']);
+
+  assert.equal(
+    await service.handle(event, ['show', 'bad'], 'todo'),
+    `message:${createI18n('en').t('coordinator.assistant.notFound')}`,
+  );
+  assert.deepEqual(calls.splice(0), ['resolve:bad:todo']);
+
+  assert.equal(
+    await service.handle(event, ['edit'], 'todo'),
+    `message:${createI18n('en').t('coordinator.assistant.editNeedsText')}`,
+  );
+  assert.deepEqual(calls.splice(0), []);
+
+  service.setPendingUpdateDraft(event, draft);
+  assert.equal(await service.handle(event, ['edit', 'add', 'a', 'client', 'summary'], 'todo'), 'message:draft:Prepare urgent estimate');
+  assert.deepEqual(calls.splice(0), [
+    'normalize:record-2:add a client summary:todo',
+  ]);
+  assert.equal(service.getPendingUpdateDraft(event), editedDraft);
+
+  for (const [action, expected] of [
+    ['done', 'complete:record-2'],
+    ['delete', 'archive:record-2'],
+    ['cancel', 'cancel:record-2'],
+  ] as const) {
+    const mutationAction = action === 'done' ? 'complete' : action === 'delete' ? 'archive' : 'cancel';
+    assert.equal(await service.handle(event, [action, '2'], 'todo'), `message:${mutationAction}:Prepare estimate`);
+    assert.deepEqual(calls.splice(0), [
+      'resolve:2:todo',
+      expected,
+      `render:${mutationAction}:record-2`,
+    ]);
+  }
 });
