@@ -25,6 +25,10 @@ export class InMemoryProviderProfileRepository implements ProviderProfileReposit
     return [...this.records.values()];
   }
 
+  replaceAll(profiles: ProviderProfile[]): void {
+    this.records = new Map(profiles.map((profile) => [profile.id, profile]));
+  }
+
   getById(id: string): ProviderProfile | null {
     return this.get(id);
   }

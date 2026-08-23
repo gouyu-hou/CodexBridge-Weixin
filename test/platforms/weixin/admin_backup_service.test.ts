@@ -8,6 +8,7 @@ import {
   WeixinAdminBackupService,
   type WeixinAdminBackupRepositories,
 } from '../../../src/platforms/weixin/admin_backup_service.js';
+import { WeixinAdminServer } from '../../../src/platforms/weixin/admin_server.js';
 import {
   _resetContextTokenStoreForTest,
   getContextToken as getOfficialContextToken,
@@ -56,44 +57,27 @@ function makeRecoverableRepositories(repositories: ReturnType<typeof createFileJ
     providerProfiles: {
       list: () => repositories.providerProfiles.list(),
       save: (record) => repositories.providerProfiles.save(record),
-      restore: (records) => {
-        for (const record of repositories.providerProfiles.list()) repositories.providerProfiles.delete(record.id);
-        for (const record of records) repositories.providerProfiles.save(record);
-      },
+      replaceAll: (records) => repositories.providerProfiles.replaceAll(records),
     },
     bridgeSessions: {
       list: () => repositories.bridgeSessions.list(),
       save: (record) => repositories.bridgeSessions.save(record),
-      restore: (records) => {
-        for (const record of repositories.bridgeSessions.list()) repositories.bridgeSessions.delete(record.id);
-        for (const record of records) repositories.bridgeSessions.save(record);
-      },
+      replaceAll: (records) => repositories.bridgeSessions.replaceAll(records),
     },
     platformBindings: {
       list: () => repositories.platformBindings.list(),
       save: (record) => repositories.platformBindings.save(record),
-      restore: (records) => {
-        for (const bridgeSessionId of new Set(repositories.platformBindings.list().map((record) => record.bridgeSessionId))) {
-          repositories.platformBindings.deleteBySession(bridgeSessionId);
-        }
-        for (const record of records) repositories.platformBindings.save(record);
-      },
+      replaceAll: (records) => repositories.platformBindings.replaceAll(records),
     },
     sessionSettings: {
       list: () => repositories.sessionSettings.listAll(),
       save: (record) => repositories.sessionSettings.save(record),
-      restore: (records) => {
-        for (const record of repositories.sessionSettings.listAll()) repositories.sessionSettings.delete(record.bridgeSessionId);
-        for (const record of records) repositories.sessionSettings.save(record);
-      },
+      replaceAll: (records) => repositories.sessionSettings.replaceAll(records),
     },
     threadMetadata: {
       list: () => repositories.threadMetadata.listAll(),
       save: (record) => repositories.threadMetadata.save(record),
-      restore: (records) => {
-        for (const record of repositories.threadMetadata.listAll()) repositories.threadMetadata.delete(record.providerProfileId, record.threadId);
-        for (const record of records) repositories.threadMetadata.save(record);
-      },
+      replaceAll: (records) => repositories.threadMetadata.replaceAll(records),
     },
   };
 }
@@ -177,6 +161,98 @@ test('WeixinAdminBackupService normalizes validated backup records into typed do
   assert.equal(platformBinding?.updatedAt, 0);
   assert.deepEqual(sessionSettings?.metadata, {});
   assert.equal(threadMetadata?.alias, null);
+});
+
+test('WeixinAdminServer exports records from a list-only runtime repository', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    port: 0,
+    repositories: {
+      providerProfiles: {
+        list: () => [{ id: 'list-only', providerKind: 'native', displayName: 'List only', config: {}, createdAt: 1, updatedAt: 1 }],
+      },
+    },
+  });
+  const binding = await server.start();
+  try {
+    const response = await fetch(`${binding.url}/api/export`);
+    const body = await response.json() as { runtime: { providerProfiles: ProviderProfile[] } };
+    assert.equal(response.status, 200);
+    assert.deepEqual(body.runtime.providerProfiles.map((profile) => profile.id), ['list-only']);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('WeixinAdminBackupService rejects imports needing an unrecoverable repository before any mutation', () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const providerProfiles: ProviderProfile[] = [];
+  const service = new WeixinAdminBackupService({
+    accountStore,
+    stateDir,
+    repositories: {
+      providerProfiles: {
+        list: () => [...providerProfiles],
+        save: (profile) => {
+          providerProfiles.push(profile);
+          return profile;
+        },
+      },
+    },
+    env: {},
+    getState: () => ({ bridge: {} }),
+    getSessionSummaries: () => [],
+    getLogs: () => ({}),
+    getAdminUrl: () => null,
+  });
+
+  const result = service.importBackup(validBackup({
+    accounts: [{ accountId: 'must-not-save', token: 'token', base_url: 'https://example.test' }],
+    runtime: { providerProfiles: [{ id: 'profile-1', providerKind: 'native' }] },
+  }));
+
+  assert.equal(result.status, 409);
+  assert.equal(accountStore.loadAccount('must-not-save'), null);
+  assert.deepEqual(providerProfiles, []);
+  assert.equal(fs.existsSync(path.join(stateDir, 'backups')), false);
+});
+
+test('WeixinAdminBackupService restores a failed runtime write through atomic replaceAll', () => {
+  const original: ProviderProfile[] = [{ id: 'original-profile', providerKind: 'native', displayName: 'Original', config: {}, createdAt: 1, updatedAt: 1 }];
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  let replaceCalls = 0;
+  const service = new WeixinAdminBackupService({
+    accountStore,
+    stateDir,
+    repositories: {
+      providerProfiles: {
+        list: () => [...original],
+        save: () => { throw new Error('persistent write failure'); },
+        replaceAll: (records) => {
+          replaceCalls += 1;
+          original.splice(0, original.length, ...records);
+        },
+      },
+    },
+    env: {},
+    getState: () => ({ bridge: {} }),
+    getSessionSummaries: () => [],
+    getLogs: () => ({}),
+    getAdminUrl: () => null,
+  });
+
+  const result = service.importBackup(validBackup({
+    runtime: { providerProfiles: [{ id: 'new-profile', providerKind: 'native' }] },
+  }));
+
+  assert.equal(result.status, 409);
+  assert.equal(replaceCalls, 1);
+  assert.deepEqual(original.map((profile) => profile.id), ['original-profile']);
 });
 
 test('WeixinAdminBackupService creates a pre-import restore point from the current backup', () => {
@@ -264,14 +340,14 @@ test('WeixinAdminBackupService restores injected in-memory runtime repositories 
         providerProfiles.splice(0, providerProfiles.length, ...providerProfiles.filter((current) => current.id !== profile.id), profile);
         return profile;
       },
-      restore: (profiles: ProviderProfile[]) => {
+      replaceAll: (profiles: ProviderProfile[]) => {
         providerProfiles.splice(0, providerProfiles.length, ...profiles);
       },
     },
     bridgeSessions: {
       list: () => [...bridgeSessions],
       save: (_session: BridgeSession) => { throw new Error('in-memory failure'); },
-      restore: (sessions: BridgeSession[]) => {
+      replaceAll: (sessions: BridgeSession[]) => {
         bridgeSessions.splice(0, bridgeSessions.length, ...sessions);
       },
     },

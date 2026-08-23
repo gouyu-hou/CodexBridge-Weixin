@@ -50,6 +50,10 @@ export class FileJsonPlatformBindingRepository implements PlatformBindingReposit
   list(): PlatformBinding[] {
     return this.listAll();
   }
+
+  replaceAll(bindings: PlatformBinding[]): void {
+    this.store.write([...bindings]);
+  }
 }
 
 function upsertBy<T>(records: T[], value: T, matcher: (record: T) => boolean) {

@@ -11,6 +11,7 @@ export interface PlatformBinding {
 export interface ProviderProfileRepository {
   getById(id: string): ProviderProfile | null;
   list(): ProviderProfile[];
+  replaceAll(profiles: ProviderProfile[]): void;
   save(profile: ProviderProfile): ProviderProfile;
   delete(id: string): void;
 }
@@ -20,6 +21,7 @@ export interface BridgeSessionRepository {
   save(session: BridgeSession): BridgeSession;
   delete(id: string): void;
   list(): BridgeSession[];
+  replaceAll(sessions: BridgeSession[]): void;
 }
 
 export interface ActiveTurnCheckpointRepository {
@@ -34,11 +36,13 @@ export interface PlatformBindingRepository {
   save(binding: PlatformBinding): PlatformBinding;
   deleteBySession(bridgeSessionId: string): void;
   list(): PlatformBinding[];
+  replaceAll(bindings: PlatformBinding[]): void;
 }
 
 export interface SessionSettingsRepository {
   getByBridgeSessionId(bridgeSessionId: string): SessionSettings | null;
   listAll(): SessionSettings[];
+  replaceAll(settings: SessionSettings[]): void;
   save(settings: SessionSettings): SessionSettings;
   delete(bridgeSessionId: string): void;
 }
@@ -46,6 +50,7 @@ export interface SessionSettingsRepository {
 export interface ThreadMetadataRepository {
   getByThread(providerProfileId: string, threadId: string): ThreadMetadata | null;
   listAll(): ThreadMetadata[];
+  replaceAll(metadata: ThreadMetadata[]): void;
   save(metadata: ThreadMetadata): ThreadMetadata;
   delete(providerProfileId: string, threadId: string): void;
   listByProviderProfileId(providerProfileId: string): ThreadMetadata[];

@@ -41,4 +41,11 @@ export class InMemoryPlatformBindingRepository implements PlatformBindingReposit
   list(): PlatformBinding[] {
     return [...this.records.values()];
   }
+
+  replaceAll(bindings: PlatformBinding[]): void {
+    this.records = new Map(bindings.map((binding) => [
+      formatPlatformScopeKey(binding.platform, binding.externalScopeId),
+      binding,
+    ]));
+  }
 }

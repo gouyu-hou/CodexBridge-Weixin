@@ -34,6 +34,10 @@ export class FileJsonBridgeSessionRepository implements BridgeSessionRepository 
     return this.store.read();
   }
 
+  replaceAll(sessions: BridgeSession[]): void {
+    this.store.write([...sessions]);
+  }
+
   getById(id: string): BridgeSession | null {
     return this.get(id);
   }

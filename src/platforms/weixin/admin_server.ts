@@ -33,7 +33,7 @@ import {
   resolveServiceEnvFile,
   setEnvValue,
   type WeixinAdminBackupRepositories,
-  type WeixinAdminBackupRuntimeRepository,
+  type WeixinAdminBackupReadRepository,
 } from './admin_backup_service.js';
 
 type QrLoginImpl = typeof officialQrLogin;
@@ -61,16 +61,19 @@ interface WeixinAdminRepositories {
     list(): ProviderProfile[];
     save?(profile: ProviderProfile): ProviderProfile;
     delete?(providerProfileId: string): void;
+    replaceAll?(profiles: ProviderProfile[]): void;
   } | null;
   bridgeSessions?: {
     list(): BridgeSession[];
     save?(session: BridgeSession): BridgeSession;
     delete?(bridgeSessionId: string): void;
+    replaceAll?(sessions: BridgeSession[]): void;
   } | null;
   platformBindings?: {
     list(): PlatformBinding[];
     save?(binding: PlatformBinding): PlatformBinding;
     deleteBySession?(bridgeSessionId: string): void;
+    replaceAll?(bindings: PlatformBinding[]): void;
   } | null;
   sessionSettings?: {
     getByBridgeSessionId?(bridgeSessionId: string): SessionSettings | null;
@@ -78,6 +81,7 @@ interface WeixinAdminRepositories {
     listAll?(): SessionSettings[];
     save?(settings: SessionSettings): SessionSettings;
     delete?(bridgeSessionId: string): void;
+    replaceAll?(settings: SessionSettings[]): void;
   } | null;
   threadMetadata?: {
     getByThread?(providerProfileId: string, threadId: string): ThreadMetadata | null;
@@ -86,6 +90,7 @@ interface WeixinAdminRepositories {
     listAll?(): ThreadMetadata[];
     save?(metadata: ThreadMetadata): ThreadMetadata;
     delete?(providerProfileId: string, threadId: string): void;
+    replaceAll?(metadata: ThreadMetadata[]): void;
   } | null;
 }
 
@@ -101,56 +106,56 @@ function createWeixinAdminBackupRepositories(
   };
 }
 
-function createProviderProfileBackupRepository(repository: WeixinAdminRepositories['providerProfiles']): WeixinAdminBackupRuntimeRepository<ProviderProfile> | null {
+function createProviderProfileBackupRepository(repository: WeixinAdminRepositories['providerProfiles']): WeixinAdminBackupReadRepository<ProviderProfile> | null {
   const save = repository?.save;
-  const remove = repository?.delete;
-  if (!repository || !save || !remove) return null;
-  return { list: () => repository.list(), save: (record) => save.call(repository, record), restore: (records) => {
-    for (const record of repository.list()) remove.call(repository, record.id);
-    for (const record of records) save.call(repository, record);
-  } };
+  const replaceAll = repository?.replaceAll;
+  if (!repository) return null;
+  return { list: () => repository.list(), ...(save && replaceAll ? {
+    save: (record) => save.call(repository, record),
+    replaceAll: (records) => replaceAll.call(repository, records),
+  } : {}) };
 }
 
-function createBridgeSessionBackupRepository(repository: WeixinAdminRepositories['bridgeSessions']): WeixinAdminBackupRuntimeRepository<BridgeSession> | null {
+function createBridgeSessionBackupRepository(repository: WeixinAdminRepositories['bridgeSessions']): WeixinAdminBackupReadRepository<BridgeSession> | null {
   const save = repository?.save;
-  const remove = repository?.delete;
-  if (!repository || !save || !remove) return null;
-  return { list: () => repository.list(), save: (record) => save.call(repository, record), restore: (records) => {
-    for (const record of repository.list()) remove.call(repository, record.id);
-    for (const record of records) save.call(repository, record);
-  } };
+  const replaceAll = repository?.replaceAll;
+  if (!repository) return null;
+  return { list: () => repository.list(), ...(save && replaceAll ? {
+    save: (record) => save.call(repository, record),
+    replaceAll: (records) => replaceAll.call(repository, records),
+  } : {}) };
 }
 
-function createPlatformBindingBackupRepository(repository: WeixinAdminRepositories['platformBindings']): WeixinAdminBackupRuntimeRepository<PlatformBinding> | null {
+function createPlatformBindingBackupRepository(repository: WeixinAdminRepositories['platformBindings']): WeixinAdminBackupReadRepository<PlatformBinding> | null {
   const save = repository?.save;
-  const remove = repository?.deleteBySession;
-  if (!repository || !save || !remove) return null;
-  return { list: () => repository.list(), save: (record) => save.call(repository, record), restore: (records) => {
-    for (const bridgeSessionId of uniqueStrings(repository.list().map((record) => record.bridgeSessionId))) remove.call(repository, bridgeSessionId);
-    for (const record of records) save.call(repository, record);
-  } };
+  const replaceAll = repository?.replaceAll;
+  if (!repository) return null;
+  return { list: () => repository.list(), ...(save && replaceAll ? {
+    save: (record) => save.call(repository, record),
+    replaceAll: (records) => replaceAll.call(repository, records),
+  } : {}) };
 }
 
-function createSessionSettingsBackupRepository(repository: WeixinAdminRepositories['sessionSettings']): WeixinAdminBackupRuntimeRepository<SessionSettings> | null {
+function createSessionSettingsBackupRepository(repository: WeixinAdminRepositories['sessionSettings']): WeixinAdminBackupReadRepository<SessionSettings> | null {
   const list = repository?.listAll;
   const save = repository?.save;
-  const remove = repository?.delete;
-  if (!repository || !list || !save || !remove) return null;
-  return { list: () => list.call(repository), save: (record) => save.call(repository, record), restore: (records) => {
-    for (const record of list.call(repository)) remove.call(repository, record.bridgeSessionId);
-    for (const record of records) save.call(repository, record);
-  } };
+  const replaceAll = repository?.replaceAll;
+  if (!repository || !list) return null;
+  return { list: () => list.call(repository), ...(save && replaceAll ? {
+    save: (record) => save.call(repository, record),
+    replaceAll: (records) => replaceAll.call(repository, records),
+  } : {}) };
 }
 
-function createThreadMetadataBackupRepository(repository: WeixinAdminRepositories['threadMetadata']): WeixinAdminBackupRuntimeRepository<ThreadMetadata> | null {
+function createThreadMetadataBackupRepository(repository: WeixinAdminRepositories['threadMetadata']): WeixinAdminBackupReadRepository<ThreadMetadata> | null {
   const list = repository?.listAll;
   const save = repository?.save;
-  const remove = repository?.delete;
-  if (!repository || !list || !save || !remove) return null;
-  return { list: () => list.call(repository), save: (record) => save.call(repository, record), restore: (records) => {
-    for (const record of list.call(repository)) remove.call(repository, record.providerProfileId, record.threadId);
-    for (const record of records) save.call(repository, record);
-  } };
+  const replaceAll = repository?.replaceAll;
+  if (!repository || !list) return null;
+  return { list: () => list.call(repository), ...(save && replaceAll ? {
+    save: (record) => save.call(repository, record),
+    replaceAll: (records) => replaceAll.call(repository, records),
+  } : {}) };
 }
 
 interface DeliveryOutboxSummary {

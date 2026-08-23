@@ -28,6 +28,10 @@ export class FileJsonProviderProfileRepository implements ProviderProfileReposit
     return this.store.read();
   }
 
+  replaceAll(profiles: ProviderProfile[]): void {
+    this.store.write([...profiles]);
+  }
+
   getById(id: string): ProviderProfile | null {
     return this.get(id);
   }

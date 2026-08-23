@@ -25,6 +25,10 @@ export class InMemorySessionSettingsRepository implements SessionSettingsReposit
     return [...this.records.values()];
   }
 
+  replaceAll(settings: SessionSettings[]): void {
+    this.records = new Map(settings.map((setting) => [setting.bridgeSessionId, setting]));
+  }
+
   delete(bridgeSessionId: string): void {
     this.records.delete(bridgeSessionId);
   }

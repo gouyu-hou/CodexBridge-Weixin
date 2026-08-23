@@ -24,6 +24,10 @@ export class FileJsonSessionSettingsRepository implements SessionSettingsReposit
     return this.store.read();
   }
 
+  replaceAll(settings: SessionSettings[]): void {
+    this.store.write([...settings]);
+  }
+
   getByBridgeSessionId(bridgeSessionId: string): SessionSettings | null {
     return this.get(bridgeSessionId);
   }

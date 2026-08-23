@@ -31,6 +31,10 @@ export class InMemoryBridgeSessionRepository implements BridgeSessionRepository 
     return [...this.records.values()];
   }
 
+  replaceAll(sessions: BridgeSession[]): void {
+    this.records = new Map(sessions.map((session) => [session.id, session]));
+  }
+
   getById(id: string): BridgeSession | null {
     return this.get(id);
   }

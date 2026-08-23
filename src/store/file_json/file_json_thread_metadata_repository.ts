@@ -32,6 +32,10 @@ export class FileJsonThreadMetadataRepository implements ThreadMetadataRepositor
     return this.store.read();
   }
 
+  replaceAll(metadata: ThreadMetadata[]): void {
+    this.store.write([...metadata]);
+  }
+
   getByThread(providerProfileId: string, threadId: string): ThreadMetadata | null {
     return this.get(providerProfileId, threadId);
   }

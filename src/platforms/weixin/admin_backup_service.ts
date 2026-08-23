@@ -39,17 +39,22 @@ const FULL_BACKUP_SERVICE_ENV_KEYS = [
 ] as const;
 
 export interface WeixinAdminBackupRepositories {
-  providerProfiles?: WeixinAdminBackupRuntimeRepository<ProviderProfile> | null;
-  bridgeSessions?: WeixinAdminBackupRuntimeRepository<BridgeSession> | null;
-  platformBindings?: WeixinAdminBackupRuntimeRepository<PlatformBinding> | null;
-  sessionSettings?: WeixinAdminBackupRuntimeRepository<SessionSettings> | null;
-  threadMetadata?: WeixinAdminBackupRuntimeRepository<ThreadMetadata> | null;
+  providerProfiles?: WeixinAdminBackupReadRepository<ProviderProfile> | null;
+  bridgeSessions?: WeixinAdminBackupReadRepository<BridgeSession> | null;
+  platformBindings?: WeixinAdminBackupReadRepository<PlatformBinding> | null;
+  sessionSettings?: WeixinAdminBackupReadRepository<SessionSettings> | null;
+  threadMetadata?: WeixinAdminBackupReadRepository<ThreadMetadata> | null;
 }
 
-export interface WeixinAdminBackupRuntimeRepository<T> {
+export interface WeixinAdminBackupReadRepository<T> {
   list(): T[];
+  save?(record: T): T;
+  replaceAll?(records: T[]): void;
+}
+
+export interface WeixinAdminBackupRuntimeRepository<T> extends WeixinAdminBackupReadRepository<T> {
   save(record: T): T;
-  restore(records: T[]): void;
+  replaceAll(records: T[]): void;
 }
 
 export interface WeixinAdminBackupAccount {
@@ -313,6 +318,13 @@ export class WeixinAdminBackupService {
     if (validation.errors.length > 0) {
       return { status: 400, body: { error: 'invalid backup', errors: validation.errors } };
     }
+    const unavailableRuntime = this.findUnavailableImportRuntime(validation.payload);
+    if (unavailableRuntime) {
+      return {
+        status: 409,
+        body: { error: 'backup import is unavailable', detail: `runtime repository is not recoverable: ${unavailableRuntime}` },
+      };
+    }
 
     const restorePoint = this.createPreImportRestorePoint();
     const snapshots = this.captureImportSnapshots(validation.payload);
@@ -353,11 +365,11 @@ export class WeixinAdminBackupService {
       const runtime = validation.payload.runtime;
       const repos = this.repositories;
       const failures: string[] = [];
-      imported.providerProfiles = this.importRecords(runtime.providerProfiles, repos?.providerProfiles, failures);
-      imported.bridgeSessions = this.importRecords(runtime.bridgeSessions, repos?.bridgeSessions, failures);
-      imported.platformBindings = this.importRecords(runtime.platformBindings, repos?.platformBindings, failures);
-      imported.sessionSettings = this.importRecords(runtime.sessionSettings, repos?.sessionSettings, failures);
-      imported.threadMetadata = this.importRecords(runtime.threadMetadata, repos?.threadMetadata, failures);
+      imported.providerProfiles = this.importRecords(runtime.providerProfiles, asRuntimeRepository(repos?.providerProfiles), failures);
+      imported.bridgeSessions = this.importRecords(runtime.bridgeSessions, asRuntimeRepository(repos?.bridgeSessions), failures);
+      imported.platformBindings = this.importRecords(runtime.platformBindings, asRuntimeRepository(repos?.platformBindings), failures);
+      imported.sessionSettings = this.importRecords(runtime.sessionSettings, asRuntimeRepository(repos?.sessionSettings), failures);
+      imported.threadMetadata = this.importRecords(runtime.threadMetadata, asRuntimeRepository(repos?.threadMetadata), failures);
       if (failures.length > 0) throw new Error('runtime record import failed');
       if (Object.keys(validation.payload.serviceEnv).length > 0) {
         for (const [key, value] of Object.entries(validation.payload.serviceEnv)) setEnvValue(this.env, key, value);
@@ -457,10 +469,11 @@ export class WeixinAdminBackupService {
 
   private restoreRuntimeSnapshot(snapshot: RuntimeSnapshot): string[] {
     const errors: string[] = [];
-    const restore = <T>(repository: WeixinAdminBackupRuntimeRepository<T> | null | undefined, records: T[]) => {
-      if (!repository) return;
+    const restore = <T>(repository: WeixinAdminBackupReadRepository<T> | null | undefined, records: T[]) => {
+      const runtimeRepository = asRuntimeRepository(repository);
+      if (!runtimeRepository) return;
       try {
-        repository.restore(records);
+        runtimeRepository.replaceAll(records);
       } catch {
         errors.push('runtime rollback failed');
       }
@@ -474,7 +487,7 @@ export class WeixinAdminBackupService {
   }
 
   private importRecords<T>(records: T[], repository: WeixinAdminBackupRuntimeRepository<T> | null | undefined, failures: string[]): number {
-    if (!repository) return 0;
+    if (!repository) throw new Error('runtime repository is not recoverable');
     let count = 0;
     for (const record of records) {
       try {
@@ -486,6 +499,29 @@ export class WeixinAdminBackupService {
     }
     return count;
   }
+
+  private findUnavailableImportRuntime(payload: ValidatedWeixinAdminBackupImport): string | null {
+    const runtime = this.repositories;
+    if (payload.runtime.providerProfiles.length > 0 && !asRuntimeRepository(runtime?.providerProfiles)) return 'providerProfiles';
+    if (payload.runtime.bridgeSessions.length > 0 && !asRuntimeRepository(runtime?.bridgeSessions)) return 'bridgeSessions';
+    if (payload.runtime.platformBindings.length > 0 && !asRuntimeRepository(runtime?.platformBindings)) return 'platformBindings';
+    if (payload.runtime.sessionSettings.length > 0 && !asRuntimeRepository(runtime?.sessionSettings)) return 'sessionSettings';
+    if (payload.runtime.threadMetadata.length > 0 && !asRuntimeRepository(runtime?.threadMetadata)) return 'threadMetadata';
+    return null;
+  }
+}
+
+function asRuntimeRepository<T>(
+  repository: WeixinAdminBackupReadRepository<T> | null | undefined,
+): WeixinAdminBackupRuntimeRepository<T> | null {
+  if (!repository || typeof repository.save !== 'function' || typeof repository.replaceAll !== 'function') return null;
+  const save = repository.save;
+  const replaceAll = repository.replaceAll;
+  return {
+    list: () => repository.list(),
+    save: (record) => save.call(repository, record),
+    replaceAll: (records) => replaceAll.call(repository, records),
+  };
 }
 
 export function setEnvValue(env: NodeJS.ProcessEnv | Record<string, unknown>, key: string, value: string) {
