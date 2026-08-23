@@ -221,6 +221,52 @@ test('WeixinAdminBackupService rejects imports needing an unrecoverable reposito
   assert.equal(fs.existsSync(path.join(stateDir, 'backups')), false);
 });
 
+test('WeixinAdminBackupService imports accounts without runtime repositories when the backup has no runtime records', () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  const service = new WeixinAdminBackupService({
+    accountStore,
+    stateDir,
+    repositories: null,
+    env: {},
+    getState: () => ({ bridge: {} }),
+    getSessionSummaries: () => [],
+    getLogs: () => ({}),
+    getAdminUrl: () => null,
+  });
+
+  const result = service.importBackup(validBackup({
+    accounts: [{ accountId: 'account-only', token: 'token', base_url: 'https://account.example' }],
+  }));
+
+  assert.equal(result.status, 200);
+  assert.equal(accountStore.loadAccount('account-only')?.token, 'token');
+});
+
+test('WeixinAdminBackupService imports environment values with list-only repositories when the backup has no runtime records', () => {
+  const stateDir = makeTempStateDir();
+  const serviceEnvFile = path.join(stateDir, 'service.env');
+  const env: Record<string, string> = { CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: serviceEnvFile };
+  const service = new WeixinAdminBackupService({
+    accountStore: new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') }),
+    stateDir,
+    repositories: { providerProfiles: { list: () => [] } },
+    env,
+    getState: () => ({ bridge: {} }),
+    getSessionSummaries: () => [],
+    getLogs: () => ({}),
+    getAdminUrl: () => null,
+  });
+
+  const result = service.importBackup(validBackup({
+    configuration: { serviceEnv: { CODEX_COMPAT_API_KEY: 'env-only-key' } },
+  }));
+
+  assert.equal(result.status, 200);
+  assert.equal(env.CODEX_COMPAT_API_KEY, 'env-only-key');
+  assert.match(fs.readFileSync(serviceEnvFile, 'utf8'), /CODEX_COMPAT_API_KEY=env-only-key/u);
+});
+
 test('WeixinAdminBackupService restores a failed runtime write through atomic replaceAll', () => {
   const original: ProviderProfile[] = [{ id: 'original-profile', providerKind: 'native', displayName: 'Original', config: {}, createdAt: 1, updatedAt: 1 }];
   const stateDir = makeTempStateDir();

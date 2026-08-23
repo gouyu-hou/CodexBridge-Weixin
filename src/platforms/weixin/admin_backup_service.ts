@@ -487,6 +487,7 @@ export class WeixinAdminBackupService {
   }
 
   private importRecords<T>(records: T[], repository: WeixinAdminBackupRuntimeRepository<T> | null | undefined, failures: string[]): number {
+    if (records.length === 0) return 0;
     if (!repository) throw new Error('runtime repository is not recoverable');
     let count = 0;
     for (const record of records) {
