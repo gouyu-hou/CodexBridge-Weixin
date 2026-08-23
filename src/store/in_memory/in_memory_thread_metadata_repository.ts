@@ -25,6 +25,10 @@ export class InMemoryThreadMetadataRepository implements ThreadMetadataRepositor
     return this.get(providerProfileId, threadId);
   }
 
+  listAll(): ThreadMetadata[] {
+    return [...this.records.values()];
+  }
+
   delete(providerProfileId: string, threadId: string): void {
     this.records.delete(buildMetadataKey(providerProfileId, threadId));
   }

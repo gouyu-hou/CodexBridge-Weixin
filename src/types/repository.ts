@@ -38,12 +38,14 @@ export interface PlatformBindingRepository {
 
 export interface SessionSettingsRepository {
   getByBridgeSessionId(bridgeSessionId: string): SessionSettings | null;
+  listAll(): SessionSettings[];
   save(settings: SessionSettings): SessionSettings;
   delete(bridgeSessionId: string): void;
 }
 
 export interface ThreadMetadataRepository {
   getByThread(providerProfileId: string, threadId: string): ThreadMetadata | null;
+  listAll(): ThreadMetadata[];
   save(metadata: ThreadMetadata): ThreadMetadata;
   delete(providerProfileId: string, threadId: string): void;
   listByProviderProfileId(providerProfileId: string): ThreadMetadata[];

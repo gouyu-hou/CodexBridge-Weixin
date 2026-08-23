@@ -39,23 +39,52 @@ const FULL_BACKUP_SERVICE_ENV_KEYS = [
 ] as const;
 
 export interface WeixinAdminBackupRepositories {
-  providerProfiles?: { list(): ProviderProfile[]; save?(profile: ProviderProfile): ProviderProfile } | null;
-  bridgeSessions?: { list(): BridgeSession[]; save?(session: BridgeSession): BridgeSession } | null;
-  platformBindings?: { list(): PlatformBinding[]; save?(binding: PlatformBinding): PlatformBinding } | null;
-  sessionSettings?: { listAll?(): SessionSettings[]; save?(settings: SessionSettings): SessionSettings } | null;
-  threadMetadata?: { listAll?(): ThreadMetadata[]; save?(metadata: ThreadMetadata): ThreadMetadata } | null;
+  providerProfiles?: WeixinAdminBackupRuntimeRepository<ProviderProfile> | null;
+  bridgeSessions?: WeixinAdminBackupRuntimeRepository<BridgeSession> | null;
+  platformBindings?: WeixinAdminBackupRuntimeRepository<PlatformBinding> | null;
+  sessionSettings?: WeixinAdminBackupRuntimeRepository<SessionSettings> | null;
+  threadMetadata?: WeixinAdminBackupRuntimeRepository<ThreadMetadata> | null;
+}
+
+export interface WeixinAdminBackupRuntimeRepository<T> {
+  list(): T[];
+  save(record: T): T;
+  restore(records: T[]): void;
+}
+
+export interface WeixinAdminBackupAccount {
+  accountId: string;
+  token: string;
+  baseUrl: string;
+  userId: string;
+  displayName?: string;
+  disabled?: boolean;
+  group?: string;
+  role?: string;
+  permissions?: SavedWeixinAccount['permissions'];
+  modelProvider?: SavedWeixinAccount['model_provider'];
+  contextTokens?: Record<string, string>;
+  syncCursor?: string;
 }
 
 export interface ValidatedWeixinAdminBackupImport {
-  accounts: Record<string, unknown>[];
+  accounts: WeixinAdminBackupAccount[];
   serviceEnv: Record<string, string>;
   runtime: {
-    providerProfiles: Record<string, unknown>[];
-    bridgeSessions: Record<string, unknown>[];
-    platformBindings: Record<string, unknown>[];
-    sessionSettings: Record<string, unknown>[];
-    threadMetadata: Record<string, unknown>[];
+    providerProfiles: ProviderProfile[];
+    bridgeSessions: BridgeSession[];
+    platformBindings: PlatformBinding[];
+    sessionSettings: SessionSettings[];
+    threadMetadata: ThreadMetadata[];
   };
+}
+
+interface RuntimeSnapshot {
+  providerProfiles: ProviderProfile[];
+  bridgeSessions: BridgeSession[];
+  platformBindings: PlatformBinding[];
+  sessionSettings: SessionSettings[];
+  threadMetadata: ThreadMetadata[];
 }
 
 export interface WeixinAdminBackupServiceOptions {
@@ -156,8 +185,8 @@ export class WeixinAdminBackupService {
         providerProfiles: runtime?.providerProfiles?.list?.() ?? [],
         bridgeSessions: runtime?.bridgeSessions?.list?.() ?? [],
         platformBindings: runtime?.platformBindings?.list?.() ?? [],
-        sessionSettings: runtime?.sessionSettings?.listAll?.() ?? [],
-        threadMetadata: runtime?.threadMetadata?.listAll?.() ?? [],
+        sessionSettings: runtime?.sessionSettings?.list?.() ?? [],
+        threadMetadata: runtime?.threadMetadata?.list?.() ?? [],
       },
       sessionSummaries: this.getSessionSummaries(),
       logs: this.getLogs(),
@@ -177,14 +206,14 @@ export class WeixinAdminBackupService {
       errors.push('diagnostic exports cannot be imported as backups');
     }
 
-    const accounts = validateImportRecordArray(body.accounts, 'accounts', errors);
+    const accountRecords = validateImportRecordArray(body.accounts, 'accounts', errors);
     validateUniqueImportRecords(
-      accounts,
+      accountRecords,
       'accounts',
       errors,
       (record) => normalizeAccountId(String(record.accountId ?? '')).toLowerCase(),
     );
-    for (const [index, account] of accounts.entries()) {
+    const accounts = accountRecords.map((account, index) => {
       const accountId = normalizeAccountId(String(account.accountId ?? ''));
       if (!isValidWeixinAccountId(accountId)) {
         errors.push(`accounts[${index}].accountId is invalid`);
@@ -213,7 +242,8 @@ export class WeixinAdminBackupService {
       if (account.sync_cursor !== undefined && typeof account.sync_cursor !== 'string') {
         errors.push(`accounts[${index}].sync_cursor must be a string`);
       }
-    }
+      return normalizeImportAccount(account);
+    });
 
     const rawConfiguration = body.configuration === undefined ? {} : body.configuration;
     if (!isRecord(rawConfiguration)) {
@@ -249,22 +279,28 @@ export class WeixinAdminBackupService {
       errors.push('runtime must be an object');
     }
     const runtime = isRecord(rawRuntime) ? rawRuntime : {};
-    const providerProfiles = validateImportRecordArray(runtime.providerProfiles, 'runtime.providerProfiles', errors);
-    const bridgeSessions = validateImportRecordArray(runtime.bridgeSessions, 'runtime.bridgeSessions', errors);
-    const platformBindings = validateImportRecordArray(runtime.platformBindings, 'runtime.platformBindings', errors);
-    const sessionSettings = validateImportRecordArray(runtime.sessionSettings, 'runtime.sessionSettings', errors);
-    const threadMetadata = validateImportRecordArray(runtime.threadMetadata, 'runtime.threadMetadata', errors);
+    const providerProfileRecords = validateImportRecordArray(runtime.providerProfiles, 'runtime.providerProfiles', errors);
+    const bridgeSessionRecords = validateImportRecordArray(runtime.bridgeSessions, 'runtime.bridgeSessions', errors);
+    const platformBindingRecords = validateImportRecordArray(runtime.platformBindings, 'runtime.platformBindings', errors);
+    const sessionSettingsRecords = validateImportRecordArray(runtime.sessionSettings, 'runtime.sessionSettings', errors);
+    const threadMetadataRecords = validateImportRecordArray(runtime.threadMetadata, 'runtime.threadMetadata', errors);
 
-    validateImportRequiredStrings(providerProfiles, 'runtime.providerProfiles', ['id', 'providerKind'], errors);
-    validateImportRequiredStrings(bridgeSessions, 'runtime.bridgeSessions', ['id', 'providerProfileId', 'codexThreadId'], errors);
-    validateImportRequiredStrings(platformBindings, 'runtime.platformBindings', ['platform', 'externalScopeId', 'bridgeSessionId'], errors);
-    validateImportRequiredStrings(sessionSettings, 'runtime.sessionSettings', ['bridgeSessionId'], errors);
-    validateImportRequiredStrings(threadMetadata, 'runtime.threadMetadata', ['providerProfileId', 'threadId'], errors);
-    validateUniqueImportRecords(providerProfiles, 'runtime.providerProfiles', errors, (record) => String(record.id ?? ''));
-    validateUniqueImportRecords(bridgeSessions, 'runtime.bridgeSessions', errors, (record) => String(record.id ?? ''));
-    validateUniqueImportRecords(platformBindings, 'runtime.platformBindings', errors, (record) => `${record.platform}:${record.externalScopeId}`);
-    validateUniqueImportRecords(sessionSettings, 'runtime.sessionSettings', errors, (record) => String(record.bridgeSessionId ?? ''));
-    validateUniqueImportRecords(threadMetadata, 'runtime.threadMetadata', errors, (record) => `${record.providerProfileId}:${record.threadId}`);
+    validateImportRequiredStrings(providerProfileRecords, 'runtime.providerProfiles', ['id', 'providerKind'], errors);
+    validateImportRequiredStrings(bridgeSessionRecords, 'runtime.bridgeSessions', ['id', 'providerProfileId', 'codexThreadId'], errors);
+    validateImportRequiredStrings(platformBindingRecords, 'runtime.platformBindings', ['platform', 'externalScopeId', 'bridgeSessionId'], errors);
+    validateImportRequiredStrings(sessionSettingsRecords, 'runtime.sessionSettings', ['bridgeSessionId'], errors);
+    validateImportRequiredStrings(threadMetadataRecords, 'runtime.threadMetadata', ['providerProfileId', 'threadId'], errors);
+    validateUniqueImportRecords(providerProfileRecords, 'runtime.providerProfiles', errors, (record) => String(record.id ?? ''));
+    validateUniqueImportRecords(bridgeSessionRecords, 'runtime.bridgeSessions', errors, (record) => String(record.id ?? ''));
+    validateUniqueImportRecords(platformBindingRecords, 'runtime.platformBindings', errors, (record) => `${record.platform}:${record.externalScopeId}`);
+    validateUniqueImportRecords(sessionSettingsRecords, 'runtime.sessionSettings', errors, (record) => String(record.bridgeSessionId ?? ''));
+    validateUniqueImportRecords(threadMetadataRecords, 'runtime.threadMetadata', errors, (record) => `${record.providerProfileId}:${record.threadId}`);
+
+    const providerProfiles = providerProfileRecords.map(normalizeProviderProfile);
+    const bridgeSessions = bridgeSessionRecords.map(normalizeBridgeSession);
+    const platformBindings = platformBindingRecords.map(normalizePlatformBinding);
+    const sessionSettings = sessionSettingsRecords.map(normalizeSessionSettings);
+    const threadMetadata = threadMetadataRecords.map(normalizeThreadMetadata);
 
     return {
       payload: { accounts, serviceEnv, runtime: { providerProfiles, bridgeSessions, platformBindings, sessionSettings, threadMetadata } },
@@ -280,6 +316,7 @@ export class WeixinAdminBackupService {
 
     const restorePoint = this.createPreImportRestorePoint();
     const snapshots = this.captureImportSnapshots(validation.payload);
+    const runtimeSnapshot = this.captureRuntimeSnapshot();
     const envSnapshot = this.captureImportEnvSnapshot(validation.payload.serviceEnv);
     const imported: ImportCounts = {
       accounts: 0,
@@ -291,38 +328,36 @@ export class WeixinAdminBackupService {
       configuration: 0,
     };
     try {
-      for (const raw of validation.payload.accounts) {
-        const accountId = normalizeAccountId(String(raw.accountId ?? ''));
+      for (const account of validation.payload.accounts) {
+        const accountId = account.accountId;
         this.accountStore.saveAccount({
           accountId,
-          token: String(raw.token ?? '').trim(),
-          baseUrl: String(raw.base_url ?? raw.baseUrl ?? '').trim(),
-          userId: String(raw.user_id ?? raw.userId ?? ''),
+          token: account.token,
+          baseUrl: account.baseUrl,
+          userId: account.userId,
         });
         const patch: Parameters<WeixinAccountStore['updateAccount']>[1] = {};
-        if (typeof raw.display_name === 'string') patch.display_name = raw.display_name;
-        if (typeof raw.disabled === 'boolean') patch.disabled = raw.disabled;
-        if (typeof raw.group === 'string') patch.group = raw.group;
-        if (typeof raw.role === 'string') patch.role = raw.role;
-        if (isRecord(raw.permissions)) patch.permissions = raw.permissions;
-        if (isRecord(raw.model_provider) || isRecord(raw.modelProvider)) {
-          patch.model_provider = isRecord(raw.model_provider) ? raw.model_provider : raw.modelProvider as Record<string, unknown>;
-        }
+        if (account.displayName !== undefined) patch.display_name = account.displayName;
+        if (account.disabled !== undefined) patch.disabled = account.disabled;
+        if (account.group !== undefined) patch.group = account.group;
+        if (account.role !== undefined) patch.role = account.role;
+        if (account.permissions !== undefined) patch.permissions = account.permissions;
+        if (account.modelProvider !== undefined) patch.model_provider = account.modelProvider;
         if (Object.keys(patch).length > 0) this.accountStore.updateAccount(accountId, patch);
-        if (isRecord(raw.context_tokens)) {
-          replaceContextTokensForAccount(this.accountStore.rootDir, accountId, raw.context_tokens);
+        if (account.contextTokens !== undefined) {
+          replaceContextTokensForAccount(this.accountStore.rootDir, accountId, account.contextTokens);
         }
-        if (typeof raw.sync_cursor === 'string') this.accountStore.saveSyncCursor(accountId, raw.sync_cursor);
+        if (account.syncCursor !== undefined) this.accountStore.saveSyncCursor(accountId, account.syncCursor);
         imported.accounts += 1;
       }
       const runtime = validation.payload.runtime;
       const repos = this.repositories;
       const failures: string[] = [];
-      imported.providerProfiles = this.importRecords(runtime.providerProfiles, repos?.providerProfiles?.save?.bind(repos.providerProfiles), failures);
-      imported.bridgeSessions = this.importRecords(runtime.bridgeSessions, repos?.bridgeSessions?.save?.bind(repos.bridgeSessions), failures);
-      imported.platformBindings = this.importRecords(runtime.platformBindings, repos?.platformBindings?.save?.bind(repos.platformBindings), failures);
-      imported.sessionSettings = this.importRecords(runtime.sessionSettings, repos?.sessionSettings?.save?.bind(repos.sessionSettings), failures);
-      imported.threadMetadata = this.importRecords(runtime.threadMetadata, repos?.threadMetadata?.save?.bind(repos.threadMetadata), failures);
+      imported.providerProfiles = this.importRecords(runtime.providerProfiles, repos?.providerProfiles, failures);
+      imported.bridgeSessions = this.importRecords(runtime.bridgeSessions, repos?.bridgeSessions, failures);
+      imported.platformBindings = this.importRecords(runtime.platformBindings, repos?.platformBindings, failures);
+      imported.sessionSettings = this.importRecords(runtime.sessionSettings, repos?.sessionSettings, failures);
+      imported.threadMetadata = this.importRecords(runtime.threadMetadata, repos?.threadMetadata, failures);
       if (failures.length > 0) throw new Error('runtime record import failed');
       if (Object.keys(validation.payload.serviceEnv).length > 0) {
         for (const [key, value] of Object.entries(validation.payload.serviceEnv)) setEnvValue(this.env, key, value);
@@ -332,9 +367,10 @@ export class WeixinAdminBackupService {
       return { status: 200, body: { ok: true, imported, errors: [], restorePoint, state: this.getState() } };
     } catch {
       const rollbackErrors = this.restoreImportSnapshots(snapshots);
-      for (const raw of validation.payload.accounts) {
+      rollbackErrors.push(...this.restoreRuntimeSnapshot(runtimeSnapshot));
+      for (const account of validation.payload.accounts) {
         try {
-          reloadContextTokensForAccount(this.accountStore.rootDir, normalizeAccountId(String(raw.accountId ?? '')));
+          reloadContextTokensForAccount(this.accountStore.rootDir, account.accountId);
         } catch {
           rollbackErrors.push('context token rollback failed');
         }
@@ -366,17 +402,11 @@ export class WeixinAdminBackupService {
   }
 
   private captureImportSnapshots(payload: ValidatedWeixinAdminBackupImport): ImportFileSnapshot[] {
-    const runtimeDir = path.join(this.stateDir, 'runtime');
     const paths = uniqueStrings([
       ...payload.accounts.flatMap((account) => {
-        const accountId = String(account.accountId);
+        const accountId = account.accountId;
         return [this.accountStore.accountFile(accountId), this.accountStore.contextTokensFile(accountId), this.accountStore.syncFile(accountId)];
       }),
-      path.join(runtimeDir, 'provider_profiles.json'),
-      path.join(runtimeDir, 'bridge_sessions.json'),
-      path.join(runtimeDir, 'platform_bindings.json'),
-      path.join(runtimeDir, 'session_settings.json'),
-      path.join(runtimeDir, 'thread_metadata.json'),
       ...(Object.keys(payload.serviceEnv).length > 0 ? [resolveServiceEnvFile(this.env)] : []),
     ]);
     return paths.map((filePath) => ({
@@ -414,13 +444,41 @@ export class WeixinAdminBackupService {
     }
   }
 
-  private importRecords(value: unknown, save: ((record: any) => unknown) | undefined, failures: string[]): number {
-    if (!Array.isArray(value) || typeof save !== 'function') return 0;
-    let count = 0;
-    for (const record of value) {
-      if (!isRecord(record)) continue;
+  private captureRuntimeSnapshot(): RuntimeSnapshot {
+    const runtime = this.repositories;
+    return {
+      providerProfiles: runtime?.providerProfiles?.list() ?? [],
+      bridgeSessions: runtime?.bridgeSessions?.list() ?? [],
+      platformBindings: runtime?.platformBindings?.list() ?? [],
+      sessionSettings: runtime?.sessionSettings?.list() ?? [],
+      threadMetadata: runtime?.threadMetadata?.list() ?? [],
+    };
+  }
+
+  private restoreRuntimeSnapshot(snapshot: RuntimeSnapshot): string[] {
+    const errors: string[] = [];
+    const restore = <T>(repository: WeixinAdminBackupRuntimeRepository<T> | null | undefined, records: T[]) => {
+      if (!repository) return;
       try {
-        save(record);
+        repository.restore(records);
+      } catch {
+        errors.push('runtime rollback failed');
+      }
+    };
+    restore(this.repositories?.providerProfiles, snapshot.providerProfiles);
+    restore(this.repositories?.bridgeSessions, snapshot.bridgeSessions);
+    restore(this.repositories?.platformBindings, snapshot.platformBindings);
+    restore(this.repositories?.sessionSettings, snapshot.sessionSettings);
+    restore(this.repositories?.threadMetadata, snapshot.threadMetadata);
+    return errors;
+  }
+
+  private importRecords<T>(records: T[], repository: WeixinAdminBackupRuntimeRepository<T> | null | undefined, failures: string[]): number {
+    if (!repository) return 0;
+    let count = 0;
+    for (const record of records) {
+      try {
+        repository.save(record);
         count += 1;
       } catch {
         failures.push('runtime record import failed');
@@ -501,6 +559,141 @@ function validateUniqueImportRecords(records: Record<string, unknown>[], label: 
     if (seen.has(key)) errors.push(`${label}[${index}] duplicates ${key}`);
     seen.add(key);
   }
+}
+
+function normalizeImportAccount(record: Record<string, unknown>): WeixinAdminBackupAccount {
+  const contextTokens = isRecord(record.context_tokens)
+    ? Object.fromEntries(Object.entries(record.context_tokens).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
+    : undefined;
+  const permissions = normalizePermissions(record.permissions);
+  const modelProvider = normalizeModelProvider(
+    isRecord(record.model_provider) ? record.model_provider : record.modelProvider,
+  );
+  return {
+    accountId: normalizeAccountId(String(record.accountId ?? '')),
+    token: String(record.token ?? '').trim(),
+    baseUrl: String(record.base_url ?? record.baseUrl ?? '').trim(),
+    userId: String(record.user_id ?? record.userId ?? ''),
+    ...(typeof record.display_name === 'string' ? { displayName: record.display_name } : {}),
+    ...(typeof record.disabled === 'boolean' ? { disabled: record.disabled } : {}),
+    ...(typeof record.group === 'string' ? { group: record.group } : {}),
+    ...(typeof record.role === 'string' ? { role: record.role } : {}),
+    ...(permissions ? { permissions } : {}),
+    ...(modelProvider ? { modelProvider } : {}),
+    ...(contextTokens ? { contextTokens } : {}),
+    ...(typeof record.sync_cursor === 'string' ? { syncCursor: record.sync_cursor } : {}),
+  };
+}
+
+function normalizeProviderProfile(record: Record<string, unknown>): ProviderProfile {
+  const id = normalizeRequiredString(record.id);
+  return {
+    id,
+    providerKind: normalizeRequiredString(record.providerKind),
+    displayName: normalizeOptionalString(record.displayName) ?? normalizeOptionalString(record.name) ?? id,
+    config: isRecord(record.config) ? record.config : {},
+    createdAt: normalizeNumber(record.createdAt),
+    updatedAt: normalizeNumber(record.updatedAt),
+  };
+}
+
+function normalizeBridgeSession(record: Record<string, unknown>): BridgeSession {
+  return {
+    id: normalizeRequiredString(record.id),
+    providerProfileId: normalizeRequiredString(record.providerProfileId),
+    codexThreadId: normalizeRequiredString(record.codexThreadId),
+    cwd: normalizeNullableString(record.cwd),
+    title: normalizeNullableString(record.title),
+    createdAt: normalizeNumber(record.createdAt),
+    updatedAt: normalizeNumber(record.updatedAt),
+  };
+}
+
+function normalizePlatformBinding(record: Record<string, unknown>): PlatformBinding {
+  return {
+    platform: normalizeRequiredString(record.platform),
+    externalScopeId: normalizeRequiredString(record.externalScopeId),
+    bridgeSessionId: normalizeRequiredString(record.bridgeSessionId),
+    updatedAt: normalizeNumber(record.updatedAt),
+  };
+}
+
+function normalizeSessionSettings(record: Record<string, unknown>): SessionSettings {
+  return {
+    bridgeSessionId: normalizeRequiredString(record.bridgeSessionId),
+    model: normalizeNullableString(record.model),
+    reasoningEffort: normalizeNullableString(record.reasoningEffort),
+    serviceTier: normalizeNullableString(record.serviceTier),
+    collaborationMode: normalizeChoice(record.collaborationMode, ['plan', 'default']),
+    personality: normalizeChoice(record.personality, ['friendly', 'pragmatic', 'none']),
+    permissionsMode: normalizeChoice(record.permissionsMode, ['default-permissions', 'auto-review', 'full-access', 'custom']),
+    accessPreset: normalizeChoice(record.accessPreset, ['read-only', 'default', 'full-access']),
+    approvalPolicy: normalizeNullableString(record.approvalPolicy),
+    sandboxMode: normalizeNullableString(record.sandboxMode),
+    approvalsReviewer: normalizeChoice(record.approvalsReviewer, ['user', 'auto_review']),
+    locale: normalizeNullableString(record.locale),
+    metadata: isRecord(record.metadata) ? record.metadata : {},
+    updatedAt: normalizeNumber(record.updatedAt),
+  };
+}
+
+function normalizeThreadMetadata(record: Record<string, unknown>): ThreadMetadata {
+  return {
+    providerProfileId: normalizeRequiredString(record.providerProfileId),
+    threadId: normalizeRequiredString(record.threadId),
+    alias: normalizeNullableString(record.alias),
+    ...(record.archivedAt === undefined ? {} : { archivedAt: normalizeNullableNumber(record.archivedAt) }),
+    ...(record.pinnedAt === undefined ? {} : { pinnedAt: normalizeNullableNumber(record.pinnedAt) }),
+    updatedAt: normalizeNumber(record.updatedAt),
+  };
+}
+
+function normalizeRequiredString(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+  const normalized = normalizeRequiredString(value);
+  return normalized || null;
+}
+
+function normalizeNullableString(value: unknown): string | null {
+  return normalizeOptionalString(value);
+}
+
+function normalizeNumber(value: unknown): number {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function normalizeNullableNumber(value: unknown): number | null {
+  return value === null ? null : normalizeNumber(value);
+}
+
+function normalizeChoice<T extends string>(value: unknown, choices: readonly T[]): T | null {
+  return typeof value === 'string' ? choices.find((choice) => choice === value) ?? null : null;
+}
+
+function normalizePermissions(value: unknown): SavedWeixinAccount['permissions'] | undefined {
+  if (!isRecord(value)) return undefined;
+  return {
+    ...(value.can_chat !== undefined ? { can_chat: Boolean(value.can_chat) } : {}),
+    ...(value.can_upload !== undefined ? { can_upload: Boolean(value.can_upload) } : {}),
+    ...(value.can_execute_commands !== undefined ? { can_execute_commands: Boolean(value.can_execute_commands) } : {}),
+  };
+}
+
+function normalizeModelProvider(value: unknown): SavedWeixinAccount['model_provider'] | undefined {
+  if (!isRecord(value)) return undefined;
+  const providerProfileId = normalizeOptionalString(value.provider_profile_id ?? value.providerProfileId);
+  const model = normalizeOptionalString(value.model);
+  const reasoningEffort = normalizeOptionalString(value.reasoning_effort ?? value.reasoningEffort);
+  if (!providerProfileId && !model && !reasoningEffort) return undefined;
+  return {
+    ...(providerProfileId ? { provider_profile_id: providerProfileId } : {}),
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+  };
 }
 
 function normalizeAccountId(raw: string) {

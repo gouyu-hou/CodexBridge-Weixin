@@ -21,6 +21,10 @@ export class InMemorySessionSettingsRepository implements SessionSettingsReposit
     return this.get(bridgeSessionId);
   }
 
+  listAll(): SessionSettings[] {
+    return [...this.records.values()];
+  }
+
   delete(bridgeSessionId: string): void {
     this.records.delete(bridgeSessionId);
   }

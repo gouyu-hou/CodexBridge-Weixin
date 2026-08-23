@@ -32,6 +32,8 @@ import {
   persistEnvValues,
   resolveServiceEnvFile,
   setEnvValue,
+  type WeixinAdminBackupRepositories,
+  type WeixinAdminBackupRuntimeRepository,
 } from './admin_backup_service.js';
 
 type QrLoginImpl = typeof officialQrLogin;
@@ -58,6 +60,7 @@ interface WeixinAdminRepositories {
   providerProfiles?: {
     list(): ProviderProfile[];
     save?(profile: ProviderProfile): ProviderProfile;
+    delete?(providerProfileId: string): void;
   } | null;
   bridgeSessions?: {
     list(): BridgeSession[];
@@ -84,6 +87,70 @@ interface WeixinAdminRepositories {
     save?(metadata: ThreadMetadata): ThreadMetadata;
     delete?(providerProfileId: string, threadId: string): void;
   } | null;
+}
+
+function createWeixinAdminBackupRepositories(
+  repositories: WeixinAdminRepositories | null,
+): WeixinAdminBackupRepositories {
+  return {
+    providerProfiles: createProviderProfileBackupRepository(repositories?.providerProfiles),
+    bridgeSessions: createBridgeSessionBackupRepository(repositories?.bridgeSessions),
+    platformBindings: createPlatformBindingBackupRepository(repositories?.platformBindings),
+    sessionSettings: createSessionSettingsBackupRepository(repositories?.sessionSettings),
+    threadMetadata: createThreadMetadataBackupRepository(repositories?.threadMetadata),
+  };
+}
+
+function createProviderProfileBackupRepository(repository: WeixinAdminRepositories['providerProfiles']): WeixinAdminBackupRuntimeRepository<ProviderProfile> | null {
+  const save = repository?.save;
+  const remove = repository?.delete;
+  if (!repository || !save || !remove) return null;
+  return { list: () => repository.list(), save: (record) => save.call(repository, record), restore: (records) => {
+    for (const record of repository.list()) remove.call(repository, record.id);
+    for (const record of records) save.call(repository, record);
+  } };
+}
+
+function createBridgeSessionBackupRepository(repository: WeixinAdminRepositories['bridgeSessions']): WeixinAdminBackupRuntimeRepository<BridgeSession> | null {
+  const save = repository?.save;
+  const remove = repository?.delete;
+  if (!repository || !save || !remove) return null;
+  return { list: () => repository.list(), save: (record) => save.call(repository, record), restore: (records) => {
+    for (const record of repository.list()) remove.call(repository, record.id);
+    for (const record of records) save.call(repository, record);
+  } };
+}
+
+function createPlatformBindingBackupRepository(repository: WeixinAdminRepositories['platformBindings']): WeixinAdminBackupRuntimeRepository<PlatformBinding> | null {
+  const save = repository?.save;
+  const remove = repository?.deleteBySession;
+  if (!repository || !save || !remove) return null;
+  return { list: () => repository.list(), save: (record) => save.call(repository, record), restore: (records) => {
+    for (const bridgeSessionId of uniqueStrings(repository.list().map((record) => record.bridgeSessionId))) remove.call(repository, bridgeSessionId);
+    for (const record of records) save.call(repository, record);
+  } };
+}
+
+function createSessionSettingsBackupRepository(repository: WeixinAdminRepositories['sessionSettings']): WeixinAdminBackupRuntimeRepository<SessionSettings> | null {
+  const list = repository?.listAll;
+  const save = repository?.save;
+  const remove = repository?.delete;
+  if (!repository || !list || !save || !remove) return null;
+  return { list: () => list.call(repository), save: (record) => save.call(repository, record), restore: (records) => {
+    for (const record of list.call(repository)) remove.call(repository, record.bridgeSessionId);
+    for (const record of records) save.call(repository, record);
+  } };
+}
+
+function createThreadMetadataBackupRepository(repository: WeixinAdminRepositories['threadMetadata']): WeixinAdminBackupRuntimeRepository<ThreadMetadata> | null {
+  const list = repository?.listAll;
+  const save = repository?.save;
+  const remove = repository?.delete;
+  if (!repository || !list || !save || !remove) return null;
+  return { list: () => list.call(repository), save: (record) => save.call(repository, record), restore: (records) => {
+    for (const record of list.call(repository)) remove.call(repository, record.providerProfileId, record.threadId);
+    for (const record of records) save.call(repository, record);
+  } };
 }
 
 interface DeliveryOutboxSummary {
@@ -290,7 +357,7 @@ export class WeixinAdminServer {
       accountStore: this.accountStore,
       stateDir: this.stateDir,
       env: this.env,
-      repositories: this.repositories,
+      repositories: createWeixinAdminBackupRepositories(this.repositories),
       getState: () => this.buildState(),
       getSessionSummaries: () => sortSessions(this.buildSessionSummaries(), 'updatedDesc'),
       getLogs: () => this.readLogs({ lineLimit: 500 }),
