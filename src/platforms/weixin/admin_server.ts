@@ -17,22 +17,22 @@ import type { ProviderProfile } from '../../types/provider.js';
 import type { PlatformBinding } from '../../types/repository.js';
 import {
   WeixinAccountStore,
-  isValidWeixinAccountId,
   type SavedWeixinAccount,
 } from './account_store.js';
 import {
   readJsonFileSafely,
   writeJsonFileAtomically,
-  writeTextFileAtomically,
 } from '../../store/file_json/json_file_io.js';
 import { postAlert } from '../../runtime/alert_webhook.js';
 import { DEFAULT_ILINK_BOT_TYPE, officialQrLogin, type OfficialQrLoginCredentials } from './official/login.js';
-import {
-  reloadContextTokensForAccount,
-  replaceContextTokensForAccount,
-} from './official/context_tokens.js';
 import { renderAdminHtml } from './admin_page.js';
 import { resolveWeixinAdminRoute } from './admin_route.js';
+import {
+  WeixinAdminBackupService,
+  persistEnvValues,
+  resolveServiceEnvFile,
+  setEnvValue,
+} from './admin_backup_service.js';
 
 type QrLoginImpl = typeof officialQrLogin;
 
@@ -240,28 +240,6 @@ const ADMIN_PREFERENCES_FILE = 'weixin-admin-preferences.json';
 const MIN_NODE_MAJOR_VERSION = 24;
 const DEFAULT_CCSWITCH_SYNC_INTERVAL_MS = 10_000;
 const MIN_CCSWITCH_SYNC_INTERVAL_MS = 2_000;
-const FULL_BACKUP_SERVICE_ENV_KEYS = [
-  'WEIXIN_PRIMARY_ACCOUNT_ID',
-  'WEIXIN_ACCOUNT_ID',
-  'WEIXIN_MAX_CONCURRENT_TURNS',
-  'WEIXIN_EVENT_DISPATCH_CONCURRENCY',
-  'WEIXIN_ATTACHMENT_CONCURRENCY',
-  'WEIXIN_ACCOUNT_POLL_CONCURRENCY',
-  'WEIXIN_LOG_CLEANUP_ENABLE',
-  'WEIXIN_LOG_RETENTION_DAYS',
-  'WEIXIN_LOG_MAX_BYTES',
-  'WEIXIN_LOG_CLEANUP_INTERVAL_MINUTES',
-  'WEIXIN_ALERT_WEBHOOK_URL',
-  'CODEX_DEFAULT_PROVIDER_PROFILE_ID',
-  'CODEX_COMPAT_PROVIDER_ID',
-  'CODEX_COMPAT_PROVIDER_NAME',
-  'CODEX_COMPAT_BASE_URL',
-  'CODEX_COMPAT_DEFAULT_MODEL',
-  'CODEX_COMPAT_MODEL',
-  'CODEX_COMPAT_MODEL_IDS',
-  'CODEX_COMPAT_CAPABILITIES',
-  'CODEX_COMPAT_API_KEY',
-] as const;
 const ADMIN_FAVICON_PATH = path.resolve(process.cwd(), 'assets', 'windows', 'codexbridge-weixin.ico');
 const ADMIN_FAVICON_PNG_PATH = path.resolve(process.cwd(), 'assets', 'windows', 'codexbridge-weixin.png');
 const ADMIN_DONATE_QR_PATH = path.resolve(process.cwd(), 'assets', 'donate', 'wechat-reward.png');
@@ -308,6 +286,16 @@ export class WeixinAdminServer {
     this.providerUsage = providerUsage;
     this.codexHome = codexHome;
     this.pageCloseShutdownGraceMs = Math.max(0, pageCloseShutdownGraceMs);
+    this.backupService = new WeixinAdminBackupService({
+      accountStore: this.accountStore,
+      stateDir: this.stateDir,
+      env: this.env,
+      repositories: this.repositories,
+      getState: () => this.buildState(),
+      getSessionSummaries: () => sortSessions(this.buildSessionSummaries(), 'updatedDesc'),
+      getLogs: () => this.readLogs({ lineLimit: 500 }),
+      getAdminUrl: () => this.binding?.url ?? null,
+    });
     this.server = null;
     this.binding = null;
     this.currentPairing = null;
@@ -337,6 +325,7 @@ export class WeixinAdminServer {
   providerUsage: ProviderUsageCatalog | null;
   codexHome: string | null;
   pageCloseShutdownGraceMs: number;
+  backupService: WeixinAdminBackupService;
   server: Server | null;
   binding: WeixinAdminServerBinding | null;
   currentPairing: PairingSession | null;
@@ -1377,249 +1366,13 @@ export class WeixinAdminServer {
   }
 
   private buildExportPayload() {
-    const runtime = this.repositories;
-    const state = this.buildState();
-    const {
-      deliveryOutbox: _deliveryOutbox,
-      pendingDeliveryRetries: _pendingDeliveryRetries,
-      ...backupBridgeState
-    } = state.bridge;
-    return {
-      schemaVersion: 1,
-      kind: 'full-backup',
-      containsSecrets: true,
-      exportedAt: new Date().toISOString(),
-      stateDir: this.stateDir,
-      adminUrl: this.binding?.url ?? null,
-      state: {
-        ...state,
-        bridge: backupBridgeState,
-      },
-      accounts: this.accountStore.listAccounts().map((accountId) => ({
-        accountId,
-        ...this.accountStore.loadAccount(accountId),
-        context_tokens: this.accountStore.readJson<Record<string, string>>(
-          this.accountStore.contextTokensFile(accountId),
-        ) ?? {},
-        sync_cursor: this.accountStore.loadSyncCursor(accountId),
-      })),
-      configuration: {
-        serviceEnv: exportFullBackupServiceEnv(this.env),
-      },
-      runtime: {
-        providerProfiles: runtime?.providerProfiles?.list?.() ?? [],
-        bridgeSessions: runtime?.bridgeSessions?.list?.() ?? [],
-        platformBindings: runtime?.platformBindings?.list?.() ?? [],
-        sessionSettings: runtime?.sessionSettings?.listAll?.() ?? [],
-        threadMetadata: runtime?.threadMetadata?.listAll?.() ?? [],
-      },
-      sessionSummaries: sortSessions(this.buildSessionSummaries(), 'updatedDesc'),
-      logs: this.readLogs({ lineLimit: 500 }),
-    };
+    return this.backupService.exportBackup();
   }
 
   private async handleImport(req: IncomingMessage, res: ServerResponse) {
     const body = await readJsonBody(req, IMPORT_BODY_LIMIT_BYTES);
-    const validation = validateImportPayload(body);
-    if (validation.errors.length > 0) {
-      this.writeJson(res, 400, {
-        error: 'invalid backup',
-        errors: validation.errors,
-      });
-      return;
-    }
-    const restorePoint = this.createPreImportRestorePoint();
-    const snapshots = this.captureImportSnapshots(validation.payload);
-    const envSnapshot = this.captureImportEnvSnapshot(validation.payload.serviceEnv);
-    const errors: string[] = [];
-    const imported = {
-      accounts: 0,
-      providerProfiles: 0,
-      bridgeSessions: 0,
-      platformBindings: 0,
-      sessionSettings: 0,
-      threadMetadata: 0,
-      configuration: 0,
-    };
-    try {
-      for (const raw of validation.payload.accounts) {
-        const accountId = normalizeAccountId(String(raw.accountId ?? ''));
-        const token = String(raw.token ?? '').trim();
-        this.accountStore.saveAccount({
-          accountId,
-          token,
-          baseUrl: String(raw.base_url ?? raw.baseUrl ?? '').trim(),
-          userId: String(raw.user_id ?? raw.userId ?? ''),
-        });
-        const patch: Parameters<WeixinAccountStore['updateAccount']>[1] = {};
-        if (typeof raw.display_name === 'string') {
-          patch.display_name = raw.display_name;
-        }
-        if (typeof raw.disabled === 'boolean') {
-          patch.disabled = raw.disabled;
-        }
-        if (typeof raw.group === 'string') {
-          patch.group = raw.group;
-        }
-        if (typeof raw.role === 'string') {
-          patch.role = raw.role;
-        }
-        if (isRecord(raw.permissions)) {
-          patch.permissions = raw.permissions;
-        }
-        if (isRecord(raw.model_provider) || isRecord(raw.modelProvider)) {
-          patch.model_provider = isRecord(raw.model_provider) ? raw.model_provider : raw.modelProvider as Record<string, unknown>;
-        }
-        if (Object.keys(patch).length > 0) {
-          this.accountStore.updateAccount(accountId, patch);
-        }
-        if (isRecord(raw.context_tokens)) {
-          replaceContextTokensForAccount(this.accountStore.rootDir, accountId, raw.context_tokens);
-        }
-        if (typeof raw.sync_cursor === 'string') {
-          this.accountStore.saveSyncCursor(accountId, raw.sync_cursor);
-        }
-        imported.accounts += 1;
-      }
-      const runtime = validation.payload.runtime;
-      const repos = this.repositories;
-      imported.providerProfiles = this.importRecords(runtime.providerProfiles, repos?.providerProfiles?.save?.bind(repos?.providerProfiles), errors, 'providerProfile');
-      imported.bridgeSessions = this.importRecords(runtime.bridgeSessions, repos?.bridgeSessions?.save?.bind(repos?.bridgeSessions), errors, 'bridgeSession');
-      imported.platformBindings = this.importRecords(runtime.platformBindings, repos?.platformBindings?.save?.bind(repos?.platformBindings), errors, 'platformBinding');
-      imported.sessionSettings = this.importRecords(runtime.sessionSettings, repos?.sessionSettings?.save?.bind(repos?.sessionSettings), errors, 'sessionSettings');
-      imported.threadMetadata = this.importRecords(runtime.threadMetadata, repos?.threadMetadata?.save?.bind(repos?.threadMetadata), errors, 'threadMetadata');
-      if (errors.length > 0) {
-        throw new Error(errors.join('; '));
-      }
-      if (Object.keys(validation.payload.serviceEnv).length > 0) {
-        for (const [key, value] of Object.entries(validation.payload.serviceEnv)) {
-          setEnvValue(this.env, key, value);
-        }
-        persistEnvValues(resolveServiceEnvFile(this.env), validation.payload.serviceEnv);
-        imported.configuration = 1;
-      }
-      this.writeJson(res, 200, {
-        ok: true,
-        imported,
-        errors: [],
-        restorePoint,
-        state: this.buildState(),
-      });
-    } catch (error) {
-      const rollbackErrors: string[] = [];
-      rollbackErrors.push(...this.restoreImportSnapshots(snapshots));
-      for (const raw of validation.payload.accounts) {
-        const accountId = normalizeAccountId(String(raw.accountId ?? ''));
-        try {
-          reloadContextTokensForAccount(this.accountStore.rootDir, accountId);
-        } catch (rollbackError) {
-          rollbackErrors.push(`context tokens ${accountId}: ${formatError(rollbackError)}`);
-        }
-      }
-      try {
-        this.restoreImportEnvSnapshot(envSnapshot);
-      } catch (rollbackError) {
-        rollbackErrors.push(`environment: ${formatError(rollbackError)}`);
-      }
-      this.writeJson(res, 409, {
-        error: rollbackErrors.length > 0
-          ? 'backup import failed and rollback was incomplete'
-          : 'backup import failed and was rolled back',
-        detail: formatError(error),
-        rollbackErrors,
-        restorePoint,
-      });
-    }
-  }
-
-  private createPreImportRestorePoint() {
-    const stamp = new Date().toISOString().replace(/[:.]/gu, '-');
-    const filePath = path.join(this.stateDir, 'backups', `pre-import-${stamp}.json`);
-    writeJsonFileAtomically(filePath, this.buildExportPayload());
-    return filePath;
-  }
-
-  private captureImportSnapshots(payload: ValidatedImportPayload): ImportFileSnapshot[] {
-    const runtimeDir = path.join(this.stateDir, 'runtime');
-    const paths = uniqueStrings([
-      ...payload.accounts.flatMap((account) => {
-        const accountId = String(account.accountId);
-        return [
-          this.accountStore.accountFile(accountId),
-          this.accountStore.contextTokensFile(accountId),
-          this.accountStore.syncFile(accountId),
-        ];
-      }),
-      path.join(runtimeDir, 'provider_profiles.json'),
-      path.join(runtimeDir, 'bridge_sessions.json'),
-      path.join(runtimeDir, 'platform_bindings.json'),
-      path.join(runtimeDir, 'session_settings.json'),
-      path.join(runtimeDir, 'thread_metadata.json'),
-      ...(Object.keys(payload.serviceEnv).length > 0 ? [resolveServiceEnvFile(this.env)] : []),
-    ]);
-    return paths.map((filePath) => ({
-      filePath,
-      existed: fs.existsSync(filePath),
-      content: fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '',
-    }));
-  }
-
-  private restoreImportSnapshots(snapshots: ImportFileSnapshot[]) {
-    const errors: string[] = [];
-    for (const snapshot of snapshots) {
-      try {
-        if (snapshot.existed) {
-          writeTextFileAtomically(snapshot.filePath, snapshot.content);
-        } else {
-          fs.rmSync(snapshot.filePath, { force: true });
-        }
-      } catch (error) {
-        errors.push(`file ${snapshot.filePath}: ${formatError(error)}`);
-      }
-    }
-    return errors;
-  }
-
-  private captureImportEnvSnapshot(serviceEnv: Record<string, string>) {
-    return Object.keys(serviceEnv).map((key) => ({
-      key,
-      existed: Object.prototype.hasOwnProperty.call(this.env, key),
-      value: this.env[key],
-    }));
-  }
-
-  private restoreImportEnvSnapshot(snapshots: ImportEnvSnapshot[]) {
-    for (const snapshot of snapshots) {
-      if (snapshot.existed) {
-        this.env[snapshot.key] = snapshot.value;
-      } else {
-        delete this.env[snapshot.key];
-      }
-    }
-  }
-
-  private importRecords(
-    value: unknown,
-    save: ((record: any) => unknown) | undefined,
-    errors: string[],
-    label: string,
-  ): number {
-    if (!Array.isArray(value) || typeof save !== 'function') {
-      return 0;
-    }
-    let count = 0;
-    for (const record of value) {
-      if (!isRecord(record)) {
-        continue;
-      }
-      try {
-        save(record);
-        count += 1;
-      } catch (error) {
-        errors.push(label + ': ' + formatError(error));
-      }
-    }
-    return count;
+    const result = this.backupService.importBackup(body);
+    this.writeJson(res, result.status, result.body);
   }
 
   private async handlePageHeartbeat(req: IncomingMessage, res: ServerResponse, searchParams: URLSearchParams) {
@@ -3200,30 +2953,6 @@ export function resolveWeixinAdminServerOptions({
   };
 }
 
-interface ValidatedImportPayload {
-  accounts: Record<string, unknown>[];
-  serviceEnv: Record<string, string>;
-  runtime: {
-    providerProfiles: Record<string, unknown>[];
-    bridgeSessions: Record<string, unknown>[];
-    platformBindings: Record<string, unknown>[];
-    sessionSettings: Record<string, unknown>[];
-    threadMetadata: Record<string, unknown>[];
-  };
-}
-
-interface ImportFileSnapshot {
-  filePath: string;
-  existed: boolean;
-  content: string;
-}
-
-interface ImportEnvSnapshot {
-  key: string;
-  existed: boolean;
-  value: unknown;
-}
-
 export function resolvePrimaryAccountId(
   accountStore: WeixinAccountStore,
   env: NodeJS.ProcessEnv | Record<string, unknown> = process.env,
@@ -3413,47 +3142,6 @@ function applyPairingDisplayName(
   accountStore.updateAccount(credentials.account_id, {
     display_name: normalized,
   });
-}
-
-function setEnvValue(env: NodeJS.ProcessEnv | Record<string, unknown>, key: string, value: string) {
-  env[key] = value;
-}
-
-function resolveServiceEnvFile(env: NodeJS.ProcessEnv | Record<string, unknown>) {
-  const explicit = normalizeEnvString(env.CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE)
-    ?? normalizeEnvString(env.CODEXBRIDGE_SERVICE_ENV_FILE);
-  if (explicit) {
-    return explicit;
-  }
-  if (process.platform === 'win32') {
-    const appData = normalizeEnvString(env.APPDATA) ?? path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, 'codexbridge', 'weixin.service.env');
-  }
-  const configHome = normalizeEnvString(env.XDG_CONFIG_HOME) ?? path.join(os.homedir(), '.config');
-  return path.join(configHome, 'codexbridge', 'weixin.service.env');
-}
-
-function persistEnvValues(filePath: string, values: Record<string, string>) {
-  const existing = fs.existsSync(filePath) ? fs.readFileSync(filePath, 'utf8') : '';
-  const keys = new Set(Object.keys(values));
-  const seen = new Set<string>();
-  const lines = existing ? existing.split(/\r?\n/u) : [];
-  const nextLines = lines.map((line) => {
-    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/u);
-    const key = match?.[1] ?? '';
-    if (!key || !keys.has(key)) {
-      return line;
-    }
-    seen.add(key);
-    return `${key}=${values[key] ?? ''}`;
-  });
-  for (const key of keys) {
-    if (!seen.has(key)) {
-      nextLines.push(`${key}=${values[key] ?? ''}`);
-    }
-  }
-  const content = `${nextLines.join('\n').replace(/\n+$/u, '')}\n`;
-  writeTextFileAtomically(filePath, content);
 }
 
 async function readJsonBody(req: IncomingMessage, maxBytes = JSON_BODY_LIMIT_BYTES): Promise<Record<string, unknown>> {
@@ -3811,177 +3499,6 @@ function secureTokenEquals(left: string, right: string) {
     && crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function validateImportPayload(body: Record<string, unknown>): {
-  payload: ValidatedImportPayload;
-  errors: string[];
-} {
-  const errors: string[] = [];
-  const schemaVersion = Number(body.schemaVersion ?? 1);
-  if (!Number.isInteger(schemaVersion) || schemaVersion < 1 || schemaVersion > 1) {
-    errors.push(`unsupported schemaVersion: ${String(body.schemaVersion ?? '')}`);
-  }
-  if (body.kind === 'diagnostic' || body.containsSecrets === false) {
-    errors.push('diagnostic exports cannot be imported as backups');
-  }
-
-  const accounts = validateImportRecordArray(body.accounts, 'accounts', errors);
-  validateUniqueImportRecords(
-    accounts,
-    'accounts',
-    errors,
-    (record) => normalizeAccountId(String(record.accountId ?? '')).toLowerCase(),
-  );
-  for (const [index, account] of accounts.entries()) {
-    const accountId = normalizeAccountId(String(account.accountId ?? ''));
-    if (!isValidWeixinAccountId(accountId)) {
-      errors.push(`accounts[${index}].accountId is invalid`);
-    }
-    if (!normalizeEnvString(account.token)) {
-      errors.push(`accounts[${index}].token is required`);
-    }
-    const baseUrl = normalizeEnvString(account.base_url) ?? normalizeEnvString(account.baseUrl);
-    if (!baseUrl) {
-      errors.push(`accounts[${index}].base_url is required`);
-    } else if (!isValidHttpUrl(baseUrl)) {
-      errors.push(`accounts[${index}].base_url must be an http(s) URL`);
-    }
-    if (account.context_tokens !== undefined) {
-      if (!isRecord(account.context_tokens)) {
-        errors.push(`accounts[${index}].context_tokens must be an object`);
-      } else {
-        for (const [peerId, token] of Object.entries(account.context_tokens)) {
-          if (!peerId.trim() || typeof token !== 'string' || !token) {
-            errors.push(`accounts[${index}].context_tokens contains an invalid token`);
-            break;
-          }
-        }
-      }
-    }
-    if (account.sync_cursor !== undefined && typeof account.sync_cursor !== 'string') {
-      errors.push(`accounts[${index}].sync_cursor must be a string`);
-    }
-  }
-
-  const rawConfiguration = body.configuration === undefined ? {} : body.configuration;
-  if (!isRecord(rawConfiguration)) {
-    errors.push('configuration must be an object');
-  }
-  const rawServiceEnv = isRecord(rawConfiguration) && rawConfiguration.serviceEnv !== undefined
-    ? rawConfiguration.serviceEnv
-    : {};
-  if (!isRecord(rawServiceEnv)) {
-    errors.push('configuration.serviceEnv must be an object');
-  }
-  const serviceEnv: Record<string, string> = {};
-  if (isRecord(rawServiceEnv)) {
-    const allowedKeys = new Set<string>(FULL_BACKUP_SERVICE_ENV_KEYS);
-    for (const [key, value] of Object.entries(rawServiceEnv)) {
-      if (!allowedKeys.has(key)) {
-        errors.push(`configuration.serviceEnv.${key} is not supported`);
-      } else if (typeof value !== 'string') {
-        errors.push(`configuration.serviceEnv.${key} must be a string`);
-      } else if (/[\r\n]/u.test(value)) {
-        errors.push(`configuration.serviceEnv.${key} must not contain line breaks`);
-      } else {
-        serviceEnv[key] = value;
-      }
-    }
-  }
-  if (serviceEnv.CODEX_COMPAT_BASE_URL && !isValidHttpUrl(serviceEnv.CODEX_COMPAT_BASE_URL)) {
-    errors.push('configuration.serviceEnv.CODEX_COMPAT_BASE_URL must be an http(s) URL');
-  }
-
-  const rawRuntime = body.runtime === undefined ? {} : body.runtime;
-  if (!isRecord(rawRuntime)) {
-    errors.push('runtime must be an object');
-  }
-  const runtime = isRecord(rawRuntime) ? rawRuntime : {};
-  const providerProfiles = validateImportRecordArray(runtime.providerProfiles, 'runtime.providerProfiles', errors);
-  const bridgeSessions = validateImportRecordArray(runtime.bridgeSessions, 'runtime.bridgeSessions', errors);
-  const platformBindings = validateImportRecordArray(runtime.platformBindings, 'runtime.platformBindings', errors);
-  const sessionSettings = validateImportRecordArray(runtime.sessionSettings, 'runtime.sessionSettings', errors);
-  const threadMetadata = validateImportRecordArray(runtime.threadMetadata, 'runtime.threadMetadata', errors);
-
-  validateImportRequiredStrings(providerProfiles, 'runtime.providerProfiles', ['id', 'providerKind'], errors);
-  validateImportRequiredStrings(bridgeSessions, 'runtime.bridgeSessions', ['id', 'providerProfileId', 'codexThreadId'], errors);
-  validateImportRequiredStrings(platformBindings, 'runtime.platformBindings', ['platform', 'externalScopeId', 'bridgeSessionId'], errors);
-  validateImportRequiredStrings(sessionSettings, 'runtime.sessionSettings', ['bridgeSessionId'], errors);
-  validateImportRequiredStrings(threadMetadata, 'runtime.threadMetadata', ['providerProfileId', 'threadId'], errors);
-  validateUniqueImportRecords(providerProfiles, 'runtime.providerProfiles', errors, (record) => String(record.id ?? ''));
-  validateUniqueImportRecords(bridgeSessions, 'runtime.bridgeSessions', errors, (record) => String(record.id ?? ''));
-  validateUniqueImportRecords(platformBindings, 'runtime.platformBindings', errors, (record) => `${record.platform}:${record.externalScopeId}`);
-  validateUniqueImportRecords(sessionSettings, 'runtime.sessionSettings', errors, (record) => String(record.bridgeSessionId ?? ''));
-  validateUniqueImportRecords(threadMetadata, 'runtime.threadMetadata', errors, (record) => `${record.providerProfileId}:${record.threadId}`);
-
-  return {
-    payload: {
-      accounts,
-      serviceEnv,
-      runtime: {
-        providerProfiles,
-        bridgeSessions,
-        platformBindings,
-        sessionSettings,
-        threadMetadata,
-      },
-    },
-    errors,
-  };
-}
-
-function validateImportRecordArray(value: unknown, label: string, errors: string[]): Record<string, unknown>[] {
-  if (value === undefined) {
-    return [];
-  }
-  if (!Array.isArray(value)) {
-    errors.push(`${label} must be an array`);
-    return [];
-  }
-  const records: Record<string, unknown>[] = [];
-  for (const [index, entry] of value.entries()) {
-    if (!isRecord(entry)) {
-      errors.push(`${label}[${index}] must be an object`);
-      continue;
-    }
-    records.push(entry);
-  }
-  return records;
-}
-
-function validateImportRequiredStrings(
-  records: Record<string, unknown>[],
-  label: string,
-  keys: string[],
-  errors: string[],
-) {
-  for (const [index, record] of records.entries()) {
-    for (const key of keys) {
-      if (!normalizeEnvString(record[key])) {
-        errors.push(`${label}[${index}].${key} is required`);
-      }
-    }
-  }
-}
-
-function validateUniqueImportRecords(
-  records: Record<string, unknown>[],
-  label: string,
-  errors: string[],
-  identity: (record: Record<string, unknown>) => string,
-) {
-  const seen = new Set<string>();
-  for (const [index, record] of records.entries()) {
-    const key = identity(record).trim();
-    if (!key) {
-      continue;
-    }
-    if (seen.has(key)) {
-      errors.push(`${label}[${index}] duplicates ${key}`);
-    }
-    seen.add(key);
-  }
-}
-
 function normalizePageId(value: unknown) {
   return String(value ?? '').trim().slice(0, 128);
 }
@@ -4228,26 +3745,6 @@ function isAllowedAdminOrigin(origin: string, port: number) {
   } catch {
     return false;
   }
-}
-
-function isValidHttpUrl(value: string) {
-  try {
-    const url = new URL(value);
-    return ['http:', 'https:'].includes(url.protocol) && Boolean(url.hostname);
-  } catch {
-    return false;
-  }
-}
-
-function exportFullBackupServiceEnv(env: NodeJS.ProcessEnv | Record<string, unknown>) {
-  const values: Record<string, string> = {};
-  for (const key of FULL_BACKUP_SERVICE_ENV_KEYS) {
-    const value = env[key];
-    if (value !== undefined && value !== null) {
-      values[key] = String(value);
-    }
-  }
-  return values;
 }
 
 function serializeDiagnosticBridgeStatus(status: ReturnType<WeixinBridgeControl['status']>) {
