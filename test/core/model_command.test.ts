@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import {
   buildSyntheticModelInfo,
@@ -23,6 +25,17 @@ import type { ProviderModelInfo } from '../../src/types/provider.js';
 import { createI18n } from '../../src/i18n/index.js';
 
 const i18n = createI18n('zh-CN');
+
+test('BridgeCoordinator delegates model command orchestration to the focused service', () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'core', 'bridge_coordinator.ts'),
+    'utf8',
+  );
+  assert.match(source, /from '\.\/model_command_service\.js'/u);
+  assert.match(source, /new ModelCommandService\(/u);
+  assert.match(source, /return this\.modelCommands\.handleModels\(event\)/u);
+  assert.match(source, /return this\.modelCommands\.handleModel\(event, args\)/u);
+});
 
 function buildModel(overrides: Partial<ProviderModelInfo> = {}): ProviderModelInfo {
   return {

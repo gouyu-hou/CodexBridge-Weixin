@@ -95,18 +95,10 @@ import {
 import { InstructionsCommandService } from './instructions_command_service.js';
 export { INSTRUCTIONS_COMMAND_SKILL_ACTIONS };
 import {
-  findModelByIndexToken,
-  findModelByToken,
-  formatReasoningEffortLabel,
-  formatSupportedEfforts,
-  parseConcatenatedModelEffortToken,
-  renderCurrentModelStateLines,
-  renderModelCatalogLines,
   resolveEffectiveModelSelection,
-  resolveEffortForModel,
-  resolveSessionModelForEffort,
   type EffectiveModelState,
 } from './model_command.js';
+import { ModelCommandService } from './model_command_service.js';
 import { resolveMcpCommand } from './mcp_command.js';
 import { NotFoundError } from './errors.js';
 import { ProviderUsageService } from './provider_usage_service.js';
@@ -906,6 +898,7 @@ export class BridgeCoordinator {
   pendingThreadOperationsByScope: Map<string, PendingThreadCommandOperation>;
   localeOverridesByScope: Map<string, SupportedLocale>;
   instructionsCommands: InstructionsCommandService<CoordinatorResponse>;
+  modelCommands: ModelCommandService<CoordinatorResponse>;
   pendingAutomationDraftsByScope: Map<string, PendingAutomationOperation>;
   pendingAgentDraftsByScope: Map<string, PendingAgentOperation>;
   pendingAssistantUpdateDraftsByScope: Map<string, PendingAssistantRecordUpdateDraft>;
@@ -1007,6 +1000,29 @@ export class BridgeCoordinator {
         request,
       ),
       formatError: formatUserError,
+    });
+    this.modelCommands = new ModelCommandService({
+      getTranslator: () => this.currentI18n,
+      toScopeRef,
+      resolveScopeProviderProfile: (scopeRef) => this.resolveScopeProviderProfile(scopeRef),
+      requireProviderProfile: (providerProfileId) => this.requireProviderProfile(providerProfileId),
+      getProvider: (providerKind) => this.providerRegistry.getProvider(providerKind),
+      getPendingNewSession: (scopeRef) => this.getPendingNewSession(scopeRef),
+      resolveScopeSession: (scopeRef) => this.bridgeSessions.resolveScopeSession(scopeRef),
+      getSessionSettings: (sessionId) => this.bridgeSessions.getSessionSettings(sessionId),
+      updatePendingNewSessionSettings: (scopeRef, updates) => this.updatePendingNewSessionSettings(scopeRef, updates),
+      upsertSessionSettings: (sessionId, updates) => this.bridgeSessions.upsertSessionSettings(sessionId, updates),
+      resolveEffectiveModelState: (providerProfile, settings, availableModels) => this.resolveEffectiveModelState(
+        providerProfile,
+        settings,
+        availableModels,
+      ),
+      rejectIfActiveTurn: (event) => this.rejectIfActiveTurnForCommand(event, 'model'),
+      resolveScopeLocale: (scopeRef, event) => this.resolveScopeLocale(scopeRef, event),
+      resolveScopedSessionMeta: (scopeRef) => this.resolveScopedSessionMeta(scopeRef),
+      buildScopedSessionMeta: (event) => this.buildScopedSessionMeta(event),
+      buildSessionMeta,
+      messageResponse,
     });
   }
 
@@ -4038,191 +4054,11 @@ export class BridgeCoordinator {
   }
 
   async handleModelsCommand(event) {
-    const scopeRef = toScopeRef(event);
-    const providerProfile = this.resolveScopeProviderProfile(scopeRef);
-    const providerPlugin = this.providerRegistry.getProvider(providerProfile.providerKind);
-    if (typeof providerPlugin.listModels !== 'function') {
-      return messageResponse([
-        this.t('coordinator.model.unsupported'),
-      ], this.resolveScopedSessionMeta(scopeRef));
-    }
-    const models = await providerPlugin.listModels({
-      providerProfile,
-    });
-    const session = this.bridgeSessions.resolveScopeSession(scopeRef);
-    const settings = session ? this.bridgeSessions.getSessionSettings(session.id) : null;
-    const effectiveModelState = await this.resolveEffectiveModelState(providerProfile, settings, models);
-    return messageResponse(renderModelCatalogLines({
-      providerProfileId: providerProfile.id,
-      models,
-      effectiveModelState,
-    }, this.currentI18n), this.resolveScopedSessionMeta(scopeRef));
+    return this.modelCommands.handleModels(event);
   }
 
   async handleModelCommand(event, args) {
-    const scopeRef = toScopeRef(event);
-    const pendingNewSession = this.getPendingNewSession(scopeRef);
-    const session = this.bridgeSessions.resolveScopeSession(scopeRef);
-    const providerProfile = pendingNewSession
-      ? this.requireProviderProfile(pendingNewSession.providerProfileId)
-      : this.resolveScopeProviderProfile(scopeRef);
-    const normalizedArgs = args.map((arg) => String(arg ?? '').trim()).filter((arg) => arg.length > 0);
-    if (!normalizedArgs.length) {
-      const settings = pendingNewSession?.settings ?? (session ? this.bridgeSessions.getSessionSettings(session.id) : null);
-      const effectiveModelState = await this.resolveEffectiveModelState(providerProfile, settings);
-      return messageResponse(
-        renderCurrentModelStateLines(providerProfile.id, effectiveModelState, this.currentI18n),
-        this.resolveScopedSessionMeta(scopeRef),
-      );
-    }
-    if (normalizedArgs.length > 2) {
-      return messageResponse([
-        this.t('coordinator.model.noArgHint', { providerProfileId: providerProfile.id }),
-      ], this.resolveScopedSessionMeta(scopeRef));
-    }
-    const providerPlugin = this.providerRegistry.getProvider(providerProfile.providerKind);
-    const activeResponse = await this.rejectIfActiveTurnForCommand(event, 'model');
-    if (activeResponse) {
-      return activeResponse;
-    }
-    if (!session && !pendingNewSession) {
-      return messageResponse([
-        this.t('coordinator.model.noSession'),
-      ], this.resolveScopedSessionMeta(scopeRef));
-    }
-    if (typeof providerPlugin.listModels !== 'function') {
-      return messageResponse([
-        this.t('coordinator.model.unsupported'),
-      ], session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event));
-    }
-    const models = await providerPlugin.listModels({
-      providerProfile,
-    });
-    const requestedModel = normalizedArgs[0] ?? '';
-    const requestedEffort = normalizedArgs[1] ?? '';
-    const normalizedModel = requestedModel.toLowerCase();
-    const normalizedEffort = requestedEffort.trim().toLowerCase();
-    const sessionSettings = pendingNewSession?.settings ?? (session ? this.bridgeSessions.getSessionSettings(session.id) : null);
-    const currentModel = resolveSessionModelForEffort(models, sessionSettings?.model);
-    const sessionMeta = session ? buildSessionMeta(session) : this.buildScopedSessionMeta(event);
-
-    if (['default', 'reset', 'clear', 'none', '默认', '重置'].includes(normalizedModel)) {
-      const updates = {
-        model: null,
-        reasoningEffort: null,
-      };
-      const messages = [this.t('coordinator.model.reset')];
-      if (normalizedEffort) {
-        const resolvedEffort = resolveEffortForModel(currentModel, normalizedEffort);
-        if (!resolvedEffort) {
-          return messageResponse([
-            this.t('coordinator.model.unsupportedEffort', {
-              effort: requestedEffort,
-              supported: formatSupportedEfforts(currentModel, this.currentI18n),
-            }),
-          ], sessionMeta);
-        }
-        updates.reasoningEffort = resolvedEffort;
-        messages.push(this.t('coordinator.model.effortUpdated', {
-          value: formatReasoningEffortLabel(resolvedEffort),
-        }));
-      }
-      if (pendingNewSession) {
-        this.updatePendingNewSessionSettings(scopeRef, {
-          ...updates,
-          locale: this.resolveScopeLocale(scopeRef, event),
-        });
-      } else {
-        this.bridgeSessions.upsertSessionSettings(session.id, {
-          ...updates,
-        });
-      }
-      return messageResponse([...messages, this.t('coordinator.permissions.nextTurn')], sessionMeta);
-    }
-    const matchedModel = findModelByToken(models, requestedModel)
-      ?? findModelByIndexToken(models, requestedModel);
-    if (!matchedModel && normalizedArgs.length === 1) {
-      const mergedInput = parseConcatenatedModelEffortToken(normalizedModel, models);
-      if (mergedInput) {
-        return messageResponse([
-          this.t('coordinator.model.missingEffortSeparator', {
-            model: mergedInput.model,
-            effort: mergedInput.effort,
-          }),
-        ], sessionMeta);
-      }
-      const resolvedEffort = resolveEffortForModel(currentModel, normalizedModel);
-      if (!resolvedEffort) {
-        return messageResponse([
-          this.t('coordinator.model.unknown', { name: requestedModel }),
-          this.t('coordinator.model.notFoundHint'),
-        ], sessionMeta);
-      }
-      if (pendingNewSession) {
-        this.updatePendingNewSessionSettings(scopeRef, {
-          reasoningEffort: resolvedEffort,
-          locale: this.resolveScopeLocale(scopeRef, event),
-        });
-      } else {
-        this.bridgeSessions.upsertSessionSettings(session.id, {
-          reasoningEffort: resolvedEffort,
-        });
-      }
-      return messageResponse([
-        this.t('coordinator.model.effortUpdated', {
-          value: formatReasoningEffortLabel(resolvedEffort),
-        }),
-        this.t('coordinator.permissions.nextTurn'),
-      ], sessionMeta);
-    }
-    if (!matchedModel && normalizedArgs.length > 1) {
-      return messageResponse([
-        this.t('coordinator.model.unknown', { name: requestedModel }),
-        this.t('coordinator.model.notFoundHint'),
-      ], sessionMeta);
-    }
-    const resolvedEffort = requestedEffort
-      ? resolveEffortForModel(
-          matchedModel ?? currentModel,
-          normalizedEffort,
-        )
-      : null;
-    if (requestedEffort && !resolvedEffort) {
-      const modelForEffort = matchedModel ?? currentModel;
-      return messageResponse([
-        this.t('coordinator.model.unsupportedEffort', {
-          effort: requestedEffort,
-          supported: formatSupportedEfforts(modelForEffort, this.currentI18n),
-        }),
-      ], sessionMeta);
-    }
-    const updates = {} as {
-      model?: string;
-      reasoningEffort?: string;
-    };
-    const messages = [];
-    if (matchedModel) {
-      updates.model = String(matchedModel.model ?? matchedModel.id);
-      messages.push(this.t('coordinator.model.updated', { name: String(matchedModel.model ?? matchedModel.id) }));
-    }
-    if (requestedEffort) {
-      updates.reasoningEffort = resolvedEffort;
-      messages.push(this.t('coordinator.model.effortUpdated', {
-        value: formatReasoningEffortLabel(resolvedEffort),
-      }));
-    }
-    if (messages.length === 0) {
-      messages.push(this.t('coordinator.model.noArgHint', { providerProfileId: providerProfile.id }));
-    }
-    if (pendingNewSession) {
-      this.updatePendingNewSessionSettings(scopeRef, {
-        ...updates,
-        locale: this.resolveScopeLocale(scopeRef, event),
-      });
-    } else {
-      this.bridgeSessions.upsertSessionSettings(session.id, updates);
-    }
-    return messageResponse([...messages, this.t('coordinator.permissions.nextTurn')], sessionMeta);
+    return this.modelCommands.handleModel(event, args);
   }
 
   async handlePlanCommand(event, args) {
