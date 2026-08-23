@@ -102,8 +102,10 @@ function createTerminalHarness({
   const confirmedResponse = 'response:confirmed';
   const draftResponse = 'response:draft';
   const cancelledResponse = 'response:cancelled';
+  const notFoundResponse = 'response:not-found';
   const noPendingResponse = 'response:no-pending';
   const activeResponse = 'response:active';
+  const messageCalls: Array<{ lines: string[]; session: unknown }> = [];
   const draft: PendingAssistantRecordUpdateDraft = {
     createdAt: 1,
     rawInput: 'change it',
@@ -119,13 +121,17 @@ function createTerminalHarness({
   const dependencies: AssistantRecordCommandDependencies<string> = {
     isSupported: () => true,
     getTranslator: () => createI18n('en'),
-    buildSessionMeta: () => ({}),
-    messageResponse: (lines: string[]) => {
+    buildSessionMeta: (currentEvent) => ({ scope: currentEvent.externalScopeId }),
+    messageResponse: (lines: string[], session) => {
+      messageCalls.push({ lines, session });
       if (lines[0] === 'applied') {
         return confirmedResponse;
       }
       if (lines[0] === 'draft') {
         return draftResponse;
+      }
+      if (lines[0] === createI18n('en').t('coordinator.assistant.notFound')) {
+        return notFoundResponse;
       }
       return cancelledResponse;
     },
@@ -165,6 +171,8 @@ function createTerminalHarness({
     draft,
     draftResponse,
     event,
+    messageCalls,
+    notFoundResponse,
     noPendingResponse,
     service: new AssistantRecordCommandService(dependencies),
   };
@@ -419,8 +427,12 @@ test('assistant record terminal confirmation retains a draft when a mutation is 
 
   const failed = createTerminalHarness({ appliedRecord: null });
   failed.service.setPendingUpdateDraft(failed.event, failed.draft);
-  assert.equal(await failed.service.handle(failed.event, ['ok'], null), failed.draftResponse);
-  assert.deepEqual(failed.calls, ['reject-active', 'apply-update', 'render-draft']);
+  assert.equal(await failed.service.handle(failed.event, ['ok'], null), failed.notFoundResponse);
+  assert.deepEqual(failed.calls, ['reject-active', 'apply-update']);
+  assert.deepEqual(failed.messageCalls, [{
+    lines: [createI18n('en').t('coordinator.assistant.notFound')],
+    session: { scope: failed.event.externalScopeId },
+  }]);
   assert.equal(failed.service.getPendingUpdateDraft(failed.event), failed.draft);
 });
 

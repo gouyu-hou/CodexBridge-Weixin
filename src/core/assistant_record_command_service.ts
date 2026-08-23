@@ -169,10 +169,9 @@ export class AssistantRecordCommandService<Response> {
     const record = this.dependencies.applyUpdateDraft(draft);
     const commandName = assistantCommandNameForType(typeFilter);
     if (!record) {
-      return this.dependencies.messageResponse(
-        this.dependencies.renderUpdateDraft(draft, commandName),
-        this.dependencies.buildSessionMeta(event),
-      );
+      return this.dependencies.messageResponse([
+        this.dependencies.getTranslator().t('coordinator.assistant.notFound'),
+      ], this.dependencies.buildSessionMeta(event));
     }
     this.clearPendingUpdateDraft(scopeRef);
     return this.dependencies.messageResponse(

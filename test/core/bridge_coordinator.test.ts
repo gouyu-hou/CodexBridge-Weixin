@@ -8243,6 +8243,25 @@ test('BridgeCoordinator delegates pending thread operation state and terminal ro
   assert.match(source, /return this\.threadCommands\.cancel\(event\)/u);
 });
 
+function extractCoordinatorMethodSource(source: string, methodName: string): string {
+  const signatureStart = source.indexOf(`  async ${methodName}(`);
+  assert.notEqual(signatureStart, -1, `missing BridgeCoordinator method: ${methodName}`);
+  const bodyStart = source.indexOf('{', signatureStart);
+  assert.notEqual(bodyStart, -1, `missing BridgeCoordinator method body: ${methodName}`);
+  let depth = 0;
+  for (let index = bodyStart; index < source.length; index += 1) {
+    if (source[index] === '{') {
+      depth += 1;
+    } else if (source[index] === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(signatureStart, index + 1);
+      }
+    }
+  }
+  assert.fail(`unterminated BridgeCoordinator method body: ${methodName}`);
+}
+
 test('BridgeCoordinator delegates assistant update-draft terminal routing to AssistantRecordCommandService', () => {
   const source = fs.readFileSync(
     path.join(process.cwd(), 'src', 'core', 'bridge_coordinator.ts'),
@@ -8252,8 +8271,16 @@ test('BridgeCoordinator delegates assistant update-draft terminal routing to Ass
   assert.match(source, /applyUpdateDraft: \(draft\) => this\.applyAssistantRecordUpdateDraft\(draft\)/u);
   assert.match(source, /renderUpdateDraft: \(draft, commandName\) => this\.renderAssistantUpdateDraftLines\(draft, commandName\)/u);
   assert.match(source, /renderUpdateApplied: \(draft, record, commandName\) => this\.renderAssistantUpdateAppliedLines\(draft, record, commandName\)/u);
-  assert.match(source, /async handleAssistantConfirmCommand\(event, typeFilter: AssistantRecordType \| null\) \{\s*return this\.assistantRecordCommands\.confirm\(event, typeFilter\);\s*\}/u);
-  assert.match(source, /async handleAssistantCancelPendingCommand\(event, typeFilter: AssistantRecordType \| null\) \{\s*return this\.assistantRecordCommands\.cancel\(event, typeFilter\);\s*\}/u);
+  const confirmSource = extractCoordinatorMethodSource(source, 'handleAssistantConfirmCommand');
+  const cancelSource = extractCoordinatorMethodSource(source, 'handleAssistantCancelPendingCommand');
+  assert.match(confirmSource, /return this\.assistantRecordCommands\.confirm\(event, typeFilter\)/u);
+  assert.match(cancelSource, /return this\.assistantRecordCommands\.cancel\(event, typeFilter\)/u);
+  for (const terminalSource of [confirmSource, cancelSource]) {
+    assert.doesNotMatch(terminalSource, /\bif\s*\(/u);
+    assert.doesNotMatch(terminalSource, /getPendingUpdateDraft/u);
+    assert.doesNotMatch(terminalSource, /clearPendingUpdateDraft/u);
+    assert.doesNotMatch(terminalSource, /applyAssistantRecordUpdateDraft/u);
+  }
 });
 
 test('/threads cancel clears a pending natural-language batch draft', async () => {
