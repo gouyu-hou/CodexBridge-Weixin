@@ -8,6 +8,7 @@ import type {
 import type { InboundTextEvent } from '../types/platform.js';
 
 export type AssistantRecordUpdateAction = 'update' | 'complete' | 'cancel' | 'archive';
+type AssistantRecordTerminalAction = 'confirm' | 'cancel';
 
 export type PendingAssistantRecordUpdateDraft = {
   createdAt: number;
@@ -37,8 +38,15 @@ export type AssistantRecordCommandDependencies<Response> = {
   complete(event: InboundTextEvent, args: unknown[], typeFilter: AssistantRecordType | null): Promise<Response>;
   archive(event: InboundTextEvent, args: unknown[], typeFilter: AssistantRecordType | null): Promise<Response>;
   cancelRecord(event: InboundTextEvent, args: unknown[], typeFilter: AssistantRecordType | null): Promise<Response>;
-  confirm(event: InboundTextEvent, typeFilter: AssistantRecordType | null): Promise<Response>;
-  cancelPending(event: InboundTextEvent, typeFilter: AssistantRecordType | null): Promise<Response>;
+  rejectMutation(event: InboundTextEvent): Promise<Response | null>;
+  applyUpdateDraft(draft: PendingAssistantRecordUpdateDraft): AssistantRecord | null;
+  renderUpdateDraft(draft: PendingAssistantRecordUpdateDraft, commandName: string): string[];
+  renderUpdateApplied(draft: PendingAssistantRecordUpdateDraft, record: AssistantRecord, commandName: string): string[];
+  renderNoPending(
+    event: InboundTextEvent,
+    typeFilter: AssistantRecordType | null,
+    action: AssistantRecordTerminalAction,
+  ): Promise<Response>;
   editPending(event: InboundTextEvent, args: unknown[], forcedType: AssistantRecordType | null): Promise<Response>;
   natural(event: InboundTextEvent, rawInput: string, forcedType: AssistantRecordType | null): Promise<Response>;
 };
@@ -84,12 +92,12 @@ export class AssistantRecordCommandService<Response> {
       return this.dependencies.archive(event, args.slice(1), localTypeFilter);
     }
     if (action === 'ok' || action === 'confirm') {
-      return this.dependencies.confirm(event, typeFilter);
+      return this.confirm(event, typeFilter);
     }
     if (action === 'cancel') {
       return args[1]
         ? this.dependencies.cancelRecord(event, args.slice(1), localTypeFilter)
-        : this.dependencies.cancelPending(event, typeFilter);
+        : this.cancel(event, typeFilter);
     }
     if (action === 'edit') {
       return this.dependencies.editPending(event, args.slice(1), forcedType);
@@ -129,6 +137,49 @@ export class AssistantRecordCommandService<Response> {
   clearPendingUpdateDraft(scopeRef: PlatformScopeRef): void {
     this.pendingUpdateDraftsByScope.delete(buildAssistantUpdateDraftKey(scopeRef));
   }
+
+  async confirm(event: InboundTextEvent, typeFilter: AssistantRecordType | null): Promise<Response> {
+    return this.handleTerminalAction(event, typeFilter, 'confirm');
+  }
+
+  async cancel(event: InboundTextEvent, typeFilter: AssistantRecordType | null): Promise<Response> {
+    return this.handleTerminalAction(event, typeFilter, 'cancel');
+  }
+
+  private async handleTerminalAction(
+    event: InboundTextEvent,
+    typeFilter: AssistantRecordType | null,
+    action: AssistantRecordTerminalAction,
+  ): Promise<Response> {
+    const rejected = await this.dependencies.rejectMutation(event);
+    if (rejected !== null) {
+      return rejected;
+    }
+    const scopeRef = toAssistantRecordScopeRef(event);
+    const draft = this.getPendingUpdateDraftForType(scopeRef, typeFilter);
+    if (!draft) {
+      return this.dependencies.renderNoPending(event, typeFilter, action);
+    }
+    if (action === 'cancel') {
+      this.clearPendingUpdateDraft(scopeRef);
+      return this.dependencies.messageResponse([
+        this.dependencies.getTranslator().t('coordinator.assistant.updateDraftCancelled'),
+      ], this.dependencies.buildSessionMeta(event));
+    }
+    const record = this.dependencies.applyUpdateDraft(draft);
+    const commandName = assistantCommandNameForType(typeFilter);
+    if (!record) {
+      return this.dependencies.messageResponse(
+        this.dependencies.renderUpdateDraft(draft, commandName),
+        this.dependencies.buildSessionMeta(event),
+      );
+    }
+    this.clearPendingUpdateDraft(scopeRef);
+    return this.dependencies.messageResponse(
+      this.dependencies.renderUpdateApplied(draft, record, commandName),
+      this.dependencies.buildSessionMeta(event),
+    );
+  }
 }
 
 export function assistantCommandNameForType(type: AssistantRecordType | null): string {
@@ -164,6 +215,13 @@ export function resolveAssistantRecordLocalQueryIntent(
 
 function buildAssistantUpdateDraftKey(scopeRef: PlatformScopeRef): string {
   return formatPlatformScopeKey(scopeRef.platform, scopeRef.externalScopeId);
+}
+
+function toAssistantRecordScopeRef(event: InboundTextEvent): PlatformScopeRef {
+  return {
+    platform: event.platform,
+    externalScopeId: event.externalScopeId,
+  };
 }
 
 function compactWhitespace(value: unknown): string {

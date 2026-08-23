@@ -8243,6 +8243,19 @@ test('BridgeCoordinator delegates pending thread operation state and terminal ro
   assert.match(source, /return this\.threadCommands\.cancel\(event\)/u);
 });
 
+test('BridgeCoordinator delegates assistant update-draft terminal routing to AssistantRecordCommandService', () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'core', 'bridge_coordinator.ts'),
+    'utf8',
+  );
+  assert.match(source, /rejectMutation: \(event\) => this\.rejectIfActiveTurnForCommand\(event, 'assistant'\)/u);
+  assert.match(source, /applyUpdateDraft: \(draft\) => this\.applyAssistantRecordUpdateDraft\(draft\)/u);
+  assert.match(source, /renderUpdateDraft: \(draft, commandName\) => this\.renderAssistantUpdateDraftLines\(draft, commandName\)/u);
+  assert.match(source, /renderUpdateApplied: \(draft, record, commandName\) => this\.renderAssistantUpdateAppliedLines\(draft, record, commandName\)/u);
+  assert.match(source, /async handleAssistantConfirmCommand\(event, typeFilter: AssistantRecordType \| null\) \{\s*return this\.assistantRecordCommands\.confirm\(event, typeFilter\);\s*\}/u);
+  assert.match(source, /async handleAssistantCancelPendingCommand\(event, typeFilter: AssistantRecordType \| null\) \{\s*return this\.assistantRecordCommands\.cancel\(event, typeFilter\);\s*\}/u);
+});
+
 test('/threads cancel clears a pending natural-language batch draft', async () => {
   const { runtime, openai } = makeRuntime();
 

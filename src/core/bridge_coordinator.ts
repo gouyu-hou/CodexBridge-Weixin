@@ -1031,8 +1031,13 @@ export class BridgeCoordinator {
       complete: (event, args, typeFilter) => this.handleAssistantDoneCommand(event, args, typeFilter),
       archive: (event, args, typeFilter) => this.handleAssistantDeleteCommand(event, args, typeFilter),
       cancelRecord: (event, args, typeFilter) => this.handleAssistantCancelRecordCommand(event, args, typeFilter),
-      confirm: (event, typeFilter) => this.handleAssistantConfirmCommand(event, typeFilter),
-      cancelPending: (event, typeFilter) => this.handleAssistantCancelPendingCommand(event, typeFilter),
+      rejectMutation: (event) => this.rejectIfActiveTurnForCommand(event, 'assistant'),
+      applyUpdateDraft: (draft) => this.applyAssistantRecordUpdateDraft(draft),
+      renderUpdateDraft: (draft, commandName) => this.renderAssistantUpdateDraftLines(draft, commandName),
+      renderUpdateApplied: (draft, record, commandName) => this.renderAssistantUpdateAppliedLines(draft, record, commandName),
+      renderNoPending: (event, typeFilter, action) => action === 'confirm'
+        ? this.handleAssistantConfirmPendingRecordCommand(event, typeFilter)
+        : this.handleAssistantCancelPendingRecordCommand(event, typeFilter),
       editPending: (event, args, forcedType) => this.handleAssistantEditPendingCommand(event, args, forcedType),
       natural: (event, rawInput, forcedType) => this.handleAssistantNaturalCommand(event, rawInput, forcedType),
     });
@@ -2410,19 +2415,11 @@ export class BridgeCoordinator {
   }
 
   async handleAssistantConfirmCommand(event, typeFilter: AssistantRecordType | null) {
+    return this.assistantRecordCommands.confirm(event, typeFilter);
+  }
+
+  async handleAssistantConfirmPendingRecordCommand(event, typeFilter: AssistantRecordType | null) {
     const scopeRef = toScopeRef(event);
-    const updateDraft = this.assistantRecordCommands.getPendingUpdateDraftForType(scopeRef, typeFilter);
-    if (updateDraft) {
-      const updated = this.applyAssistantRecordUpdateDraft(updateDraft);
-      this.assistantRecordCommands.clearPendingUpdateDraft(scopeRef);
-      if (!updated) {
-        return messageResponse([this.t('coordinator.assistant.notFound')], this.buildScopedSessionMeta(event));
-      }
-      return messageResponse(
-        this.renderAssistantUpdateAppliedLines(updateDraft, updated, assistantCommandNameForType(typeFilter)),
-        this.buildScopedSessionMeta(event),
-      );
-    }
     const record = this.assistantRecords.getLatestPendingForScope(scopeRef, typeFilter);
     if (!record) {
       return messageResponse([this.t('coordinator.assistant.noPending')], this.buildScopedSessionMeta(event));
@@ -2438,14 +2435,11 @@ export class BridgeCoordinator {
   }
 
   async handleAssistantCancelPendingCommand(event, typeFilter: AssistantRecordType | null) {
+    return this.assistantRecordCommands.cancel(event, typeFilter);
+  }
+
+  async handleAssistantCancelPendingRecordCommand(event, typeFilter: AssistantRecordType | null) {
     const scopeRef = toScopeRef(event);
-    const updateDraft = this.assistantRecordCommands.getPendingUpdateDraftForType(scopeRef, typeFilter);
-    if (updateDraft) {
-      this.assistantRecordCommands.clearPendingUpdateDraft(scopeRef);
-      return messageResponse([
-        this.t('coordinator.assistant.updateDraftCancelled'),
-      ], this.buildScopedSessionMeta(event));
-    }
     const record = this.assistantRecords.getLatestPendingForScope(scopeRef, typeFilter);
     if (!record) {
       return messageResponse([this.t('coordinator.assistant.noPending')], this.buildScopedSessionMeta(event));
