@@ -222,7 +222,7 @@ export class ThreadCommandService<Event, Response, PendingResult = Response> {
 
   async confirm(event: Event): Promise<Response> {
     const activeResponse = await this.host.rejectConfirm(event);
-    if (activeResponse) {
+    if (activeResponse !== null) {
       return activeResponse;
     }
     const scopeKey = this.host.getScopeKey(event);

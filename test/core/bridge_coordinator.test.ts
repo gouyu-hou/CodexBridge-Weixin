@@ -8251,6 +8251,11 @@ test('/threads cancel clears a pending natural-language batch draft', async () =
     externalScopeId: 'wx-thread-skill-pin-1',
     text: 'DailyWork 周报整理',
   });
+  await runtime.services.bridgeCoordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: 'wx-thread-skill-pin-browser',
+    text: '线程管理准备',
+  });
 
   const originalStartTurn = openai.startTurn.bind(openai);
   openai.startTurn = async (params: any) => {
@@ -8290,6 +8295,15 @@ test('/threads cancel clears a pending natural-language batch draft', async () =
     text: '/threads confirm',
   });
   assert.match(confirmAfterCancel.messages[0]?.text ?? '', /当前没有待确认的线程批量操作/);
+  const scopedSession = runtime.services.bridgeSessions.resolveScopeSession({
+    platform: 'weixin',
+    externalScopeId: 'wx-thread-skill-pin-browser',
+  });
+  assert.deepEqual(confirmAfterCancel.session, {
+    bridgeSessionId: scopedSession?.id,
+    providerProfileId: scopedSession?.providerProfileId,
+    codexThreadId: scopedSession?.codexThreadId,
+  });
 });
 
 test('/peek shows recent conversation turns for the selected thread', async () => {

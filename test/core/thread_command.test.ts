@@ -108,6 +108,16 @@ test('ThreadCommandService retains pending operations when confirm is blocked or
   }
 });
 
+test('ThreadCommandService treats any non-null confirm rejection as terminal', async () => {
+  const operation = makePendingOperation('blocked-thread');
+  const { calls, service } = createPendingOperationHarness({ activeResponse: '' });
+  service.setPendingOperation('scope-1', operation);
+
+  assert.equal(await service.handle('scope-1', ['confirm']), '');
+  assert.deepEqual(calls, ['reject:scope-1']);
+  assert.equal(service.getPendingOperation('scope-1'), operation);
+});
+
 test('ThreadCommandService clears an applied operation before rendering the confirmation', async () => {
   const operation = makePendingOperation('render-failed-thread');
   const { calls, service } = createPendingOperationHarness({ renderError: new Error('render failed') });
