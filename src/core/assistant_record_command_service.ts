@@ -59,6 +59,9 @@ export type AssistantRecordCommandDependencies<Response> = {
     forcedType: AssistantRecordType | null,
   ): Promise<AssistantRecord>;
   renderPendingRecord(record: AssistantRecord, commandName: string): string[];
+  renderEditNeedsText(event: InboundTextEvent): Response;
+  renderEditNoPending(event: InboundTextEvent): Response;
+  renderNotFound(event: InboundTextEvent): Response;
   rejectMutation(event: InboundTextEvent): Promise<Response | null>;
   applyUpdateDraft(draft: PendingAssistantRecordUpdateDraft): AssistantRecord | null;
   renderUpdateDraft(draft: PendingAssistantRecordUpdateDraft, commandName: string): string[];
@@ -209,9 +212,7 @@ export class AssistantRecordCommandService<Response> {
   ): Promise<Response> {
     const input = args.join(' ').trim();
     if (!input) {
-      return this.dependencies.messageResponse([
-        this.dependencies.getTranslator().t('coordinator.assistant.editNeedsText'),
-      ], this.dependencies.buildSessionMeta(event));
+      return this.dependencies.renderEditNeedsText(event);
     }
     const scopeRef = toAssistantRecordScopeRef(event);
     const updateDraft = this.getPendingUpdateDraftForType(scopeRef, forcedType);
@@ -232,9 +233,7 @@ export class AssistantRecordCommandService<Response> {
     }
     const record = this.dependencies.getPendingRecord(event, forcedType);
     if (!record) {
-      return this.dependencies.messageResponse([
-        this.dependencies.getTranslator().t('coordinator.assistant.noPending'),
-      ], this.dependencies.buildSessionMeta(event));
+      return this.dependencies.renderEditNoPending(event);
     }
     const updatedRecord = await this.dependencies.editPendingRecord(event, record, input, forcedType);
     return this.dependencies.messageResponse(
@@ -244,9 +243,7 @@ export class AssistantRecordCommandService<Response> {
   }
 
   private notFound(event: InboundTextEvent): Response {
-    return this.dependencies.messageResponse([
-      this.dependencies.getTranslator().t('coordinator.assistant.notFound'),
-    ], this.dependencies.buildSessionMeta(event));
+    return this.dependencies.renderNotFound(event);
   }
 
   private async handleTerminalAction(
@@ -272,9 +269,7 @@ export class AssistantRecordCommandService<Response> {
     const record = this.dependencies.applyUpdateDraft(draft);
     const commandName = assistantCommandNameForType(typeFilter);
     if (!record) {
-      return this.dependencies.messageResponse([
-        this.dependencies.getTranslator().t('coordinator.assistant.notFound'),
-      ], this.dependencies.buildSessionMeta(event));
+      return this.notFound(event);
     }
     this.clearPendingUpdateDraft(scopeRef);
     return this.dependencies.messageResponse(

@@ -1061,6 +1061,9 @@ export class BridgeCoordinator {
         forcedType,
       ),
       renderPendingRecord: (record, commandName) => this.renderAssistantPendingLines(record, commandName),
+      renderEditNeedsText: (event) => this.renderAssistantEditNeedsText(event),
+      renderEditNoPending: (event) => this.renderAssistantEditNoPending(event),
+      renderNotFound: (event) => this.renderAssistantNotFound(event),
       rejectMutation: (event) => this.rejectIfActiveTurnForCommand(event, 'assistant'),
       applyUpdateDraft: (draft) => this.applyAssistantRecordUpdateDraft(draft),
       renderUpdateDraft: (draft, commandName) => this.renderAssistantUpdateDraftLines(draft, commandName),
@@ -2427,6 +2430,24 @@ export class BridgeCoordinator {
     const updated = this.assistantRecords.cancelRecord(record.id);
     return messageResponse([
       this.t('coordinator.assistant.cancelled', { title: updated.title }),
+    ], this.buildScopedSessionMeta(event));
+  }
+
+  renderAssistantEditNeedsText(event): CoordinatorResponse {
+    return messageResponse([
+      this.t('coordinator.assistant.editNeedsText'),
+    ], this.buildScopedSessionMeta(event));
+  }
+
+  renderAssistantEditNoPending(event): CoordinatorResponse {
+    return messageResponse([
+      this.t('coordinator.assistant.noPending'),
+    ], this.buildScopedSessionMeta(event));
+  }
+
+  renderAssistantNotFound(event): CoordinatorResponse {
+    return messageResponse([
+      this.t('coordinator.assistant.notFound'),
     ], this.buildScopedSessionMeta(event));
   }
 

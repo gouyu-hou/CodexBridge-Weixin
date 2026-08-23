@@ -56,6 +56,9 @@ function createCommandHarness({ supported = true } = {}) {
     normalizeEdit: async () => null,
     editPendingRecord: async (_event, record) => record,
     renderPendingRecord: () => ['editPending'],
+    renderEditNeedsText: () => 'response:edit-needs-text',
+    renderEditNoPending: () => 'response:edit-no-pending',
+    renderNotFound: () => 'response:not-found',
     rejectMutation: async () => null,
     applyUpdateDraft: () => null,
     renderUpdateDraft: () => ['update-draft'],
@@ -137,6 +140,12 @@ function createTerminalHarness({
     normalizeEdit: async () => null,
     editPendingRecord: async (_event, record) => record,
     renderPendingRecord: () => ['pending'],
+    renderEditNeedsText: () => 'response:edit-needs-text',
+    renderEditNoPending: () => 'response:edit-no-pending',
+    renderNotFound: (currentEvent) => {
+      calls.push(`render-not-found:${currentEvent.externalScopeId}`);
+      return notFoundResponse;
+    },
     natural: async () => 'response:natural',
     rejectMutation: async () => {
       calls.push('reject-active');
@@ -426,11 +435,12 @@ test('assistant record terminal confirmation retains a draft when a mutation is 
   const failed = createTerminalHarness({ appliedRecord: null });
   failed.service.setPendingUpdateDraft(failed.event, failed.draft);
   assert.equal(await failed.service.handle(failed.event, ['ok'], null), failed.notFoundResponse);
-  assert.deepEqual(failed.calls, ['reject-active', 'apply-update']);
-  assert.deepEqual(failed.messageCalls, [{
-    lines: [createI18n('en').t('coordinator.assistant.notFound')],
-    session: { scope: failed.event.externalScopeId },
-  }]);
+  assert.deepEqual(failed.calls, [
+    'reject-active',
+    'apply-update',
+    `render-not-found:${failed.event.externalScopeId}`,
+  ]);
+  assert.deepEqual(failed.messageCalls, []);
   assert.equal(failed.service.getPendingUpdateDraft(failed.event), failed.draft);
 });
 
@@ -476,7 +486,10 @@ test('assistant record service orchestrates explicit record commands through dom
   };
   const dependencies: AssistantRecordCommandDependencies<string> = {
     isSupported: () => true,
-    getTranslator: () => createI18n('en'),
+    getTranslator: () => {
+      calls.push('translator');
+      return createI18n('en');
+    },
     buildSessionMeta: (currentEvent) => ({ scope: currentEvent.externalScopeId }),
     messageResponse: (lines) => `message:${lines.join('|')}`,
     renderList: () => 'response:list',
@@ -517,6 +530,18 @@ test('assistant record service orchestrates explicit record commands through dom
     },
     editPendingRecord: async () => record,
     renderPendingRecord: () => ['pending'],
+    renderEditNeedsText: (currentEvent) => {
+      calls.push(`render-edit-needs-text:${currentEvent.externalScopeId}`);
+      return 'response:edit-needs-text';
+    },
+    renderEditNoPending: (currentEvent) => {
+      calls.push(`render-edit-no-pending:${currentEvent.externalScopeId}`);
+      return 'response:edit-no-pending';
+    },
+    renderNotFound: (currentEvent) => {
+      calls.push(`render-not-found:${currentEvent.externalScopeId}`);
+      return 'response:not-found';
+    },
   };
   const service = new AssistantRecordCommandService(dependencies);
 
@@ -525,15 +550,28 @@ test('assistant record service orchestrates explicit record commands through dom
 
   assert.equal(
     await service.handle(event, ['show', 'bad'], 'todo'),
-    `message:${createI18n('en').t('coordinator.assistant.notFound')}`,
+    'response:not-found',
   );
-  assert.deepEqual(calls.splice(0), ['resolve:bad:todo']);
+  assert.deepEqual(calls.splice(0), [
+    'resolve:bad:todo',
+    `render-not-found:${event.externalScopeId}`,
+  ]);
 
   assert.equal(
     await service.handle(event, ['edit'], 'todo'),
-    `message:${createI18n('en').t('coordinator.assistant.editNeedsText')}`,
+    'response:edit-needs-text',
   );
-  assert.deepEqual(calls.splice(0), []);
+  assert.deepEqual(calls.splice(0), [
+    `render-edit-needs-text:${event.externalScopeId}`,
+  ]);
+
+  assert.equal(
+    await service.handle(event, ['edit', 'add', 'a', 'client', 'summary'], 'todo'),
+    'response:edit-no-pending',
+  );
+  assert.deepEqual(calls.splice(0), [
+    `render-edit-no-pending:${event.externalScopeId}`,
+  ]);
 
   service.setPendingUpdateDraft(event, draft);
   assert.equal(await service.handle(event, ['edit', 'add', 'a', 'client', 'summary'], 'todo'), 'message:draft:Prepare urgent estimate');

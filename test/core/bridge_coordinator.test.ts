@@ -8271,6 +8271,9 @@ test('BridgeCoordinator delegates assistant update-draft terminal routing to Ass
   assert.match(source, /applyUpdateDraft: \(draft\) => this\.applyAssistantRecordUpdateDraft\(draft\)/u);
   assert.match(source, /renderUpdateDraft: \(draft, commandName\) => this\.renderAssistantUpdateDraftLines\(draft, commandName\)/u);
   assert.match(source, /renderUpdateApplied: \(draft, record, commandName\) => this\.renderAssistantUpdateAppliedLines\(draft, record, commandName\)/u);
+  assert.match(source, /renderEditNeedsText: \(event\) => this\.renderAssistantEditNeedsText\(event\)/u);
+  assert.match(source, /renderEditNoPending: \(event\) => this\.renderAssistantEditNoPending\(event\)/u);
+  assert.match(source, /renderNotFound: \(event\) => this\.renderAssistantNotFound\(event\)/u);
   const confirmSource = extractCoordinatorMethodSource(source, 'handleAssistantConfirmCommand');
   const cancelSource = extractCoordinatorMethodSource(source, 'handleAssistantCancelPendingCommand');
   assert.match(confirmSource, /return this\.assistantRecordCommands\.confirm\(event, typeFilter\)/u);
