@@ -122,6 +122,12 @@ import {
   type AssistantRecordDraft,
 } from './assistant_record_service.js';
 import {
+  AssistantRecordCommandService,
+  assistantCommandNameForType,
+  type AssistantRecordUpdateAction,
+  type PendingAssistantRecordUpdateDraft,
+} from './assistant_record_command_service.js';
+import {
   createMissionControlledAgentJobView,
 } from './mission_control_agent_job_adapter.js';
 import { runAgentJobWithMissionControl } from './mission_control_agent_job_runner.js';
@@ -611,7 +617,6 @@ type ReviewCommandSkillResult =
     reason: string | null;
   };
 
-type AssistantRecordUpdateAction = 'update' | 'complete' | 'cancel' | 'archive';
 type AssistantRecordRouteAction = 'create' | AssistantRecordUpdateAction | 'none';
 
 type AssistantRecordRouteDecision = {
@@ -620,19 +625,6 @@ type AssistantRecordRouteDecision = {
   confidence: number;
   reason: string;
   type: AssistantRecordType | null;
-};
-
-type PendingAssistantRecordUpdateDraft = {
-  createdAt: number;
-  rawInput: string;
-  instructions: string[];
-  targetRecordId: string;
-  matchedRecord: AssistantRecord;
-  action: AssistantRecordUpdateAction;
-  updatedRecord: AssistantRecord;
-  matchedScore: number;
-  normalizedBy: 'codex' | 'provider' | 'local';
-  changeSummary: string | null;
 };
 
 type AssistantRecordRewriteCandidate = {
@@ -901,7 +893,7 @@ export class BridgeCoordinator {
   modelCommands: ModelCommandService<CoordinatorResponse>;
   pendingAutomationDraftsByScope: Map<string, PendingAutomationOperation>;
   pendingAgentDraftsByScope: Map<string, PendingAgentOperation>;
-  pendingAssistantUpdateDraftsByScope: Map<string, PendingAssistantRecordUpdateDraft>;
+  assistantRecordCommands: AssistantRecordCommandService<CoordinatorResponse>;
   pendingNewSessionsByScope: Map<string, PendingNewSessionRequest>;
   localeContext: AsyncLocalStorage<SupportedLocale>;
   i18n: Translator;
@@ -971,7 +963,6 @@ export class BridgeCoordinator {
     this.localeOverridesByScope = new Map();
     this.pendingAutomationDraftsByScope = new Map();
     this.pendingAgentDraftsByScope = new Map();
-    this.pendingAssistantUpdateDraftsByScope = new Map();
     this.pendingNewSessionsByScope = new Map();
     this.localeContext = new AsyncLocalStorage();
     this.i18n = createI18n(locale);
@@ -1023,6 +1014,21 @@ export class BridgeCoordinator {
       buildScopedSessionMeta: (event) => this.buildScopedSessionMeta(event),
       buildSessionMeta,
       messageResponse,
+    });
+    this.assistantRecordCommands = new AssistantRecordCommandService({
+      isSupported: () => Boolean(this.assistantRecords),
+      getTranslator: () => this.currentI18n,
+      buildSessionMeta: (event) => this.buildScopedSessionMeta(event),
+      messageResponse,
+      renderList: (event, typeFilter, query = '') => this.renderAssistantList(event, typeFilter, query),
+      show: (event, args, typeFilter) => this.handleAssistantShowCommand(event, args, typeFilter),
+      complete: (event, args, typeFilter) => this.handleAssistantDoneCommand(event, args, typeFilter),
+      archive: (event, args, typeFilter) => this.handleAssistantDeleteCommand(event, args, typeFilter),
+      cancelRecord: (event, args, typeFilter) => this.handleAssistantCancelRecordCommand(event, args, typeFilter),
+      confirm: (event, typeFilter) => this.handleAssistantConfirmCommand(event, typeFilter),
+      cancelPending: (event, typeFilter) => this.handleAssistantCancelPendingCommand(event, typeFilter),
+      editPending: (event, args, forcedType) => this.handleAssistantEditPendingCommand(event, args, forcedType),
+      natural: (event, rawInput, forcedType) => this.handleAssistantNaturalCommand(event, rawInput, forcedType),
     });
   }
 
@@ -1939,34 +1945,6 @@ export class BridgeCoordinator {
     this.pendingAutomationDraftsByScope.delete(buildAutomationDraftKey(scopeRef));
   }
 
-  getPendingAssistantUpdateDraft(scopeRef: PlatformScopeRef): PendingAssistantRecordUpdateDraft | null {
-    return this.pendingAssistantUpdateDraftsByScope.get(buildAssistantUpdateDraftKey(scopeRef)) ?? null;
-  }
-
-  getPendingAssistantUpdateDraftForType(
-    scopeRef: PlatformScopeRef,
-    typeFilter: AssistantRecordType | null,
-  ): PendingAssistantRecordUpdateDraft | null {
-    const draft = this.getPendingAssistantUpdateDraft(scopeRef);
-    if (!draft) {
-      return null;
-    }
-    if (!typeFilter) {
-      return draft;
-    }
-    return draft.updatedRecord.type === typeFilter || draft.matchedRecord.type === typeFilter
-      ? draft
-      : null;
-  }
-
-  setPendingAssistantUpdateDraft(scopeRef: PlatformScopeRef, draft: PendingAssistantRecordUpdateDraft) {
-    this.pendingAssistantUpdateDraftsByScope.set(buildAssistantUpdateDraftKey(scopeRef), draft);
-  }
-
-  clearPendingAssistantUpdateDraft(scopeRef: PlatformScopeRef) {
-    this.pendingAssistantUpdateDraftsByScope.delete(buildAssistantUpdateDraftKey(scopeRef));
-  }
-
   renderLoginAccountLines(account, { includePrefix = false } = {}) {
     if (!account) {
       return [];
@@ -2235,60 +2213,17 @@ export class BridgeCoordinator {
   }
 
   async handleAssistantCommand(event, args, forcedType: AssistantRecordType | null = null) {
-    if (!this.assistantRecords) {
-      return messageResponse([this.t('coordinator.assistant.unsupported')], this.buildScopedSessionMeta(event));
-    }
+    return this.assistantRecordCommands.handle(event, args, forcedType);
+  }
+
+  async handleAssistantNaturalCommand(event, rawInput: string, forcedType: AssistantRecordType | null) {
     const scopeRef = toScopeRef(event);
     const commandName = assistantCommandNameForType(forcedType);
-    const action = String(args[0] ?? '').trim().toLowerCase();
-    const typeFilter = forcedType ?? null;
-    const localTypeFilter = forcedType ?? 'todo';
-    if (['list', 'ls', 'status'].includes(action)) {
-      return this.renderAssistantList(event, localTypeFilter);
-    }
-    if (action === 'search') {
-      const query = args.slice(1).join(' ').trim();
-      if (!query) {
-        return messageResponse([
-          this.t('coordinator.assistant.searchUsage', { command: commandName }),
-        ], this.buildScopedSessionMeta(event));
-      }
-      return this.renderAssistantList(event, localTypeFilter, query);
-    }
-    if (action === 'show') {
-      return this.handleAssistantShowCommand(event, args.slice(1), localTypeFilter);
-    }
-    if (['done', 'complete'].includes(action)) {
-      return this.handleAssistantDoneCommand(event, args.slice(1), localTypeFilter);
-    }
-    if (['del', 'delete', 'archive'].includes(action)) {
-      return this.handleAssistantDeleteCommand(event, args.slice(1), localTypeFilter);
-    }
-    if (action === 'ok' || action === 'confirm') {
-      return this.handleAssistantConfirmCommand(event, typeFilter);
-    }
-    if (action === 'cancel') {
-      if (args[1]) {
-        return this.handleAssistantCancelRecordCommand(event, args.slice(1), localTypeFilter);
-      }
-      return this.handleAssistantCancelPendingCommand(event, typeFilter);
-    }
-    if (action === 'edit') {
-      return this.handleAssistantEditPendingCommand(event, args.slice(1), forcedType);
-    }
-    const rawInput = args.join(' ').trim();
-    if (!rawInput) {
-      return this.renderAssistantList(event, localTypeFilter);
-    }
-    const localQuery = resolveAssistantRecordLocalQueryIntent(rawInput, forcedType);
-    if (localQuery?.kind === 'list') {
-      return this.renderAssistantList(event, localQuery.typeFilter);
-    }
     const uploadContext = this.resolveActiveUploadContext(scopeRef);
     if (!uploadContext.state?.active) {
       const updateDraft = await this.buildAssistantRecordUpdateDraft(event, scopeRef, rawInput, forcedType);
       if (updateDraft) {
-        this.setPendingAssistantUpdateDraft(scopeRef, updateDraft);
+        this.assistantRecordCommands.setPendingUpdateDraft(scopeRef, updateDraft);
         return messageResponse(this.renderAssistantUpdateDraftLines(updateDraft, commandName), this.buildScopedSessionMeta(event));
       }
     }
@@ -2470,10 +2405,10 @@ export class BridgeCoordinator {
 
   async handleAssistantConfirmCommand(event, typeFilter: AssistantRecordType | null) {
     const scopeRef = toScopeRef(event);
-    const updateDraft = this.getPendingAssistantUpdateDraftForType(scopeRef, typeFilter);
+    const updateDraft = this.assistantRecordCommands.getPendingUpdateDraftForType(scopeRef, typeFilter);
     if (updateDraft) {
       const updated = this.applyAssistantRecordUpdateDraft(updateDraft);
-      this.clearPendingAssistantUpdateDraft(scopeRef);
+      this.assistantRecordCommands.clearPendingUpdateDraft(scopeRef);
       if (!updated) {
         return messageResponse([this.t('coordinator.assistant.notFound')], this.buildScopedSessionMeta(event));
       }
@@ -2498,9 +2433,9 @@ export class BridgeCoordinator {
 
   async handleAssistantCancelPendingCommand(event, typeFilter: AssistantRecordType | null) {
     const scopeRef = toScopeRef(event);
-    const updateDraft = this.getPendingAssistantUpdateDraftForType(scopeRef, typeFilter);
+    const updateDraft = this.assistantRecordCommands.getPendingUpdateDraftForType(scopeRef, typeFilter);
     if (updateDraft) {
-      this.clearPendingAssistantUpdateDraft(scopeRef);
+      this.assistantRecordCommands.clearPendingUpdateDraft(scopeRef);
       return messageResponse([
         this.t('coordinator.assistant.updateDraftCancelled'),
       ], this.buildScopedSessionMeta(event));
@@ -2523,10 +2458,10 @@ export class BridgeCoordinator {
       ], this.buildScopedSessionMeta(event));
     }
     const scopeRef = toScopeRef(event);
-    const updateDraft = this.getPendingAssistantUpdateDraftForType(scopeRef, forcedType);
+    const updateDraft = this.assistantRecordCommands.getPendingUpdateDraftForType(scopeRef, forcedType);
     if (updateDraft) {
       if (shouldCreateAssistantRecordInsteadOfUpdating(input)) {
-        this.clearPendingAssistantUpdateDraft(scopeRef);
+        this.assistantRecordCommands.clearPendingUpdateDraft(scopeRef);
         return this.handleAssistantCommand(event, [input], forcedType);
       }
       const instructions = [...updateDraft.instructions, input];
@@ -2541,7 +2476,7 @@ export class BridgeCoordinator {
         normalizedBy: updatedRecord.normalizedBy,
         changeSummary: updatedRecord.changeSummary,
       };
-      this.setPendingAssistantUpdateDraft(scopeRef, updatedDraft);
+      this.assistantRecordCommands.setPendingUpdateDraft(scopeRef, updatedDraft);
       return messageResponse(
         this.renderAssistantUpdateDraftLines(updatedDraft, assistantCommandNameForType(forcedType)),
         this.buildScopedSessionMeta(event),
@@ -14345,10 +14280,6 @@ function buildAutomationDraftKey(scopeRef: PlatformScopeRef): string {
   return formatPlatformScopeKey(scopeRef.platform, scopeRef.externalScopeId);
 }
 
-function buildAssistantUpdateDraftKey(scopeRef: PlatformScopeRef): string {
-  return formatPlatformScopeKey(scopeRef.platform, scopeRef.externalScopeId);
-}
-
 function buildAssistantPromptTimeContext(now: number, timezone: string | null): string[] {
   const resolvedTimezone = normalizeAssistantPromptTimezone(timezone);
   return [
@@ -15743,87 +15674,6 @@ function parseExplicitLocale(value) {
 function normalizeCommandName(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
   return COMMAND_CANONICAL_NAME_MAP.get(normalized) ?? normalized;
-}
-
-function assistantCommandNameForType(type: AssistantRecordType | null): string {
-  switch (type) {
-    case 'log':
-      return '/log';
-    case 'todo':
-      return '/todo';
-    case 'reminder':
-      return '/remind';
-    case 'note':
-      return '/note';
-    default:
-      return '/as';
-  }
-}
-
-type AssistantRecordLocalQueryIntent = {
-  kind: 'list';
-  typeFilter: AssistantRecordType | null;
-};
-
-function resolveAssistantRecordLocalQueryIntent(
-  input: string,
-  forcedType: AssistantRecordType | null,
-): AssistantRecordLocalQueryIntent | null {
-  const value = compactWhitespace(input).toLowerCase();
-  if (!value || hasAssistantRecordCreateRequestPrefix(value)) {
-    return null;
-  }
-  const inferredType = inferAssistantRecordTypeFromQueryText(value);
-  const typeFilter = forcedType ?? inferredType ?? 'todo';
-  if (!isAssistantRecordListQuery(value, forcedType, inferredType)) {
-    return null;
-  }
-  return { kind: 'list', typeFilter };
-}
-
-function isAssistantRecordListQuery(
-  value: string,
-  forcedType: AssistantRecordType | null,
-  inferredType: AssistantRecordType | null,
-): boolean {
-  if (forcedType && /^(?:给我)?(?:查看|看看|看一下|查一下|查找|找找|找一下|搜一下|搜索|列出|显示)(?:一下)?$/u.test(value)) {
-    return true;
-  }
-  const hasViewVerb = /(?:查看|看看|看一下|查一下|查找|找找|找一下|搜一下|搜索|列出|列一下|显示|给我看|给我看看|打开)/u.test(value);
-  const hasListCue = /(?:有哪些|还有哪些|都有哪些|有哪(?:些|几|几个)|有什么|有啥|当前|现在|目前|所有|全部|还(?:有|剩)|剩下|列表|清单)/u.test(value);
-  const mentionsSpecificType = inferredType !== null;
-  const mentionsGenericRecords = /(?:助理记录|记录|事项|条目|清单|列表)/u.test(value);
-  const hasTarget = mentionsSpecificType || mentionsGenericRecords;
-  if (/(?:有哪些|还有哪些|都有哪些|有哪(?:些|几|几个)|有什么|有啥|还(?:有|剩)(?:哪些|什么)|剩下哪些)/u.test(value)) {
-    return hasTarget || forcedType !== null;
-  }
-  if (!hasViewVerb) {
-    return false;
-  }
-  if (hasTarget) {
-    return true;
-  }
-  return forcedType !== null && hasListCue;
-}
-
-function hasAssistantRecordCreateRequestPrefix(value: string): boolean {
-  return /^(?:新增|新建|添加|增加|创建|保存|记下|记一条|记一个|帮我(?:新增|新建|添加|增加|创建|保存|记下|记一条|记一个)|提醒我|安排)/u.test(value);
-}
-
-function inferAssistantRecordTypeFromQueryText(value: string): AssistantRecordType | null {
-  if (/(?:待办|todo|todos|任务|要做的事|待处理事项)/iu.test(value)) {
-    return 'todo';
-  }
-  if (/(?:提醒|remind|reminder|reminders|通知)/iu.test(value)) {
-    return 'reminder';
-  }
-  if (/(?:日志|log|logs|日记)/iu.test(value)) {
-    return 'log';
-  }
-  if (/(?:笔记|note|notes|备忘)/iu.test(value)) {
-    return 'note';
-  }
-  return null;
 }
 
 function renderAssistantRecordTimeLine(record: AssistantRecord, i18n: Translator): string {
