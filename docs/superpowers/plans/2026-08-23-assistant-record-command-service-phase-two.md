@@ -141,12 +141,12 @@ git commit -m "refactor: move assistant explicit command orchestration"
 - Modify: `test/core/assistant_record_command.test.ts`
 
 **Interfaces:**
-- Consumes: normalized create/update/clarify/reject decisions from coordinator callbacks.
+- Consumes: the existing normalized `create | update | complete | cancel | archive | none` route decisions from coordinator callbacks.
 - Produces: pure formatting helpers and service-owned routing of normalized decisions.
 
 - [ ] **Step 1: Add failing pure rendering and decision-routing tests**
 
-Cover list items, pending create, saved record, update draft, update applied, detail, clarify, reject, and local list outcomes in both supported locales already represented by integration tests.
+Cover list items, pending create, saved record, update draft, update applied, detail, and local list outcomes in both supported locales already represented by integration tests. Preserve the legacy `none` route as the pending-create fallback; do not introduce new route actions or user-visible responses.
 
 - [ ] **Step 2: Extract pure view helpers**
 
