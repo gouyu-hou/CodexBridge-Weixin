@@ -39,6 +39,11 @@ import {
   type WeixinAdminBackupRepositories,
   type WeixinAdminBackupReadRepository,
 } from './admin_backup_service.js';
+import {
+  MAX_LOG_CLEANUP_INTERVAL_MINUTES,
+  MAX_LOG_RETENTION_DAYS,
+  WeixinAdminLogMaintenanceService,
+} from './admin_log_maintenance_service.js';
 
 type QrLoginImpl = typeof officialQrLogin;
 
@@ -269,20 +274,13 @@ const JSON_BODY_LIMIT_BYTES = 64 * 1024;
 const IMPORT_BODY_LIMIT_BYTES = 32 * 1024 * 1024;
 const DEFAULT_SESSION_LIST_LIMIT = 200;
 const MAX_SESSION_LIST_LIMIT = 1000;
-const LOG_TAIL_BYTES = 256 * 1024;
 const DEFAULT_LOG_LINE_LIMIT = 300;
 const MAX_LOG_LINE_LIMIT = 2000;
 const DEFAULT_MAX_CONCURRENT_TURNS = 3;
 const DEFAULT_EVENT_DISPATCH_CONCURRENCY = 12;
 const DEFAULT_ATTACHMENT_PROCESSING_CONCURRENCY = 3;
 const DEFAULT_ACCOUNT_POLL_CONCURRENCY = 4;
-const DEFAULT_LOG_CLEANUP_ENABLED = true;
-const DEFAULT_LOG_RETENTION_DAYS = 7;
-const DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024;
-const DEFAULT_LOG_CLEANUP_INTERVAL_MINUTES = 60;
 const MAX_RUNTIME_CONCURRENCY = 64;
-const MAX_LOG_RETENTION_DAYS = 365;
-const MAX_LOG_CLEANUP_INTERVAL_MINUTES = 24 * 60;
 const DEFAULT_PAGE_CLOSE_SHUTDOWN_GRACE_MS = 3000;
 const ADMIN_PAGE_CLIENT_TTL_MS = 15_000;
 const ADMIN_PREFERENCES_FILE = 'weixin-admin-preferences.json';
@@ -342,7 +340,7 @@ export class WeixinAdminServer {
       repositories: createWeixinAdminBackupRepositories(this.repositories),
       getState: () => this.buildState(),
       getSessionSummaries: () => sortSessions(this.buildSessionSummaries(), 'updatedDesc'),
-      getLogs: () => this.readLogs({ lineLimit: 500 }),
+      getLogs: () => this.logMaintenanceService.readLogs({ lineLimit: 500 }),
       getAdminUrl: () => this.binding?.url ?? null,
     });
     this.diagnosticsService = new WeixinAdminDiagnosticsService({
@@ -358,7 +356,11 @@ export class WeixinAdminServer {
     this.currentPairing = null;
     this.adminPageClients = new Map();
     this.pageCloseShutdownTimer = null;
-    this.logCleanupTimer = null;
+    this.logMaintenanceService = new WeixinAdminLogMaintenanceService({
+      stateDir: this.stateDir,
+      env: this.env,
+      buildActiveLogResetSummary: (input) => this.buildLogResetSummary(input),
+    });
     this.ccswitchSyncTimer = null;
     this.lastCcswitchFingerprint = '';
     this.lastCcswitchSync = null;
@@ -389,7 +391,7 @@ export class WeixinAdminServer {
   currentPairing: PairingSession | null;
   adminPageClients: Map<string, AdminPageClient>;
   pageCloseShutdownTimer: ReturnType<typeof setTimeout> | null;
-  logCleanupTimer: ReturnType<typeof setInterval> | null;
+  logMaintenanceService: WeixinAdminLogMaintenanceService;
   ccswitchSyncTimer: ReturnType<typeof setInterval> | null;
   lastCcswitchFingerprint: string;
   lastCcswitchSync: Record<string, unknown> | null;
@@ -419,7 +421,7 @@ export class WeixinAdminServer {
         const binding = await listen(server, this.host, port);
         this.server = server;
         this.binding = binding;
-        this.startLogCleanupScheduler();
+        this.logMaintenanceService.start();
         this.startCcswitchSyncScheduler();
         return binding;
       } catch (error) {
@@ -437,7 +439,7 @@ export class WeixinAdminServer {
   async stop() {
     this.cancelPairing('cancelled');
     this.clearPageCloseShutdownTimer();
-    this.stopLogCleanupScheduler();
+    this.logMaintenanceService.stop();
     this.stopCcswitchSyncScheduler();
     this.adminPageClients.clear();
     const server = this.server;
@@ -538,7 +540,7 @@ export class WeixinAdminServer {
         this.handleDeleteSession(res, route.sessionId);
         return;
       case 'logs':
-        this.writeJson(res, 200, this.readLogs({
+        this.writeJson(res, 200, this.logMaintenanceService.readLogs({
           lineLimit: parsePositiveInt(url.searchParams.get('limit'), DEFAULT_LOG_LINE_LIMIT, MAX_LOG_LINE_LIMIT),
         }));
         return;
@@ -678,7 +680,7 @@ export class WeixinAdminServer {
         ? serializeAdminBridgeStatus(this.bridgeControl.status())
         : { running: true },
       settings: this.buildSettings(),
-      logs: this.buildLogSummary(),
+      logs: this.logMaintenanceService.buildSummary(),
       accounts: this.listAccounts(),
       providerProfiles: this.listProviderProfiles(),
       pairing: this.serializePairing(this.currentPairing),
@@ -712,7 +714,7 @@ export class WeixinAdminServer {
           MAX_RUNTIME_CONCURRENCY,
         ),
       },
-      logCleanup: this.resolveLogCleanupSettings(),
+      logCleanup: this.logMaintenanceService.resolveSettings(),
       modelProvider: this.resolveModelProviderSettings(),
       alertWebhookUrl: normalizeEnvString(this.env.WEIXIN_ALERT_WEBHOOK_URL) ?? '',
     };
@@ -760,24 +762,6 @@ export class WeixinAdminServer {
       authPath: path.join(codexHome, 'auth.json'),
       intervalMs: Math.max(MIN_CCSWITCH_SYNC_INTERVAL_MS, intervalMs),
       lastSync: this.lastCcswitchSync,
-    };
-  }
-
-  private buildLogSummary() {
-    const files = this.resolveLogFiles().map((entry) => {
-      const stat = safeStat(entry.path);
-      return {
-        ...entry,
-        exists: Boolean(stat),
-        sizeBytes: stat?.size ?? 0,
-        updatedAt: stat?.mtimeMs ?? null,
-      };
-    });
-    return {
-      generatedAt: new Date().toISOString(),
-      settings: this.resolveLogCleanupSettings(),
-      totalSizeBytes: files.reduce((total, file) => total + file.sizeBytes, 0),
-      files,
     };
   }
 
@@ -1369,60 +1353,6 @@ export class WeixinAdminServer {
       ?? null;
   }
 
-  private readLogs({ lineLimit = DEFAULT_LOG_LINE_LIMIT }: { lineLimit?: number } = {}) {
-    const files = this.resolveLogFiles().map((entry) => {
-      const stat = safeStat(entry.path);
-      const tail = stat ? tailLines(readTailText(entry.path, LOG_TAIL_BYTES), lineLimit) : '';
-      return {
-        ...entry,
-        exists: Boolean(stat),
-        sizeBytes: stat?.size ?? 0,
-        updatedAt: stat?.mtimeMs ?? null,
-        text: tail,
-      };
-    });
-    return {
-      generatedAt: new Date().toISOString(),
-      settings: this.resolveLogCleanupSettings(),
-      totalSizeBytes: files.reduce((total, file) => total + file.sizeBytes, 0),
-      files,
-      text: files
-        .map((file) => [
-          `== ${file.kind}: ${file.path} ==`,
-          file.exists ? (file.text || '(empty)') : '(missing)',
-        ].join('\n'))
-        .join('\n\n'),
-    };
-  }
-
-  private resolveLogFiles() {
-    return [
-      { kind: 'stdout', path: path.join(this.stateDir, 'logs', 'weixin-bridge.out.log') },
-      { kind: 'stderr', path: path.join(this.stateDir, 'logs', 'weixin-bridge.err.log') },
-    ];
-  }
-
-  private resolveLogCleanupSettings() {
-    return {
-      enabled: parseBooleanEnv(this.env.WEIXIN_LOG_CLEANUP_ENABLE, DEFAULT_LOG_CLEANUP_ENABLED),
-      retentionDays: parsePositiveInt(
-        this.env.WEIXIN_LOG_RETENTION_DAYS,
-        DEFAULT_LOG_RETENTION_DAYS,
-        MAX_LOG_RETENTION_DAYS,
-      ),
-      maxBytes: parsePositiveInt(
-        this.env.WEIXIN_LOG_MAX_BYTES,
-        DEFAULT_LOG_MAX_BYTES,
-        Number.MAX_SAFE_INTEGER,
-      ),
-      intervalMinutes: parsePositiveInt(
-        this.env.WEIXIN_LOG_CLEANUP_INTERVAL_MINUTES,
-        DEFAULT_LOG_CLEANUP_INTERVAL_MINUTES,
-        MAX_LOG_CLEANUP_INTERVAL_MINUTES,
-      ),
-    };
-  }
-
   private buildExportPayload() {
     return this.backupService.exportBackup();
   }
@@ -1547,10 +1477,10 @@ export class WeixinAdminServer {
       attachmentProcessingConcurrency: next.concurrency.attachmentProcessingConcurrency,
       accountPollConcurrency: next.concurrency.accountPollConcurrency,
     });
-    this.restartLogCleanupScheduler();
+    this.logMaintenanceService.restart();
     this.restartCcswitchSyncScheduler();
     await this.bridgeControl?.restart?.();
-    const cleanup = await this.cleanupLogs('settings-updated');
+    const cleanup = await this.logMaintenanceService.cleanup('settings-updated');
     this.writeJson(res, 200, {
       ok: true,
       settings: this.buildSettings(),
@@ -1561,11 +1491,11 @@ export class WeixinAdminServer {
   }
 
   private async handleCleanupLogs(res: ServerResponse) {
-    const cleanup = await this.clearActiveLogs('manual');
+    const cleanup = await this.logMaintenanceService.clearActive('manual');
     this.writeJson(res, 200, {
       ok: true,
       cleanup,
-      logs: this.readLogs({ lineLimit: 500 }),
+      logs: this.logMaintenanceService.readLogs({ lineLimit: 500 }),
     });
   }
 
@@ -1827,32 +1757,6 @@ export class WeixinAdminServer {
     }, 0);
   }
 
-  private startLogCleanupScheduler({ runImmediately = true }: { runImmediately?: boolean } = {}) {
-    this.stopLogCleanupScheduler();
-    const settings = this.resolveLogCleanupSettings();
-    if (!settings.enabled) {
-      return;
-    }
-    if (runImmediately) {
-      void this.cleanupLogs('startup').catch(() => {});
-    }
-    this.logCleanupTimer = setInterval(() => {
-      void this.cleanupLogs('interval').catch(() => {});
-    }, Math.max(1, settings.intervalMinutes) * 60 * 1000);
-  }
-
-  private restartLogCleanupScheduler() {
-    this.startLogCleanupScheduler({ runImmediately: false });
-  }
-
-  private stopLogCleanupScheduler() {
-    if (!this.logCleanupTimer) {
-      return;
-    }
-    clearInterval(this.logCleanupTimer);
-    this.logCleanupTimer = null;
-  }
-
   private startCcswitchSyncScheduler({ runImmediately = true }: { runImmediately?: boolean } = {}) {
     this.stopCcswitchSyncScheduler();
     const preferences = this.readAdminPreferences();
@@ -1886,128 +1790,6 @@ export class WeixinAdminServer {
     this.ccswitchSyncTimer = null;
   }
 
-  private async cleanupLogs(reason: string) {
-    const settings = this.resolveLogCleanupSettings();
-    const logsDir = path.join(this.stateDir, 'logs');
-    const startedAt = new Date().toISOString();
-    const actions: Array<{
-      path: string;
-      action: string;
-      beforeBytes: number;
-      afterBytes: number;
-      error?: string;
-    }> = [];
-    if (!settings.enabled) {
-      return {
-        enabled: false,
-        reason,
-        startedAt,
-        actions,
-      };
-    }
-    const now = Date.now();
-    const retentionMs = settings.retentionDays > 0 ? settings.retentionDays * 24 * 60 * 60 * 1000 : 0;
-    const activeLogPaths = new Set(this.resolveLogFiles().map((entry) => path.resolve(entry.path)));
-    for (const filePath of this.listLogCleanupTargets(logsDir)) {
-      const stat = safeStat(filePath);
-      if (!stat || !stat.isFile()) {
-        continue;
-      }
-      const beforeBytes = stat.size;
-      const isActiveLog = activeLogPaths.has(path.resolve(filePath));
-      try {
-        if (retentionMs > 0 && now - stat.mtimeMs > retentionMs) {
-          if (isActiveLog) {
-            const message = `[CodexBridge] log cleared at ${startedAt}; reason=${reason}; older than ${settings.retentionDays} day(s).\n`;
-            fs.writeFileSync(filePath, message, 'utf8');
-            actions.push({
-              path: filePath,
-              action: 'cleared_old_active_log',
-              beforeBytes,
-              afterBytes: safeStat(filePath)?.size ?? 0,
-            });
-          } else {
-            fs.unlinkSync(filePath);
-            actions.push({
-              path: filePath,
-              action: 'deleted_old_log',
-              beforeBytes,
-              afterBytes: 0,
-            });
-          }
-          continue;
-        }
-        if (settings.maxBytes > 0 && stat.size > settings.maxBytes) {
-          compactLogFile(filePath, settings.maxBytes, {
-            reason,
-            timestamp: startedAt,
-          });
-          actions.push({
-            path: filePath,
-            action: 'compacted_large_log',
-            beforeBytes,
-            afterBytes: safeStat(filePath)?.size ?? 0,
-          });
-        }
-      } catch (error) {
-        actions.push({
-          path: filePath,
-          action: 'failed',
-          beforeBytes,
-          afterBytes: safeStat(filePath)?.size ?? beforeBytes,
-          error: formatError(error),
-        });
-      }
-    }
-    return {
-      enabled: true,
-      reason,
-      startedAt,
-      settings,
-      actions,
-    };
-  }
-
-  private async clearActiveLogs(reason: string) {
-    const startedAt = new Date().toISOString();
-    const summary = this.buildLogResetSummary({ reason, startedAt });
-    const actions: Array<{
-      path: string;
-      action: string;
-      beforeBytes: number;
-      afterBytes: number;
-      error?: string;
-    }> = [];
-    for (const entry of this.resolveLogFiles()) {
-      const beforeBytes = safeStat(entry.path)?.size ?? 0;
-      try {
-        fs.mkdirSync(path.dirname(entry.path), { recursive: true });
-        const content = entry.kind === 'stdout' ? summary : '';
-        fs.writeFileSync(entry.path, content, 'utf8');
-        actions.push({
-          path: entry.path,
-          action: entry.kind === 'stdout' ? 'reset_active_log_with_summary' : 'cleared_active_log',
-          beforeBytes,
-          afterBytes: safeStat(entry.path)?.size ?? 0,
-        });
-      } catch (error) {
-        actions.push({
-          path: entry.path,
-          action: 'failed',
-          beforeBytes,
-          afterBytes: safeStat(entry.path)?.size ?? beforeBytes,
-          error: formatError(error),
-        });
-      }
-    }
-    return {
-      enabled: true,
-      reason,
-      startedAt,
-      actions,
-    };
-  }
-
   private buildLogResetSummary({ reason, startedAt }: { reason: string; startedAt: string }) {
     const settings = this.buildSettings();
     const bridge = this.bridgeControl?.status?.() ?? { running: true };
@@ -2027,20 +1809,6 @@ export class WeixinAdminServer {
       `account_poll_concurrency: ${concurrency.accountPollConcurrency}`,
       '',
     ].join('\n');
-  }
-
-  private listLogCleanupTargets(logsDir: string) {
-    const paths = new Set(this.resolveLogFiles().map((entry) => entry.path));
-    try {
-      for (const name of fs.readdirSync(logsDir)) {
-        if (/^weixin-bridge\..*\.log(?:\.\d+)?$/u.test(name)) {
-          paths.add(path.join(logsDir, name));
-        }
-      }
-    } catch {
-      // Missing logs directory is normal before the service has written logs.
-    }
-    return [...paths];
   }
 
   private async handlePatchAccount(req: IncomingMessage, res: ServerResponse, rawAccountId: string) {
@@ -2223,7 +1991,7 @@ export class WeixinAdminServer {
   private buildDiagnosticExportPayload() {
     const runtime = this.repositories;
     const accountIds = this.accountStore.listAccounts();
-    const logSummary = this.buildLogSummary();
+    const logSummary = this.logMaintenanceService.buildSummary();
     const bridgeStatus = this.bridgeControl?.status?.() ?? { running: true };
     return {
       schemaVersion: 1,
@@ -3457,57 +3225,6 @@ function readTailText(filePath: string, maxBytes: number) {
       } catch {}
     }
   }
-}
-
-function compactLogFile(
-  filePath: string,
-  maxBytes: number,
-  {
-    reason,
-    timestamp,
-  }: {
-    reason: string;
-    timestamp: string;
-  },
-) {
-  const marker = `[CodexBridge] log compacted at ${timestamp}; reason=${reason}; kept the latest log tail.\n`;
-  const markerBytes = Buffer.byteLength(marker, 'utf8');
-  const keepBytes = Math.max(0, maxBytes - markerBytes);
-  const tail = readTailBuffer(filePath, keepBytes);
-  fs.writeFileSync(filePath, Buffer.concat([Buffer.from(marker, 'utf8'), tail]));
-}
-
-function readTailBuffer(filePath: string, maxBytes: number) {
-  if (maxBytes <= 0) {
-    return Buffer.alloc(0);
-  }
-  let fd: number | null = null;
-  try {
-    const stat = fs.statSync(filePath);
-    const length = Math.min(stat.size, maxBytes);
-    const start = Math.max(0, stat.size - length);
-    const buffer = Buffer.alloc(length);
-    fd = fs.openSync(filePath, 'r');
-    fs.readSync(fd, buffer, 0, length, start);
-    return buffer;
-  } catch {
-    return Buffer.alloc(0);
-  } finally {
-    if (fd !== null) {
-      try {
-        fs.closeSync(fd);
-      } catch {}
-    }
-  }
-}
-
-function tailLines(text: string, lineLimit: number) {
-  const normalized = text.replace(/^\uFEFF/u, '').trimEnd();
-  if (!normalized) {
-    return '';
-  }
-  const lines = normalized.split(/\r?\n/u);
-  return lines.slice(Math.max(0, lines.length - lineLimit)).join('\n');
 }
 
 function readLatestUserPrompt(entry: CodexSessionIndexEntry | null | undefined) {
