@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
 import {
   INSTRUCTIONS_COMMAND_SKILL_ACTIONS,
@@ -23,6 +25,17 @@ import {
 import { createI18n } from '../../src/i18n/index.js';
 
 const i18n = createI18n('zh-CN');
+
+test('BridgeCoordinator delegates instructions orchestration to the focused service', () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'core', 'bridge_coordinator.ts'),
+    'utf8',
+  );
+  assert.match(source, /from '\.\/instructions_command_service\.js'/u);
+  assert.match(source, /new InstructionsCommandService\(/u);
+  assert.match(source, /return this\.instructionsCommands\.handle\(event, args\)/u);
+  assert.match(source, /return this\.instructionsCommands\.handlePendingCapture\(event\)/u);
+});
 
 test('buildInstructionsOperationKey and buildInstructionsEditKey share the platform scope key', () => {
   const scopeKey = buildInstructionsOperationKey({ platform: 'weixin', externalScopeId: 'scope-1' });

@@ -87,22 +87,12 @@ import {
 import {
   INSTRUCTIONS_COMMAND_SKILL_ACTIONS,
   buildInstructionsCommandSkillPrompt,
-  buildInstructionsDraftResponseLines,
-  buildInstructionsEditKey,
-  buildInstructionsOperation,
-  buildInstructionsOperationKey,
-  buildInstructionsOperationPreviewLines,
-  buildPendingInstructionsOperationFromSkillResult,
-  extractInstructionsEditBody,
-  extractInstructionsInlineContent,
   formatInstructionsStatus,
-  normalizeInstructionsDocumentContent,
   parseInstructionsCommandSkillResult,
-  renderInstructionsSavedLines,
   type InstructionsCommandSkillResult,
-  type PendingInstructionsCapture,
   type PendingInstructionsOperation,
 } from './instructions_command.js';
+import { InstructionsCommandService } from './instructions_command_service.js';
 export { INSTRUCTIONS_COMMAND_SKILL_ACTIONS };
 import {
   findModelByIndexToken,
@@ -915,8 +905,7 @@ export class BridgeCoordinator {
   pendingPluginAliasDraftsByScope: Map<string, PendingPluginAliasDraft>;
   pendingThreadOperationsByScope: Map<string, PendingThreadCommandOperation>;
   localeOverridesByScope: Map<string, SupportedLocale>;
-  pendingInstructionsCapturesByScope: Map<string, PendingInstructionsCapture>;
-  pendingInstructionsOperationsByScope: Map<string, PendingInstructionsOperation>;
+  instructionsCommands: InstructionsCommandService<CoordinatorResponse>;
   pendingAutomationDraftsByScope: Map<string, PendingAutomationOperation>;
   pendingAgentDraftsByScope: Map<string, PendingAgentOperation>;
   pendingAssistantUpdateDraftsByScope: Map<string, PendingAssistantRecordUpdateDraft>;
@@ -987,8 +976,6 @@ export class BridgeCoordinator {
     this.pendingPluginAliasDraftsByScope = new Map();
     this.pendingThreadOperationsByScope = new Map();
     this.localeOverridesByScope = new Map();
-    this.pendingInstructionsCapturesByScope = new Map();
-    this.pendingInstructionsOperationsByScope = new Map();
     this.pendingAutomationDraftsByScope = new Map();
     this.pendingAgentDraftsByScope = new Map();
     this.pendingAssistantUpdateDraftsByScope = new Map();
@@ -1003,6 +990,23 @@ export class BridgeCoordinator {
       areExplicitTargets: (event, args) => this.areExplicitThreadTargets(event, args),
       manageExplicit: (event, operation, args) => this.handleExplicitThreadManagementCommand(event, operation, args),
       manageNatural: (event, operation, args) => this.handleThreadNaturalManagementCommand(event, operation, args),
+    });
+    this.instructionsCommands = new InstructionsCommandService({
+      now: () => this.now(),
+      getTranslator: () => this.currentI18n,
+      instructionsManager: this.codexInstructionsManager,
+      toScopeRef,
+      buildSessionMeta: (event) => this.buildScopedSessionMeta(event),
+      messageResponse,
+      handleHelp: (event, args) => this.handleHelpsCommand(event, args),
+      hasActiveTurn: () => this.activeTurns?.hasAnyActiveTurn?.() ?? false,
+      reconnectCodexBackedProfiles: () => this.reconnectCodexBackedProfiles(),
+      normalizeWithCodex: (event, scopeRef, request) => this.normalizeInstructionsCommandWithCodex(
+        event,
+        scopeRef,
+        request,
+      ),
+      formatError: formatUserError,
     });
   }
 
@@ -1115,8 +1119,8 @@ export class BridgeCoordinator {
   }
 
   async handleInboundEventWithLocale(event, options = {}) {
-    if (!parseSlashCommand(event.text) && this.hasPendingInstructionsCapture(event)) {
-      return this.handlePendingInstructionsCapture(event);
+    if (!parseSlashCommand(event.text) && this.instructionsCommands.hasPendingCapture(event)) {
+      return this.instructionsCommands.handlePendingCapture(event);
     }
     const command = parseSlashCommand(event.text);
     if (command) {
@@ -1880,32 +1884,6 @@ export class BridgeCoordinator {
     return lines;
   }
 
-  hasPendingInstructionsCapture(event): boolean {
-    return this.pendingInstructionsCapturesByScope.has(buildInstructionsEditKey(event));
-  }
-
-  setPendingInstructionsCapture(event) {
-    this.pendingInstructionsCapturesByScope.set(buildInstructionsEditKey(event), {
-      startedAt: this.now(),
-    });
-  }
-
-  clearPendingInstructionsCapture(event) {
-    this.pendingInstructionsCapturesByScope.delete(buildInstructionsEditKey(event));
-  }
-
-  getPendingInstructionsOperation(scopeRef: PlatformScopeRef): PendingInstructionsOperation | null {
-    return this.pendingInstructionsOperationsByScope.get(buildInstructionsOperationKey(scopeRef)) ?? null;
-  }
-
-  setPendingInstructionsOperation(scopeRef: PlatformScopeRef, operation: PendingInstructionsOperation) {
-    this.pendingInstructionsOperationsByScope.set(buildInstructionsOperationKey(scopeRef), operation);
-  }
-
-  clearPendingInstructionsOperation(scopeRef: PlatformScopeRef) {
-    this.pendingInstructionsOperationsByScope.delete(buildInstructionsOperationKey(scopeRef));
-  }
-
   getPendingThreadOperation(scopeRef: PlatformScopeRef): PendingThreadCommandOperation | null {
     return this.pendingThreadOperationsByScope.get(buildThreadOperationKey(scopeRef)) ?? null;
   }
@@ -1971,133 +1949,6 @@ export class BridgeCoordinator {
 
   clearPendingAssistantUpdateDraft(scopeRef: PlatformScopeRef) {
     this.pendingAssistantUpdateDraftsByScope.delete(buildAssistantUpdateDraftKey(scopeRef));
-  }
-
-  async handlePendingInstructionsCapture(event) {
-    if (!String(event.text ?? '').trim()) {
-      return messageResponse([
-        this.t('coordinator.instructions.editNeedsText'),
-        this.t('coordinator.instructions.editHint'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    const scopeRef = toScopeRef(event);
-    return this.proposeInstructionsLiteralReplace(event, scopeRef, event.text, 'capture');
-  }
-
-  async renderInstructionsStatus(event) {
-    const scopeRef = toScopeRef(event);
-    const snapshot = await this.codexInstructionsManager.readInstructions();
-    const lines = [
-      this.t('coordinator.instructions.current', {
-        value: snapshot.exists ? this.t('common.enabled') : this.t('common.notSet'),
-      }),
-      this.t('coordinator.instructions.path', { value: snapshot.path }),
-      this.t('coordinator.instructions.contentLabel'),
-      snapshot.exists
-        ? snapshot.content.trimEnd() || this.t('common.empty')
-        : this.t('common.notSet'),
-      this.t('coordinator.instructions.usage'),
-      this.t('coordinator.instructions.help'),
-    ];
-    if (this.hasPendingInstructionsCapture(event)) {
-      lines.push(this.t('coordinator.instructions.editPending'));
-    }
-    const operation = this.getPendingInstructionsOperation(scopeRef);
-    if (operation) {
-      lines.push('');
-      lines.push(this.t('coordinator.instructions.draftPending'));
-      lines.push(...buildInstructionsOperationPreviewLines(operation, this.currentI18n));
-    }
-    return messageResponse(lines, this.buildScopedSessionMeta(event));
-  }
-
-  async proposeInstructionsLiteralReplace(
-    event,
-    scopeRef: PlatformScopeRef,
-    content: string,
-    source: 'set' | 'capture',
-  ) {
-    const snapshot = await this.codexInstructionsManager.readInstructions();
-    const operation = buildInstructionsOperation({
-      kind: 'replace',
-      createdAt: this.now(),
-      rawInput: String(content ?? ''),
-      summary: this.t('coordinator.instructions.defaultSummary.replace'),
-      changes: [this.t('coordinator.instructions.defaultChange.replace')],
-      proposedContent: normalizeInstructionsDocumentContent(content),
-      baseContent: snapshot.content,
-      normalizedBy: 'local',
-    });
-    this.clearPendingInstructionsCapture(event);
-    this.setPendingInstructionsOperation(scopeRef, operation);
-    return messageResponse(
-      buildInstructionsDraftResponseLines(operation, {
-        includeEditHint: true,
-        includeSourceNotice: source === 'capture',
-      }, this.currentI18n),
-      this.buildScopedSessionMeta(event),
-    );
-  }
-
-  async proposeInstructionsClear(event, scopeRef: PlatformScopeRef) {
-    const snapshot = await this.codexInstructionsManager.readInstructions();
-    const operation = buildInstructionsOperation({
-      kind: 'clear',
-      createdAt: this.now(),
-      rawInput: String(event.text ?? ''),
-      summary: this.t('coordinator.instructions.defaultSummary.clear'),
-      changes: [this.t('coordinator.instructions.defaultChange.clear')],
-      proposedContent: '',
-      baseContent: snapshot.content,
-      normalizedBy: 'local',
-    });
-    this.clearPendingInstructionsCapture(event);
-    this.setPendingInstructionsOperation(scopeRef, operation);
-    return messageResponse(
-      buildInstructionsDraftResponseLines(operation, {
-        includeEditHint: true,
-      }, this.currentI18n),
-      this.buildScopedSessionMeta(event),
-    );
-  }
-
-  async applyPendingInstructionsOperation(event, scopeRef: PlatformScopeRef, operation: PendingInstructionsOperation) {
-    if (this.activeTurns?.hasAnyActiveTurn?.()) {
-      return messageResponse([
-        this.t('coordinator.instructions.blocked'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    try {
-      const snapshot = operation.kind === 'clear'
-        ? await this.codexInstructionsManager.clearInstructions()
-        : await this.codexInstructionsManager.writeInstructions(operation.proposedContent);
-      this.clearPendingInstructionsCapture(event);
-      this.clearPendingInstructionsOperation(scopeRef);
-      const reconnectSummary = await this.reconnectCodexBackedProfiles();
-      return messageResponse(renderInstructionsSavedLines({
-        action: operation.kind === 'clear' ? 'cleared' : 'saved',
-        snapshot,
-        reconnectSummary,
-      }, this.currentI18n), this.buildScopedSessionMeta(event));
-    } catch (error) {
-      return messageResponse([
-        this.t('coordinator.instructions.failed', { error: formatUserError(error) }),
-      ], this.buildScopedSessionMeta(event));
-    }
-  }
-
-  cancelInstructionsEdit(event) {
-    const scopeRef = toScopeRef(event);
-    if (!this.hasPendingInstructionsCapture(event) && !this.getPendingInstructionsOperation(scopeRef)) {
-      return messageResponse([
-        this.t('coordinator.instructions.editNotPending'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    this.clearPendingInstructionsCapture(event);
-    this.clearPendingInstructionsOperation(scopeRef);
-    return messageResponse([
-      this.t('coordinator.instructions.editCancelled'),
-    ], this.buildScopedSessionMeta(event));
   }
 
   renderLoginAccountLines(account, { includePrefix = false } = {}) {
@@ -4987,100 +4838,7 @@ export class BridgeCoordinator {
   }
 
   async handleInstructionsCommand(event, args) {
-    const scopeRef = toScopeRef(event);
-    const normalizedArgs = Array.isArray(args) ? args.map((value) => String(value ?? '').trim()) : [];
-    const action = String(normalizedArgs[0] ?? '').trim().toLowerCase();
-    if (!action) {
-      return this.renderInstructionsStatus(event);
-    }
-    if (HELP_FLAG_SET.has(action)) {
-      return this.handleHelpsCommand(event, ['instructions']);
-    }
-    if (action === 'cancel') {
-      return this.cancelInstructionsEdit(event);
-    }
-    if (['ok', 'confirm'].includes(action)) {
-      const operation = this.getPendingInstructionsOperation(scopeRef);
-      if (!operation) {
-        return messageResponse([
-          this.t('coordinator.instructions.noDraft'),
-        ], this.buildScopedSessionMeta(event));
-      }
-      return this.applyPendingInstructionsOperation(event, scopeRef, operation);
-    }
-    if (action === 'clear') {
-      if (normalizedArgs.length > 1) {
-        return this.handleHelpsCommand(event, ['instructions']);
-      }
-      return this.proposeInstructionsClear(event, scopeRef);
-    }
-    if (action === 'edit') {
-      const editInstruction = extractInstructionsEditBody(event.text);
-      if (!editInstruction) {
-        this.setPendingInstructionsCapture(event);
-        return messageResponse([
-          this.t('coordinator.instructions.editArmed'),
-          this.t('coordinator.instructions.editHint'),
-        ], this.buildScopedSessionMeta(event));
-      }
-      return this.handleInstructionsNaturalCommand(event, scopeRef, {
-        subcommand: 'edit',
-        userInput: editInstruction,
-      });
-    }
-    if (action === 'set') {
-      const inlineContent = extractInstructionsInlineContent(event.text);
-      if (!inlineContent) {
-        this.setPendingInstructionsCapture(event);
-        return messageResponse([
-          this.t('coordinator.instructions.editArmed'),
-          this.t('coordinator.instructions.editHint'),
-        ], this.buildScopedSessionMeta(event));
-      }
-      return this.proposeInstructionsLiteralReplace(event, scopeRef, inlineContent, 'set');
-    }
-    const rawInput = compactWhitespace(normalizedArgs.join(' '));
-    if (!rawInput) {
-      return this.handleHelpsCommand(event, ['instructions']);
-    }
-    return this.handleInstructionsNaturalCommand(event, scopeRef, {
-      subcommand: 'natural',
-      userInput: rawInput,
-    });
-  }
-
-  async handleInstructionsNaturalCommand(
-    event: InboundTextEvent,
-    scopeRef: PlatformScopeRef,
-    {
-      subcommand,
-      userInput,
-    }: {
-      subcommand: 'natural' | 'edit';
-      userInput: string;
-    },
-  ) {
-    const currentInstructions = await this.codexInstructionsManager.readInstructions();
-    const pendingDraft = this.getPendingInstructionsOperation(scopeRef);
-    const commandResult = await this.normalizeInstructionsCommandWithCodex(event, scopeRef, {
-      subcommand,
-      userInput,
-      currentInstructions,
-      pendingDraft,
-    }).catch(() => null);
-    if (!commandResult) {
-      return messageResponse([
-        this.t('coordinator.instructions.parseFailed'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    return this.handleInstructionsCommandSkillResult(
-      event,
-      scopeRef,
-      userInput,
-      currentInstructions,
-      commandResult,
-      pendingDraft,
-    );
+    return this.instructionsCommands.handle(event, args);
   }
 
   async normalizeInstructionsCommandWithCodex(
@@ -5124,59 +4882,6 @@ export class BridgeCoordinator {
       }),
       parseResult: parseInstructionsCommandSkillResult,
     });
-  }
-
-  handleInstructionsCommandSkillResult(
-    event: InboundTextEvent,
-    scopeRef: PlatformScopeRef,
-    rawInput: string,
-    currentInstructions: CodexInstructionsSnapshot,
-    result: InstructionsCommandSkillResult,
-    pendingDraft: PendingInstructionsOperation | null = null,
-  ) {
-    if (result.action === 'clarify') {
-      return this.renderInstructionsClarifyResponse(event, result.question, result.candidates);
-    }
-    if (result.action === 'reject' || result.action === 'local_only') {
-      return messageResponse([
-        result.reason || this.t('coordinator.instructions.parseFailed'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    const operation = buildPendingInstructionsOperationFromSkillResult({
-      now: this.now(),
-      rawInput,
-      result,
-      currentContent: currentInstructions.content,
-      pendingDraft,
-    });
-    if (!operation) {
-      return messageResponse([
-        this.t('coordinator.instructions.parseFailed'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    this.clearPendingInstructionsCapture(event);
-    this.setPendingInstructionsOperation(scopeRef, operation);
-    return messageResponse(
-      buildInstructionsDraftResponseLines(operation, {}, this.currentI18n),
-      this.buildScopedSessionMeta(event),
-    );
-  }
-
-  renderInstructionsClarifyResponse(event: InboundTextEvent, question: string, candidates: Array<Record<string, unknown>>) {
-    const lines = [
-      question || this.t('coordinator.instructions.parseFailed'),
-    ];
-    if (Array.isArray(candidates) && candidates.length > 0) {
-      lines.push(this.t('coordinator.instructions.candidatesTitle'));
-      for (const [index, candidate] of candidates.slice(0, MAX_CLARIFY_CANDIDATES).entries()) {
-        const label = [
-          candidate.index ? `${candidate.index}.` : `${index + 1}.`,
-          compactWhitespace(candidate.label ?? candidate.title ?? candidate.kind ?? this.t('common.unknown')),
-        ].filter(Boolean).join(' ');
-        lines.push(label);
-      }
-    }
-    return messageResponse(lines, this.buildScopedSessionMeta(event));
   }
 
   async handleFastCommand(event, args) {
