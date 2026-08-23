@@ -4781,7 +4781,7 @@ test('/todo and /as natural language list queries stay local instead of creating
   assert.equal(openai.startTurnCalls.length, 0);
 });
 
-test('/as list defaults to todo records and keeps index actions aligned', async () => {
+test('bare /as defaults to todo records and keeps index actions aligned', async () => {
   const defaultCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-assistant-as-list-todo-default-'));
   const { runtime } = makeRuntime({ defaultCwd });
   const scopeId = 'wx-user-assistant-as-list-todo-default-1';
@@ -4810,7 +4810,7 @@ test('/as list defaults to todo records and keeps index actions aligned', async 
   const list = await runtime.services.bridgeCoordinator.handleInboundEvent({
     platform: 'weixin',
     externalScopeId: scopeId,
-    text: '/as list',
+    text: '/as',
   });
   const listText = list.messages.map((message) => message.text ?? '').join('\n');
   assert.match(listText, /助理记录 \| 待办/);
