@@ -887,7 +887,6 @@ export class BridgeCoordinator {
   pluginBrowserStates: Map<any, PluginBrowserState>;
   mcpBrowserStates: Map<any, McpBrowserState>;
   pendingPluginAliasDraftsByScope: Map<string, PendingPluginAliasDraft>;
-  pendingThreadOperationsByScope: Map<string, PendingThreadCommandOperation>;
   localeOverridesByScope: Map<string, SupportedLocale>;
   instructionsCommands: InstructionsCommandService<CoordinatorResponse>;
   modelCommands: ModelCommandService<CoordinatorResponse>;
@@ -897,7 +896,7 @@ export class BridgeCoordinator {
   pendingNewSessionsByScope: Map<string, PendingNewSessionRequest>;
   localeContext: AsyncLocalStorage<SupportedLocale>;
   i18n: Translator;
-  threadCommands: ThreadCommandService<any, CoordinatorResponse>;
+  threadCommands: ThreadCommandService<any, CoordinatorResponse, string[]>;
 
   constructor({
     bridgeSessions,
@@ -959,7 +958,6 @@ export class BridgeCoordinator {
     this.pluginBrowserStates = new Map();
     this.mcpBrowserStates = new Map();
     this.pendingPluginAliasDraftsByScope = new Map();
-    this.pendingThreadOperationsByScope = new Map();
     this.localeOverridesByScope = new Map();
     this.pendingAutomationDraftsByScope = new Map();
     this.pendingAgentDraftsByScope = new Map();
@@ -967,8 +965,16 @@ export class BridgeCoordinator {
     this.localeContext = new AsyncLocalStorage();
     this.i18n = createI18n(locale);
     this.threadCommands = new ThreadCommandService({
-      confirm: (event) => this.handleThreadsConfirmCommand(event),
-      cancel: (event) => this.handleThreadsCancelCommand(event),
+      getScopeKey: (event) => buildThreadOperationKey(toScopeRef(event)),
+      rejectConfirm: (event) => this.rejectIfActiveTurnForCommand(event, 'threads'),
+      applyPending: (event, operation) => this.applyPendingThreadOperation(event, operation),
+      renderConfirmed: (event, operation, lines) => this.renderConfirmedThreadOperation(event, operation, lines),
+      renderNoPending: (event) => messageResponse([
+        this.t('coordinator.threads.noPendingOperation'),
+      ], this.buildScopedSessionMeta(event)),
+      renderCancelled: (event) => messageResponse([
+        this.t('coordinator.threads.pendingCancelled'),
+      ], this.buildScopedSessionMeta(event)),
       renderHome: (event, options) => this.renderThreadsHomePage(event, options),
       natural: (event, args) => this.handleThreadsNaturalCommand(event, args),
       areExplicitTargets: (event, args) => this.areExplicitThreadTargets(event, args),
@@ -1907,15 +1913,15 @@ export class BridgeCoordinator {
   }
 
   getPendingThreadOperation(scopeRef: PlatformScopeRef): PendingThreadCommandOperation | null {
-    return this.pendingThreadOperationsByScope.get(buildThreadOperationKey(scopeRef)) ?? null;
+    return this.threadCommands.getPendingOperation(buildThreadOperationKey(scopeRef));
   }
 
   setPendingThreadOperation(scopeRef: PlatformScopeRef, operation: PendingThreadCommandOperation) {
-    this.pendingThreadOperationsByScope.set(buildThreadOperationKey(scopeRef), operation);
+    this.threadCommands.setPendingOperation(buildThreadOperationKey(scopeRef), operation);
   }
 
   clearPendingThreadOperation(scopeRef: PlatformScopeRef) {
-    this.pendingThreadOperationsByScope.delete(buildThreadOperationKey(scopeRef));
+    this.threadCommands.clearPendingOperation(buildThreadOperationKey(scopeRef));
   }
 
   getPendingAutomationDraft(scopeRef: PlatformScopeRef): PendingAutomationDraft | null {
@@ -3522,17 +3528,10 @@ export class BridgeCoordinator {
   }
 
   async handleThreadsConfirmCommand(event) {
-    const activeResponse = await this.rejectIfActiveTurnForCommand(event, 'threads');
-    if (activeResponse) {
-      return activeResponse;
-    }
-    const scopeRef = toScopeRef(event);
-    const operation = this.getPendingThreadOperation(scopeRef);
-    if (!operation) {
-      return messageResponse([
-        this.t('coordinator.threads.noPendingOperation'),
-      ], this.buildScopedSessionMeta(event));
-    }
+    return this.threadCommands.confirm(event);
+  }
+
+  async applyPendingThreadOperation(event, operation: PendingThreadCommandOperation): Promise<string[]> {
     const result = await this.executeResolvedThreadOperation(event, operation.kind, operation.threads.map((thread) => ({
       ok: true as const,
       providerProfileId: operation.providerProfileId,
@@ -3540,23 +3539,16 @@ export class BridgeCoordinator {
       archivedAt: thread.archivedAt,
       pinnedAt: thread.pinnedAt,
     })));
-    const lines = result.lines;
-    this.clearPendingThreadOperation(scopeRef);
+    return result.lines;
+  }
+
+  renderConfirmedThreadOperation(event, operation: PendingThreadCommandOperation, lines: string[]) {
     lines.push(formatThreadOperationAction(operation.kind, this.currentI18n));
     return messageResponse(lines, this.buildScopedSessionMeta(event));
   }
 
   async handleThreadsCancelCommand(event) {
-    const scopeRef = toScopeRef(event);
-    if (!this.getPendingThreadOperation(scopeRef)) {
-      return messageResponse([
-        this.t('coordinator.threads.noPendingOperation'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    this.clearPendingThreadOperation(scopeRef);
-    return messageResponse([
-      this.t('coordinator.threads.pendingCancelled'),
-    ], this.buildScopedSessionMeta(event));
+    return this.threadCommands.cancel(event);
   }
 
   async cleanupInternalProviderThreads({

@@ -8231,6 +8231,18 @@ test('/threads confirm retains a pending pin operation when persistence throws',
   }
 });
 
+test('BridgeCoordinator delegates pending thread operation state and terminal routing to ThreadCommandService', () => {
+  const source = fs.readFileSync(
+    path.join(process.cwd(), 'src', 'core', 'bridge_coordinator.ts'),
+    'utf8',
+  );
+  assert.doesNotMatch(source, /pendingThreadOperationsByScope/u);
+  assert.match(source, /return this\.threadCommands\.getPendingOperation\(buildThreadOperationKey\(scopeRef\)\)/u);
+  assert.match(source, /this\.threadCommands\.setPendingOperation\(buildThreadOperationKey\(scopeRef\), operation\)/u);
+  assert.match(source, /return this\.threadCommands\.confirm\(event\)/u);
+  assert.match(source, /return this\.threadCommands\.cancel\(event\)/u);
+});
+
 test('/threads cancel clears a pending natural-language batch draft', async () => {
   const { runtime, openai } = makeRuntime();
 

@@ -17,14 +17,19 @@ import {
   skillActionToThreadOperationKind,
   threadOperationKindToSkillAction,
   type ThreadCommandInventoryItem,
+  type PendingThreadCommandOperation,
   type ThreadInventoryHost,
 } from '../../src/core/thread_command.js';
 
 test('ThreadCommandService dispatches views and management through its host', async () => {
   const calls: string[] = [];
   const service = new ThreadCommandService<string, string>({
-    confirm: async (event) => record(`confirm:${event}`),
-    cancel: async (event) => record(`cancel:${event}`),
+    getScopeKey: (event) => event,
+    rejectConfirm: async () => null,
+    applyPending: async () => assert.fail('routing test does not confirm pending operations'),
+    renderConfirmed: async () => assert.fail('routing test does not render confirmations'),
+    renderNoPending: async () => 'no-pending',
+    renderCancelled: async () => 'cancelled',
     renderHome: async (event, options) => record(`home:${event}:${options.includeArchived}:${options.onlyPinned}`),
     natural: async (event, args) => record(`natural:${event}:${args.join('|')}`),
     areExplicitTargets: (_event, args) => args[0] === 'thread-1',
@@ -47,6 +52,87 @@ test('ThreadCommandService dispatches views and management through its host', as
     calls.push(value);
     return value;
   }
+});
+
+test('ThreadCommandService isolates pending operations by scope key', () => {
+  const { service } = createPendingOperationHarness();
+  const first = makePendingOperation('thread-1');
+  const second = makePendingOperation('thread-2');
+
+  service.setPendingOperation('scope-1', first);
+  service.setPendingOperation('scope-2', second);
+  assert.equal(service.getPendingOperation('scope-1'), first);
+  assert.equal(service.getPendingOperation('scope-2'), second);
+  service.clearPendingOperation('scope-1');
+  assert.equal(service.getPendingOperation('scope-1'), null);
+  assert.equal(service.getPendingOperation('scope-2'), second);
+});
+
+test('ThreadCommandService confirms pending operations and clears only after success', async () => {
+  const { calls, service } = createPendingOperationHarness();
+  const operation = makePendingOperation('thread-1');
+  service.setPendingOperation('scope-1', operation);
+
+  assert.equal(await service.handle('scope-1', ['confirm']), 'confirmed:thread-1');
+  assert.deepEqual(calls, [
+    'reject:scope-1',
+    'apply:scope-1:thread-1',
+    'render:scope-1:thread-1',
+  ]);
+  assert.equal(service.getPendingOperation('scope-1'), null);
+
+  calls.length = 0;
+  assert.equal(await service.handle('scope-1', ['confirm']), 'no-pending:scope-1');
+  assert.deepEqual(calls, ['reject:scope-1', 'no-pending:scope-1']);
+});
+
+test('ThreadCommandService retains pending operations when confirm is blocked or fails', async () => {
+  {
+    const operation = makePendingOperation('blocked-thread');
+    const { calls, service } = createPendingOperationHarness({ activeResponse: 'active-turn' });
+    service.setPendingOperation('scope-1', operation);
+
+    assert.equal(await service.handle('scope-1', ['confirm']), 'active-turn');
+    assert.deepEqual(calls, ['reject:scope-1']);
+    assert.equal(service.getPendingOperation('scope-1'), operation);
+  }
+
+  {
+    const operation = makePendingOperation('failed-thread');
+    const { calls, service } = createPendingOperationHarness({ confirmError: new Error('persist failed') });
+    service.setPendingOperation('scope-1', operation);
+
+    await assert.rejects(() => service.handle('scope-1', ['confirm']), /persist failed/u);
+    assert.deepEqual(calls, ['reject:scope-1', 'apply:scope-1:failed-thread']);
+    assert.equal(service.getPendingOperation('scope-1'), operation);
+  }
+});
+
+test('ThreadCommandService clears an applied operation before rendering the confirmation', async () => {
+  const operation = makePendingOperation('render-failed-thread');
+  const { calls, service } = createPendingOperationHarness({ renderError: new Error('render failed') });
+  service.setPendingOperation('scope-1', operation);
+
+  await assert.rejects(() => service.handle('scope-1', ['confirm']), /render failed/u);
+  assert.deepEqual(calls, [
+    'reject:scope-1',
+    'apply:scope-1:render-failed-thread',
+    'render:scope-1:render-failed-thread',
+  ]);
+  assert.equal(service.getPendingOperation('scope-1'), null);
+});
+
+test('ThreadCommandService cancels only an existing pending operation', async () => {
+  const { calls, service } = createPendingOperationHarness();
+  service.setPendingOperation('scope-1', makePendingOperation('thread-1'));
+
+  assert.equal(await service.handle('scope-1', ['cancel']), 'cancelled:scope-1');
+  assert.deepEqual(calls, ['cancelled:scope-1']);
+  assert.equal(service.getPendingOperation('scope-1'), null);
+
+  calls.length = 0;
+  assert.equal(await service.handle('scope-1', ['cancel']), 'no-pending:scope-1');
+  assert.deepEqual(calls, ['no-pending:scope-1']);
 });
 
 test('resolveThreadCommandRoute maps thread command aliases and views', () => {
@@ -657,6 +743,68 @@ function makeInventoryItem(threadId: string): ThreadCommandInventoryItem {
     archivedAt: null,
     pinnedAt: null,
     isCurrent: false,
+  };
+}
+
+function makePendingOperation(threadId: string): PendingThreadCommandOperation {
+  return {
+    kind: 'archive',
+    createdAt: 1,
+    rawInput: `archive ${threadId}`,
+    providerProfileId: 'profile-1',
+    summary: `Archive ${threadId}`,
+    reason: null,
+    threads: [makeInventoryItem(threadId)],
+  };
+}
+
+function createPendingOperationHarness({
+  activeResponse = null,
+  confirmError = null,
+  renderError = null,
+}: {
+  activeResponse?: string | null;
+  confirmError?: Error | null;
+  renderError?: Error | null;
+} = {}) {
+  const calls: string[] = [];
+  const host = {
+    getScopeKey: (event: string) => event,
+    rejectConfirm: async (event: string) => {
+      calls.push(`reject:${event}`);
+      return activeResponse;
+    },
+    applyPending: async (event: string, operation: PendingThreadCommandOperation) => {
+      calls.push(`apply:${event}:${operation.threads[0]?.threadId}`);
+      if (confirmError) {
+        throw confirmError;
+      }
+      return operation.threads[0]?.threadId ?? '';
+    },
+    renderConfirmed: async (event: string, _operation: PendingThreadCommandOperation, threadId: string) => {
+      calls.push(`render:${event}:${threadId}`);
+      if (renderError) {
+        throw renderError;
+      }
+      return `confirmed:${threadId}`;
+    },
+    renderNoPending: async (event: string) => {
+      calls.push(`no-pending:${event}`);
+      return `no-pending:${event}`;
+    },
+    renderCancelled: async (event: string) => {
+      calls.push(`cancelled:${event}`);
+      return `cancelled:${event}`;
+    },
+    renderHome: async () => 'home',
+    natural: async () => 'natural',
+    areExplicitTargets: () => false,
+    manageExplicit: async () => 'explicit',
+    manageNatural: async () => 'management',
+  };
+  return {
+    calls,
+    service: new ThreadCommandService<string, string>(host),
   };
 }
 

@@ -151,9 +151,17 @@ export type ThreadCommandRoute =
   | { kind: 'manage'; operation: ThreadCommandOperationKind; args: unknown[] }
   | { kind: 'natural'; args: unknown[] };
 
-export interface ThreadCommandHost<Event, Response> {
-  confirm(event: Event): Promise<Response>;
-  cancel(event: Event): Promise<Response>;
+export interface ThreadCommandHost<Event, Response, PendingResult = Response> {
+  getScopeKey(event: Event): string;
+  rejectConfirm(event: Event): Promise<Response | null>;
+  applyPending(event: Event, operation: PendingThreadCommandOperation): Promise<PendingResult>;
+  renderConfirmed(
+    event: Event,
+    operation: PendingThreadCommandOperation,
+    result: PendingResult,
+  ): Response | Promise<Response>;
+  renderNoPending(event: Event): Response | Promise<Response>;
+  renderCancelled(event: Event): Response | Promise<Response>;
   renderHome(
     event: Event,
     options: { includeArchived: boolean; onlyPinned: boolean },
@@ -172,20 +180,21 @@ export interface ThreadCommandHost<Event, Response> {
   ): Promise<Response>;
 }
 
-export class ThreadCommandService<Event, Response> {
-  readonly host: ThreadCommandHost<Event, Response>;
+export class ThreadCommandService<Event, Response, PendingResult = Response> {
+  readonly host: ThreadCommandHost<Event, Response, PendingResult>;
+  private readonly pendingOperationsByScope = new Map<string, PendingThreadCommandOperation>();
 
-  constructor(host: ThreadCommandHost<Event, Response>) {
+  constructor(host: ThreadCommandHost<Event, Response, PendingResult>) {
     this.host = host;
   }
 
   async handle(event: Event, args: readonly unknown[] = []): Promise<Response> {
     const route = resolveThreadCommandRoute(args);
     if (route.kind === 'confirm') {
-      return this.host.confirm(event);
+      return this.confirm(event);
     }
     if (route.kind === 'cancel') {
-      return this.host.cancel(event);
+      return this.cancel(event);
     }
     if (route.kind === 'home') {
       return this.host.renderHome(event, route);
@@ -197,6 +206,42 @@ export class ThreadCommandService<Event, Response> {
       return this.host.manageExplicit(event, route.operation, route.args);
     }
     return this.host.manageNatural(event, route.operation, route.args);
+  }
+
+  getPendingOperation(scopeKey: string): PendingThreadCommandOperation | null {
+    return this.pendingOperationsByScope.get(scopeKey) ?? null;
+  }
+
+  setPendingOperation(scopeKey: string, operation: PendingThreadCommandOperation): void {
+    this.pendingOperationsByScope.set(scopeKey, operation);
+  }
+
+  clearPendingOperation(scopeKey: string): void {
+    this.pendingOperationsByScope.delete(scopeKey);
+  }
+
+  async confirm(event: Event): Promise<Response> {
+    const activeResponse = await this.host.rejectConfirm(event);
+    if (activeResponse) {
+      return activeResponse;
+    }
+    const scopeKey = this.host.getScopeKey(event);
+    const operation = this.getPendingOperation(scopeKey);
+    if (!operation) {
+      return this.host.renderNoPending(event);
+    }
+    const result = await this.host.applyPending(event, operation);
+    this.clearPendingOperation(scopeKey);
+    return this.host.renderConfirmed(event, operation, result);
+  }
+
+  async cancel(event: Event): Promise<Response> {
+    const scopeKey = this.host.getScopeKey(event);
+    if (!this.getPendingOperation(scopeKey)) {
+      return this.host.renderNoPending(event);
+    }
+    this.clearPendingOperation(scopeKey);
+    return this.host.renderCancelled(event);
   }
 }
 
