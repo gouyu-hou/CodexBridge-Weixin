@@ -8269,11 +8269,12 @@ test('BridgeCoordinator delegates assistant update-draft terminal routing to Ass
   );
   assert.match(source, /rejectMutation: \(event\) => this\.rejectIfActiveTurnForCommand\(event, 'assistant'\)/u);
   assert.match(source, /applyUpdateDraft: \(draft\) => this\.applyAssistantRecordUpdateDraft\(draft\)/u);
-  assert.match(source, /renderUpdateDraft: \(draft, commandName\) => this\.renderAssistantUpdateDraftLines\(draft, commandName\)/u);
-  assert.match(source, /renderUpdateApplied: \(draft, record, commandName\) => this\.renderAssistantUpdateAppliedLines\(draft, record, commandName\)/u);
-  assert.match(source, /renderEditNeedsText: \(event\) => this\.renderAssistantEditNeedsText\(event\)/u);
-  assert.match(source, /renderEditNoPending: \(event\) => this\.renderAssistantEditNoPending\(event\)/u);
-  assert.match(source, /renderNotFound: \(event\) => this\.renderAssistantNotFound\(event\)/u);
+  assert.match(source, /naturalDecision: \(event, rawInput, forcedType\) => this\.resolveAssistantRecordNaturalDecision\(event, rawInput, forcedType\)/u);
+  assert.match(source, /createPendingRecord: \(event, rawInput, forcedType\) => this\.createAssistantPendingRecord\(event, rawInput, forcedType\)/u);
+  assert.match(source, /from '\.\/assistant_record_command_view\.js'/u);
+  assert.doesNotMatch(source, /renderAssistantUpdateDraftLines/u);
+  assert.doesNotMatch(source, /renderAssistantUpdateAppliedLines/u);
+  assert.doesNotMatch(source, /renderAssistantDetailLines/u);
   const confirmSource = extractCoordinatorMethodSource(source, 'handleAssistantConfirmCommand');
   const cancelSource = extractCoordinatorMethodSource(source, 'handleAssistantCancelPendingCommand');
   assert.match(confirmSource, /return this\.assistantRecordCommands\.confirm\(event, typeFilter\)/u);

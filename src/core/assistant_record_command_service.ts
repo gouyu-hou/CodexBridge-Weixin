@@ -6,6 +6,12 @@ import type {
   PlatformScopeRef,
 } from '../types/core.js';
 import type { InboundTextEvent } from '../types/platform.js';
+import {
+  renderAssistantPendingRecord,
+  renderAssistantRecordDetail,
+  renderAssistantUpdateApplied,
+  renderAssistantUpdateDraft,
+} from './assistant_record_command_view.js';
 
 export type AssistantRecordUpdateAction = 'update' | 'complete' | 'cancel' | 'archive';
 type AssistantRecordTerminalAction = 'confirm' | 'cancel';
@@ -29,6 +35,11 @@ type AssistantRecordLocalQueryIntent = {
   typeFilter: AssistantRecordType | null;
 };
 
+export type AssistantRecordNaturalDecision =
+  | { action: 'create' }
+  | { action: 'none' }
+  | { action: AssistantRecordUpdateAction; draft: PendingAssistantRecordUpdateDraft };
+
 export type AssistantRecordCommandDependencies<Response> = {
   isSupported(): boolean;
   getTranslator(): Translator;
@@ -40,11 +51,9 @@ export type AssistantRecordCommandDependencies<Response> = {
     args: unknown[],
     typeFilter: AssistantRecordType | null,
   ): AssistantRecord | null;
-  renderRecordDetail(record: AssistantRecord): string[];
   completeRecord(record: AssistantRecord): AssistantRecord;
   archiveRecord(record: AssistantRecord): AssistantRecord;
   cancelRecordMutation(record: AssistantRecord): AssistantRecord;
-  renderRecordMutation(action: AssistantRecordExplicitMutationAction, record: AssistantRecord): string[];
   getPendingRecord(event: InboundTextEvent, typeFilter: AssistantRecordType | null): AssistantRecord | null;
   normalizeEdit(
     event: InboundTextEvent,
@@ -58,20 +67,23 @@ export type AssistantRecordCommandDependencies<Response> = {
     input: string,
     forcedType: AssistantRecordType | null,
   ): Promise<AssistantRecord>;
-  renderPendingRecord(record: AssistantRecord, commandName: string): string[];
-  renderEditNeedsText(event: InboundTextEvent): Response;
-  renderEditNoPending(event: InboundTextEvent): Response;
-  renderNotFound(event: InboundTextEvent): Response;
   rejectMutation(event: InboundTextEvent): Promise<Response | null>;
   applyUpdateDraft(draft: PendingAssistantRecordUpdateDraft): AssistantRecord | null;
-  renderUpdateDraft(draft: PendingAssistantRecordUpdateDraft, commandName: string): string[];
-  renderUpdateApplied(draft: PendingAssistantRecordUpdateDraft, record: AssistantRecord, commandName: string): string[];
   renderNoPending(
     event: InboundTextEvent,
     typeFilter: AssistantRecordType | null,
     action: AssistantRecordTerminalAction,
   ): Promise<Response>;
-  natural(event: InboundTextEvent, rawInput: string, forcedType: AssistantRecordType | null): Promise<Response>;
+  naturalDecision(
+    event: InboundTextEvent,
+    rawInput: string,
+    forcedType: AssistantRecordType | null,
+  ): Promise<AssistantRecordNaturalDecision>;
+  createPendingRecord(
+    event: InboundTextEvent,
+    rawInput: string,
+    forcedType: AssistantRecordType | null,
+  ): Promise<AssistantRecord>;
 };
 
 export class AssistantRecordCommandService<Response> {
@@ -133,7 +145,7 @@ export class AssistantRecordCommandService<Response> {
     if (localQuery) {
       return this.dependencies.renderList(event, localQuery.typeFilter);
     }
-    return this.dependencies.natural(event, rawInput, forcedType);
+    return this.handleNaturalDecision(event, rawInput, forcedType);
   }
 
   getPendingUpdateDraft(scopeRef: PlatformScopeRef): PendingAssistantRecordUpdateDraft | null {
@@ -179,7 +191,7 @@ export class AssistantRecordCommandService<Response> {
       return this.notFound(event);
     }
     return this.dependencies.messageResponse(
-      this.dependencies.renderRecordDetail(record),
+      renderAssistantRecordDetail(record, this.dependencies.getTranslator()),
       this.dependencies.buildSessionMeta(event),
     );
   }
@@ -200,7 +212,11 @@ export class AssistantRecordCommandService<Response> {
         ? this.dependencies.archiveRecord(record)
         : this.dependencies.cancelRecordMutation(record);
     return this.dependencies.messageResponse(
-      this.dependencies.renderRecordMutation(action, updatedRecord),
+      [this.dependencies.getTranslator().t(action === 'complete'
+        ? 'coordinator.assistant.done'
+        : action === 'archive'
+          ? 'coordinator.assistant.deleted'
+          : 'coordinator.assistant.cancelled', { title: updatedRecord.title })],
       this.dependencies.buildSessionMeta(event),
     );
   }
@@ -212,7 +228,9 @@ export class AssistantRecordCommandService<Response> {
   ): Promise<Response> {
     const input = args.join(' ').trim();
     if (!input) {
-      return this.dependencies.renderEditNeedsText(event);
+      return this.dependencies.messageResponse([
+        this.dependencies.getTranslator().t('coordinator.assistant.editNeedsText'),
+      ], this.dependencies.buildSessionMeta(event));
     }
     const scopeRef = toAssistantRecordScopeRef(event);
     const updateDraft = this.getPendingUpdateDraftForType(scopeRef, forcedType);
@@ -227,23 +245,27 @@ export class AssistantRecordCommandService<Response> {
       }
       this.setPendingUpdateDraft(scopeRef, updatedDraft);
       return this.dependencies.messageResponse(
-        this.dependencies.renderUpdateDraft(updatedDraft, assistantCommandNameForType(forcedType)),
+        renderAssistantUpdateDraft(updatedDraft, assistantCommandNameForType(forcedType), this.dependencies.getTranslator()),
         this.dependencies.buildSessionMeta(event),
       );
     }
     const record = this.dependencies.getPendingRecord(event, forcedType);
     if (!record) {
-      return this.dependencies.renderEditNoPending(event);
+      return this.dependencies.messageResponse([
+        this.dependencies.getTranslator().t('coordinator.assistant.noPending'),
+      ], this.dependencies.buildSessionMeta(event));
     }
     const updatedRecord = await this.dependencies.editPendingRecord(event, record, input, forcedType);
     return this.dependencies.messageResponse(
-      this.dependencies.renderPendingRecord(updatedRecord, assistantCommandNameForType(forcedType)),
+      renderAssistantPendingRecord(updatedRecord, assistantCommandNameForType(forcedType), this.dependencies.getTranslator()),
       this.dependencies.buildSessionMeta(event),
     );
   }
 
   private notFound(event: InboundTextEvent): Response {
-    return this.dependencies.renderNotFound(event);
+    return this.dependencies.messageResponse([
+      this.dependencies.getTranslator().t('coordinator.assistant.notFound'),
+    ], this.dependencies.buildSessionMeta(event));
   }
 
   private async handleTerminalAction(
@@ -273,7 +295,28 @@ export class AssistantRecordCommandService<Response> {
     }
     this.clearPendingUpdateDraft(scopeRef);
     return this.dependencies.messageResponse(
-      this.dependencies.renderUpdateApplied(draft, record, commandName),
+      renderAssistantUpdateApplied(draft, record, commandName, this.dependencies.getTranslator()),
+      this.dependencies.buildSessionMeta(event),
+    );
+  }
+
+  private async handleNaturalDecision(
+    event: InboundTextEvent,
+    rawInput: string,
+    forcedType: AssistantRecordType | null,
+  ): Promise<Response> {
+    const decision = await this.dependencies.naturalDecision(event, rawInput, forcedType);
+    const commandName = assistantCommandNameForType(forcedType);
+    if ('draft' in decision) {
+      this.setPendingUpdateDraft(toAssistantRecordScopeRef(event), decision.draft);
+      return this.dependencies.messageResponse(
+        renderAssistantUpdateDraft(decision.draft, commandName, this.dependencies.getTranslator()),
+        this.dependencies.buildSessionMeta(event),
+      );
+    }
+    const record = await this.dependencies.createPendingRecord(event, rawInput, forcedType);
+    return this.dependencies.messageResponse(
+      renderAssistantPendingRecord(record, commandName, this.dependencies.getTranslator()),
       this.dependencies.buildSessionMeta(event),
     );
   }

@@ -4,6 +4,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   AssistantRecordCommandService,
+  type AssistantRecordNaturalDecision,
   assistantCommandNameForType,
   resolveAssistantRecordLocalQueryIntent,
   type AssistantRecordCommandDependencies,
@@ -17,6 +18,17 @@ type CommandCall = {
   name: string;
   args: unknown[];
 };
+
+function makeAssistantRecord(overrides: Partial<AssistantRecord> = {}): AssistantRecord {
+  return {
+    id: 'record-1', type: 'todo', status: 'active', title: 'Prepare estimate', content: '',
+    originalText: 'Prepare estimate', priority: 'normal', project: null, tags: [], dueAt: null,
+    remindAt: null, recurrence: null, timezone: 'Etc/UTC', source: 'weixin', platform: 'weixin',
+    scopeId: 'assistant-command-scope', contextThreadId: null, attachments: [], parseStatus: 'auto',
+    confidence: 0.8, parsedJson: null, lastRemindedAt: null, createdAt: 1, updatedAt: 1,
+    completedAt: null, cancelledAt: null, archivedAt: null, ...overrides,
+  };
+}
 
 function createCommandHarness({ supported = true } = {}) {
   const calls: CommandCall[] = [];
@@ -33,48 +45,44 @@ function createCommandHarness({ supported = true } = {}) {
     isSupported: () => supported,
     getTranslator: () => createI18n('en'),
     buildSessionMeta: (currentEvent) => ({ scope: currentEvent.externalScopeId }),
-    messageResponse: (lines, session) => respond(
-      ['show', 'complete', 'archive', 'cancelRecord', 'editPending'].includes(lines[0] ?? '')
-        ? lines[0]
-        : 'messageResponse',
-      lines,
-      session,
-    ),
+    messageResponse: (lines, session) => {
+      const i18n = createI18n('en');
+      const name = lines[0] === i18n.t('coordinator.assistant.done', { title: 'Prepare estimate' })
+        ? 'complete'
+        : lines[0] === i18n.t('coordinator.assistant.deleted', { title: 'Prepare estimate' })
+          ? 'archive'
+          : lines[0] === i18n.t('coordinator.assistant.cancelled', { title: 'Prepare estimate' })
+            ? 'cancelRecord'
+            : lines[0] === i18n.t('coordinator.assistant.pendingTitle')
+              ? 'editPending'
+              : String(lines[0] ?? '').startsWith('Assistant Record |')
+                ? 'show'
+                : 'messageResponse';
+      return respond(name, lines, session);
+    },
     renderList: (currentEvent, typeFilter, query) => respond(
       'renderList',
       currentEvent,
       typeFilter,
       query,
     ),
-    resolveRecord: () => ({ id: 'record-1', type: 'todo' } as AssistantRecord),
-    renderRecordDetail: () => ['show'],
+    resolveRecord: () => makeAssistantRecord(),
     completeRecord: (record) => record,
     archiveRecord: (record) => record,
     cancelRecordMutation: (record) => record,
-    renderRecordMutation: (action) => [action === 'complete' ? 'complete' : action === 'archive' ? 'archive' : 'cancelRecord'],
-    getPendingRecord: () => ({ id: 'record-1', type: 'todo' } as AssistantRecord),
+    getPendingRecord: () => makeAssistantRecord(),
     normalizeEdit: async () => null,
     editPendingRecord: async (_event, record) => record,
-    renderPendingRecord: () => ['editPending'],
-    renderEditNeedsText: () => 'response:edit-needs-text',
-    renderEditNoPending: () => 'response:edit-no-pending',
-    renderNotFound: () => 'response:not-found',
     rejectMutation: async () => null,
     applyUpdateDraft: () => null,
-    renderUpdateDraft: () => ['update-draft'],
-    renderUpdateApplied: () => ['update-applied'],
     renderNoPending: async (currentEvent, typeFilter, action) => respond(
       'renderNoPending',
       currentEvent,
       typeFilter,
       action,
     ),
-    natural: async (currentEvent, rawInput, forcedType) => respond(
-      'natural',
-      currentEvent,
-      rawInput,
-      forcedType,
-    ),
+    naturalDecision: async () => ({ action: 'none' }),
+    createPendingRecord: async () => makeAssistantRecord(),
   };
   return {
     calls,
@@ -85,7 +93,7 @@ function createCommandHarness({ supported = true } = {}) {
 
 function createTerminalHarness({
   rejection = null as string | null,
-  appliedRecord = { id: 'record-1', type: 'todo', title: 'Updated record' } as AssistantRecord | null,
+  appliedRecord = makeAssistantRecord({ title: 'Updated record' }) as AssistantRecord | null,
 } = {}) {
   const calls: string[] = [];
   const event: InboundTextEvent = {
@@ -105,9 +113,9 @@ function createTerminalHarness({
     rawInput: 'change it',
     instructions: ['change it'],
     targetRecordId: 'record-1',
-    matchedRecord: { id: 'record-1', type: 'todo', title: 'Original record' } as AssistantRecord,
+    matchedRecord: makeAssistantRecord({ title: 'Original record' }),
     action: 'update',
-    updatedRecord: appliedRecord ?? { id: 'record-1', type: 'todo', title: 'Updated record' } as AssistantRecord,
+    updatedRecord: appliedRecord ?? makeAssistantRecord({ title: 'Updated record' }),
     matchedScore: 100,
     normalizedBy: 'local',
     changeSummary: null,
@@ -118,7 +126,7 @@ function createTerminalHarness({
     buildSessionMeta: (currentEvent) => ({ scope: currentEvent.externalScopeId }),
     messageResponse: (lines: string[], session) => {
       messageCalls.push({ lines, session });
-      if (lines[0] === 'applied') {
+      if (lines[0] === createI18n('en').t('coordinator.assistant.updateApplied')) {
         return confirmedResponse;
       }
       if (lines[0] === 'draft') {
@@ -131,22 +139,14 @@ function createTerminalHarness({
     },
     renderList: () => 'response:list',
     resolveRecord: () => null,
-    renderRecordDetail: () => ['detail'],
     completeRecord: (record) => record,
     archiveRecord: (record) => record,
     cancelRecordMutation: (record) => record,
-    renderRecordMutation: () => ['mutation'],
     getPendingRecord: () => null,
     normalizeEdit: async () => null,
     editPendingRecord: async (_event, record) => record,
-    renderPendingRecord: () => ['pending'],
-    renderEditNeedsText: () => 'response:edit-needs-text',
-    renderEditNoPending: () => 'response:edit-no-pending',
-    renderNotFound: (currentEvent) => {
-      calls.push(`render-not-found:${currentEvent.externalScopeId}`);
-      return notFoundResponse;
-    },
-    natural: async () => 'response:natural',
+    naturalDecision: async () => ({ action: 'none' }),
+    createPendingRecord: async () => makeAssistantRecord(),
     rejectMutation: async () => {
       calls.push('reject-active');
       return rejection === null ? null : activeResponse;
@@ -154,14 +154,6 @@ function createTerminalHarness({
     applyUpdateDraft: () => {
       calls.push('apply-update');
       return appliedRecord;
-    },
-    renderUpdateDraft: () => {
-      calls.push('render-draft');
-      return ['draft'];
-    },
-    renderUpdateApplied: () => {
-      calls.push('render-applied');
-      return ['applied'];
     },
     renderNoPending: async () => {
       calls.push('render-no-pending');
@@ -282,7 +274,7 @@ test('assistant record command router preserves explicit action aliases', async 
     assert.equal(response, `response:${current.expectedName}`, current.action);
     assert.equal(calls.length, 1, current.action);
     assert.equal(calls[0].name, current.expectedName, current.action);
-    if (!['show', 'complete', 'archive', 'cancelRecord', 'editPending'].includes(current.expectedName)) {
+    if (!['show', 'complete', 'archive', 'cancelRecord', 'editPending', 'messageResponse'].includes(current.expectedName)) {
       assert.equal(calls[0].args[0], event, current.action);
       assert.deepEqual(calls[0].args.slice(1), current.expectedTail, current.action);
     }
@@ -341,15 +333,15 @@ test('assistant record command router preserves unsupported, usage, and fallback
       name: 'create prefix',
       args: ['新增待办', '检查服务器'],
       forcedType: null,
-      expectedName: 'natural',
-      expectedTail: ['新增待办 检查服务器', null],
+      expectedName: 'editPending',
+      expectedTail: [],
     },
     {
       name: 'natural fallback',
       args: ['把发票事项改成明天完成'],
       forcedType: 'todo',
-      expectedName: 'natural',
-      expectedTail: ['把发票事项改成明天完成', 'todo'],
+      expectedName: 'editPending',
+      expectedTail: [],
     },
   ];
 
@@ -359,8 +351,10 @@ test('assistant record command router preserves unsupported, usage, and fallback
     assert.equal(response, `response:${current.expectedName}`, current.name);
     assert.equal(calls.length, 1, current.name);
     assert.equal(calls[0].name, current.expectedName, current.name);
-    assert.equal(calls[0].args[0], event, current.name);
-    assert.deepEqual(calls[0].args.slice(1), current.expectedTail, current.name);
+    if (!['messageResponse', 'editPending'].includes(current.expectedName)) {
+      assert.equal(calls[0].args[0], event, current.name);
+      assert.deepEqual(calls[0].args.slice(1), current.expectedTail, current.name);
+    }
   }
 });
 
@@ -409,7 +403,7 @@ test('assistant record terminal confirmation applies an update draft after the a
   service.setPendingUpdateDraft(event, draft);
 
   assert.deepEqual(await service.handle(event, ['ok'], null), confirmedResponse);
-  assert.deepEqual(calls, ['reject-active', 'apply-update', 'render-applied']);
+  assert.deepEqual(calls, ['reject-active', 'apply-update']);
   assert.equal(service.getPendingUpdateDraft(event), null);
 });
 
@@ -438,9 +432,11 @@ test('assistant record terminal confirmation retains a draft when a mutation is 
   assert.deepEqual(failed.calls, [
     'reject-active',
     'apply-update',
-    `render-not-found:${failed.event.externalScopeId}`,
   ]);
-  assert.deepEqual(failed.messageCalls, []);
+  assert.deepEqual(failed.messageCalls, [{
+    lines: [createI18n('en').t('coordinator.assistant.notFound')],
+    session: { scope: failed.event.externalScopeId },
+  }]);
   assert.equal(failed.service.getPendingUpdateDraft(failed.event), failed.draft);
 });
 
@@ -463,7 +459,7 @@ test('assistant record service orchestrates explicit record commands through dom
     externalScopeId: 'assistant-explicit-command-scope',
     text: '',
   };
-  const record = { id: 'record-2', type: 'todo', title: 'Prepare estimate' } as AssistantRecord;
+  const record = makeAssistantRecord({ id: 'record-2', title: 'Prepare estimate' });
   const draft: PendingAssistantRecordUpdateDraft = {
     createdAt: 1,
     rawInput: 'make it urgent',
@@ -486,26 +482,18 @@ test('assistant record service orchestrates explicit record commands through dom
   };
   const dependencies: AssistantRecordCommandDependencies<string> = {
     isSupported: () => true,
-    getTranslator: () => {
-      calls.push('translator');
-      return createI18n('en');
-    },
+    getTranslator: () => createI18n('en'),
     buildSessionMeta: (currentEvent) => ({ scope: currentEvent.externalScopeId }),
     messageResponse: (lines) => `message:${lines.join('|')}`,
     renderList: () => 'response:list',
     rejectMutation: async () => null,
     applyUpdateDraft: () => null,
-    renderUpdateDraft: (currentDraft) => [`draft:${currentDraft.updatedRecord.title}`],
-    renderUpdateApplied: () => ['update-applied'],
     renderNoPending: async () => 'response:no-pending',
-    natural: async () => 'response:natural',
+    naturalDecision: async () => ({ action: 'none' }),
+    createPendingRecord: async () => record,
     resolveRecord: (_event, args, typeFilter) => {
       calls.push(`resolve:${String(args[0] ?? '')}:${typeFilter}`);
       return String(args[0] ?? '') === '2' ? record : null;
-    },
-    renderRecordDetail: (resolvedRecord) => {
-      calls.push(`detail:${resolvedRecord.id}`);
-      return [`detail:${resolvedRecord.title}`];
     },
     completeRecord: (resolvedRecord) => {
       calls.push(`complete:${resolvedRecord.id}`);
@@ -519,62 +507,42 @@ test('assistant record service orchestrates explicit record commands through dom
       calls.push(`cancel:${resolvedRecord.id}`);
       return { ...resolvedRecord, status: 'cancelled' } as AssistantRecord;
     },
-    renderRecordMutation: (action, updatedRecord) => {
-      calls.push(`render:${action}:${updatedRecord.id}`);
-      return [`${action}:${updatedRecord.title}`];
-    },
     getPendingRecord: () => null,
     normalizeEdit: async (_event, currentDraft, input, typeFilter) => {
       calls.push(`normalize:${currentDraft.targetRecordId}:${input}:${typeFilter}`);
       return editedDraft;
     },
     editPendingRecord: async () => record,
-    renderPendingRecord: () => ['pending'],
-    renderEditNeedsText: (currentEvent) => {
-      calls.push(`render-edit-needs-text:${currentEvent.externalScopeId}`);
-      return 'response:edit-needs-text';
-    },
-    renderEditNoPending: (currentEvent) => {
-      calls.push(`render-edit-no-pending:${currentEvent.externalScopeId}`);
-      return 'response:edit-no-pending';
-    },
-    renderNotFound: (currentEvent) => {
-      calls.push(`render-not-found:${currentEvent.externalScopeId}`);
-      return 'response:not-found';
-    },
   };
   const service = new AssistantRecordCommandService(dependencies);
 
-  assert.equal(await service.handle(event, ['show', '2'], 'todo'), 'message:detail:Prepare estimate');
-  assert.deepEqual(calls.splice(0), ['resolve:2:todo', 'detail:record-2']);
+  assert.match(await service.handle(event, ['show', '2'], 'todo'), /^message:Assistant Record \| Prepare estimate/u);
+  assert.deepEqual(calls.splice(0), ['resolve:2:todo']);
 
   assert.equal(
     await service.handle(event, ['show', 'bad'], 'todo'),
-    'response:not-found',
+    `message:${createI18n('en').t('coordinator.assistant.notFound')}`,
   );
   assert.deepEqual(calls.splice(0), [
     'resolve:bad:todo',
-    `render-not-found:${event.externalScopeId}`,
   ]);
 
   assert.equal(
     await service.handle(event, ['edit'], 'todo'),
-    'response:edit-needs-text',
+    `message:${createI18n('en').t('coordinator.assistant.editNeedsText')}`,
   );
   assert.deepEqual(calls.splice(0), [
-    `render-edit-needs-text:${event.externalScopeId}`,
   ]);
 
   assert.equal(
     await service.handle(event, ['edit', 'add', 'a', 'client', 'summary'], 'todo'),
-    'response:edit-no-pending',
+    `message:${createI18n('en').t('coordinator.assistant.noPending')}`,
   );
   assert.deepEqual(calls.splice(0), [
-    `render-edit-no-pending:${event.externalScopeId}`,
   ]);
 
   service.setPendingUpdateDraft(event, draft);
-  assert.equal(await service.handle(event, ['edit', 'add', 'a', 'client', 'summary'], 'todo'), 'message:draft:Prepare urgent estimate');
+  assert.match(await service.handle(event, ['edit', 'add', 'a', 'client', 'summary'], 'todo'), /Found a likely matching assistant record/u);
   assert.deepEqual(calls.splice(0), [
     'normalize:record-2:add a client summary:todo',
   ]);
@@ -586,11 +554,73 @@ test('assistant record service orchestrates explicit record commands through dom
     ['cancel', 'cancel:record-2'],
   ] as const) {
     const mutationAction = action === 'done' ? 'complete' : action === 'delete' ? 'archive' : 'cancel';
-    assert.equal(await service.handle(event, [action, '2'], 'todo'), `message:${mutationAction}:Prepare estimate`);
+    assert.equal(await service.handle(event, [action, '2'], 'todo'), `message:${createI18n('en').t(
+      mutationAction === 'complete'
+        ? 'coordinator.assistant.done'
+        : mutationAction === 'archive'
+          ? 'coordinator.assistant.deleted'
+          : 'coordinator.assistant.cancelled',
+      { title: record.title },
+    )}`);
     assert.deepEqual(calls.splice(0), [
       'resolve:2:todo',
       expected,
-      `render:${mutationAction}:record-2`,
     ]);
   }
+});
+
+test('assistant record service stages update decisions and keeps create and none on the legacy pending-create fallback', async () => {
+  const event: InboundTextEvent = {
+    platform: 'weixin',
+    externalScopeId: 'assistant-natural-decision-scope',
+    text: '',
+  };
+  const record = makeAssistantRecord({ id: 'record-3', title: 'Prepare estimate' });
+  const updateDraft: PendingAssistantRecordUpdateDraft = {
+    createdAt: 1,
+    rawInput: 'Mark it complete',
+    instructions: ['Mark it complete'],
+    targetRecordId: record.id,
+    matchedRecord: record,
+    action: 'complete',
+    updatedRecord: { ...record, status: 'done' } as AssistantRecord,
+    matchedScore: 90,
+    normalizedBy: 'codex',
+    changeSummary: null,
+  };
+  let decision: AssistantRecordNaturalDecision = { action: 'none' };
+  const calls: string[] = [];
+  const service = new AssistantRecordCommandService<string>({
+    isSupported: () => true,
+    getTranslator: () => createI18n('en'),
+    buildSessionMeta: () => ({}),
+    messageResponse: (lines) => lines.join('|'),
+    renderList: () => 'list',
+    resolveRecord: () => null,
+    completeRecord: (value) => value,
+    archiveRecord: (value) => value,
+    cancelRecordMutation: (value) => value,
+    getPendingRecord: () => null,
+    normalizeEdit: async () => null,
+    editPendingRecord: async (_currentEvent, value) => value,
+    rejectMutation: async () => null,
+    applyUpdateDraft: () => null,
+    renderNoPending: async () => 'no-pending',
+    naturalDecision: async () => decision,
+    createPendingRecord: async () => {
+      calls.push('create-pending');
+      return record;
+    },
+  });
+
+  decision = { action: 'complete', draft: updateDraft };
+  await service.handle(event, ['mark', 'it', 'complete'], 'todo');
+  assert.equal(service.getPendingUpdateDraft(event), updateDraft);
+  assert.deepEqual(calls, []);
+
+  decision = { action: 'create' };
+  await service.handle(event, ['new', 'record'], 'todo');
+  decision = { action: 'none' };
+  await service.handle(event, ['unrecognized', 'record'], 'todo');
+  assert.deepEqual(calls, ['create-pending', 'create-pending']);
 });

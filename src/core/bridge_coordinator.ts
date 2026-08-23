@@ -124,9 +124,14 @@ import {
 import {
   AssistantRecordCommandService,
   assistantCommandNameForType,
+  type AssistantRecordNaturalDecision,
   type AssistantRecordUpdateAction,
   type PendingAssistantRecordUpdateDraft,
 } from './assistant_record_command_service.js';
+import {
+  renderAssistantRecordList,
+  renderAssistantSavedRecord,
+} from './assistant_record_command_view.js';
 import {
   createMissionControlledAgentJobView,
 } from './mission_control_agent_job_adapter.js';
@@ -1032,18 +1037,9 @@ export class BridgeCoordinator {
         String(args[0] ?? '').trim(),
         typeFilter,
       ),
-      renderRecordDetail: (record) => this.renderAssistantDetailLines(record),
       completeRecord: (record) => this.assistantRecords.completeRecord(record.id),
       archiveRecord: (record) => this.assistantRecords.archiveRecord(record.id),
       cancelRecordMutation: (record) => this.assistantRecords.cancelRecord(record.id),
-      renderRecordMutation: (action, record) => {
-        const key = action === 'complete'
-          ? 'coordinator.assistant.done'
-          : action === 'archive'
-            ? 'coordinator.assistant.deleted'
-            : 'coordinator.assistant.cancelled';
-        return [this.t(key, { title: record.title })];
-      },
       getPendingRecord: (event, typeFilter) => this.assistantRecords.getLatestPendingForScope(
         toScopeRef(event),
         typeFilter,
@@ -1060,18 +1056,13 @@ export class BridgeCoordinator {
         input,
         forcedType,
       ),
-      renderPendingRecord: (record, commandName) => this.renderAssistantPendingLines(record, commandName),
-      renderEditNeedsText: (event) => this.renderAssistantEditNeedsText(event),
-      renderEditNoPending: (event) => this.renderAssistantEditNoPending(event),
-      renderNotFound: (event) => this.renderAssistantNotFound(event),
       rejectMutation: (event) => this.rejectIfActiveTurnForCommand(event, 'assistant'),
       applyUpdateDraft: (draft) => this.applyAssistantRecordUpdateDraft(draft),
-      renderUpdateDraft: (draft, commandName) => this.renderAssistantUpdateDraftLines(draft, commandName),
-      renderUpdateApplied: (draft, record, commandName) => this.renderAssistantUpdateAppliedLines(draft, record, commandName),
       renderNoPending: (event, typeFilter, action) => action === 'confirm'
         ? this.handleAssistantConfirmPendingRecordCommand(event, typeFilter)
         : this.handleAssistantCancelPendingRecordCommand(event, typeFilter),
-      natural: (event, rawInput, forcedType) => this.handleAssistantNaturalCommand(event, rawInput, forcedType),
+      naturalDecision: (event, rawInput, forcedType) => this.resolveAssistantRecordNaturalDecision(event, rawInput, forcedType),
+      createPendingRecord: (event, rawInput, forcedType) => this.createAssistantPendingRecord(event, rawInput, forcedType),
     });
   }
 
@@ -2259,17 +2250,25 @@ export class BridgeCoordinator {
     return this.assistantRecordCommands.handle(event, args, forcedType);
   }
 
-  async handleAssistantNaturalCommand(event, rawInput: string, forcedType: AssistantRecordType | null) {
+  async resolveAssistantRecordNaturalDecision(
+    event,
+    rawInput: string,
+    forcedType: AssistantRecordType | null,
+  ): Promise<AssistantRecordNaturalDecision> {
     const scopeRef = toScopeRef(event);
-    const commandName = assistantCommandNameForType(forcedType);
     const uploadContext = this.resolveActiveUploadContext(scopeRef);
     if (!uploadContext.state?.active) {
-      const updateDraft = await this.buildAssistantRecordUpdateDraft(event, scopeRef, rawInput, forcedType);
-      if (updateDraft) {
-        this.assistantRecordCommands.setPendingUpdateDraft(scopeRef, updateDraft);
-        return messageResponse(this.renderAssistantUpdateDraftLines(updateDraft, commandName), this.buildScopedSessionMeta(event));
+      const decision = await this.buildAssistantRecordNaturalDecision(event, scopeRef, rawInput, forcedType);
+      if (decision) {
+        return decision;
       }
     }
+    return { action: 'none' };
+  }
+
+  async createAssistantPendingRecord(event, rawInput: string, forcedType: AssistantRecordType | null): Promise<AssistantRecord> {
+    const scopeRef = toScopeRef(event);
+    const uploadContext = this.resolveActiveUploadContext(scopeRef);
     const localDraft = this.assistantRecords.parseDraft(rawInput, forcedType);
     const draft = await this.normalizeAssistantRecordDraft(event, scopeRef, rawInput, forcedType, localDraft);
     const record = await this.assistantRecords.createRecord({
@@ -2286,7 +2285,7 @@ export class BridgeCoordinator {
       await this.removeUploadBatchFiles(uploadContext.session, uploadContext.state);
       this.setUploadsStateForSession(uploadContext.session.id, null);
     }
-    return messageResponse(this.renderAssistantPendingLines(record, commandName), this.buildScopedSessionMeta(event));
+    return record;
   }
 
   async normalizeAssistantRecordDraft(
@@ -2414,7 +2413,10 @@ export class BridgeCoordinator {
       ], this.buildScopedSessionMeta(event));
     }
     const updated = this.assistantRecords.confirmRecord(record.id);
-    return messageResponse(this.renderAssistantSavedLines(updated, assistantCommandNameForType(typeFilter)), this.buildScopedSessionMeta(event));
+    return messageResponse(
+      renderAssistantSavedRecord(updated, assistantCommandNameForType(typeFilter), this.currentI18n),
+      this.buildScopedSessionMeta(event),
+    );
   }
 
   async handleAssistantCancelPendingCommand(event, typeFilter: AssistantRecordType | null) {
@@ -2430,24 +2432,6 @@ export class BridgeCoordinator {
     const updated = this.assistantRecords.cancelRecord(record.id);
     return messageResponse([
       this.t('coordinator.assistant.cancelled', { title: updated.title }),
-    ], this.buildScopedSessionMeta(event));
-  }
-
-  renderAssistantEditNeedsText(event): CoordinatorResponse {
-    return messageResponse([
-      this.t('coordinator.assistant.editNeedsText'),
-    ], this.buildScopedSessionMeta(event));
-  }
-
-  renderAssistantEditNoPending(event): CoordinatorResponse {
-    return messageResponse([
-      this.t('coordinator.assistant.noPending'),
-    ], this.buildScopedSessionMeta(event));
-  }
-
-  renderAssistantNotFound(event): CoordinatorResponse {
-    return messageResponse([
-      this.t('coordinator.assistant.notFound'),
     ], this.buildScopedSessionMeta(event));
   }
 
@@ -2492,12 +2476,12 @@ export class BridgeCoordinator {
     });
   }
 
-  async buildAssistantRecordUpdateDraft(
+  async buildAssistantRecordNaturalDecision(
     event,
     scopeRef: PlatformScopeRef,
     rawInput: string,
     forcedType: AssistantRecordType | null,
-  ): Promise<PendingAssistantRecordUpdateDraft | null> {
+  ): Promise<AssistantRecordNaturalDecision | null> {
     const records = this.assistantRecords.listForScope(scopeRef, forcedType);
     if (records.length === 0) {
       return null;
@@ -2505,7 +2489,7 @@ export class BridgeCoordinator {
     const route = await this.resolveAssistantRecordRoute(event, scopeRef, rawInput, records, forcedType).catch(() => null);
     if (route) {
       if (route.action === 'create' || route.action === 'none') {
-        return null;
+        return { action: route.action };
       }
       const routedRecord = records.find((record) => record.id === route.targetRecordId);
       if (!routedRecord) {
@@ -2517,16 +2501,19 @@ export class BridgeCoordinator {
       const instructions = [rawInput];
       const updatedRecord = await this.previewAssistantRecordAction(event, scopeRef, routedRecord, instructions, resolvedAction, forcedType);
       return {
-        createdAt: this.now(),
-        rawInput,
-        instructions,
-        targetRecordId: routedRecord.id,
-        matchedRecord: cloneAssistantRecord(routedRecord),
         action: resolvedAction,
-        updatedRecord: updatedRecord.record,
-        matchedScore: Math.round(route.confidence * 100),
-        normalizedBy: updatedRecord.normalizedBy,
-        changeSummary: updatedRecord.changeSummary ?? route.reason,
+        draft: {
+          createdAt: this.now(),
+          rawInput,
+          instructions,
+          targetRecordId: routedRecord.id,
+          matchedRecord: cloneAssistantRecord(routedRecord),
+          action: resolvedAction,
+          updatedRecord: updatedRecord.record,
+          matchedScore: Math.round(route.confidence * 100),
+          normalizedBy: updatedRecord.normalizedBy,
+          changeSummary: updatedRecord.changeSummary ?? route.reason,
+        },
       };
     }
     return null;
@@ -2883,169 +2870,10 @@ export class BridgeCoordinator {
     const records = query
       ? this.assistantRecords.searchForScope(scopeRef, query, typeFilter)
       : this.assistantRecords.listForScope(scopeRef, typeFilter);
-    const title = query
-      ? this.t('coordinator.assistant.searchTitle', { query })
-      : this.t('coordinator.assistant.listTitle', { type: this.t(`coordinator.assistant.type.${typeFilter ?? 'all'}`) });
-    if (records.length === 0) {
-      return messageResponse([
-        title,
-        this.t('coordinator.assistant.empty'),
-        this.t('coordinator.assistant.addHint'),
-      ], this.buildScopedSessionMeta(event));
-    }
-    const lines = [
-      title,
-      ...records.slice(0, 10).flatMap((record, index) => this.renderAssistantListItem(record, index + 1)),
-      this.t('coordinator.assistant.listActions'),
-    ];
-    return messageResponse(lines, this.buildScopedSessionMeta(event));
-  }
-
-  renderAssistantListItem(record: AssistantRecord, index: number): string[] {
-    const head = `${index}. [${this.t(`coordinator.assistant.type.${record.type}`)}] ${record.title}`;
-    const lines = [
-      head,
-      this.t('coordinator.assistant.listMeta', {
-        status: this.t(`coordinator.assistant.status.${record.status}`),
-        priority: this.t(`coordinator.assistant.priority.${record.priority}`),
-      }),
-    ];
-    const timeLine = renderAssistantRecordTimeLine(record, this.currentI18n);
-    if (timeLine) {
-      lines.push(timeLine);
-    }
-    if (record.attachments.length > 0) {
-      lines.push(this.t('coordinator.assistant.attachmentCount', { count: record.attachments.length }));
-    }
-    if (record.tags.length > 0) {
-      lines.push(this.t('coordinator.assistant.tagsLine', { value: record.tags.join(', ') }));
-    }
-    return lines;
-  }
-
-  renderAssistantPendingLines(record: AssistantRecord, commandName: string): string[] {
-    const lines = [
-      this.t('coordinator.assistant.pendingTitle'),
-      this.t('coordinator.assistant.detectedType', { type: this.t(`coordinator.assistant.type.${record.type}`) }),
-      this.t('coordinator.assistant.recordTitle', { title: record.title }),
-    ];
-    this.pushAssistantContentLines(lines, record);
-    const timeLine = renderAssistantRecordTimeLine(record, this.currentI18n);
-    if (timeLine) {
-      lines.push(timeLine);
-    }
-    if (record.attachments.length > 0) {
-      lines.push(this.t('coordinator.assistant.attachmentCount', { count: record.attachments.length }));
-    }
-    lines.push(this.t('coordinator.assistant.confirmHint', { command: commandName }));
-    lines.push(this.t('coordinator.assistant.editHint', { command: commandName }));
-    lines.push(this.t('coordinator.assistant.cancelHint', { command: commandName }));
-    return lines;
-  }
-
-  renderAssistantSavedLines(record: AssistantRecord, commandName: string): string[] {
-    const lines = [
-      this.t('coordinator.assistant.saved'),
-      this.t('coordinator.assistant.detectedType', { type: this.t(`coordinator.assistant.type.${record.type}`) }),
-      this.t('coordinator.assistant.recordTitle', { title: record.title }),
-    ];
-    this.pushAssistantContentLines(lines, record);
-    const timeLine = renderAssistantRecordTimeLine(record, this.currentI18n);
-    if (timeLine) {
-      lines.push(timeLine);
-    }
-    if (record.attachments.length > 0) {
-      lines.push(this.t('coordinator.assistant.attachmentCount', { count: record.attachments.length }));
-    }
-    lines.push(this.t('coordinator.assistant.showHint', { command: commandName }));
-    return lines;
-  }
-
-  renderAssistantUpdateDraftLines(draft: PendingAssistantRecordUpdateDraft, commandName = '/as'): string[] {
-    const record = draft.updatedRecord;
-    const lines = [
-      this.t('coordinator.assistant.updateDraftTitle'),
-      this.t('coordinator.assistant.updateDraftTarget', { title: draft.matchedRecord.title }),
-      this.t('coordinator.assistant.updateDraftAction', {
-        action: this.t(`coordinator.assistant.updateAction.${draft.action}`),
-      }),
-      this.t('coordinator.assistant.detectedType', { type: this.t(`coordinator.assistant.type.${record.type}`) }),
-      this.t('coordinator.assistant.statusLine', { value: this.t(`coordinator.assistant.status.${record.status}`) }),
-    ];
-    if (draft.action === 'update') {
-      if (draft.changeSummary) {
-        lines.push(this.t('coordinator.assistant.changeSummary', { value: draft.changeSummary }));
-      }
-      this.pushAssistantContentLines(lines, record);
-      const timeLine = renderAssistantRecordTimeLine(record, this.currentI18n);
-      if (timeLine) {
-        lines.push(timeLine);
-      }
-    }
-    lines.push(this.t('coordinator.assistant.confirmHint', { command: commandName }));
-    lines.push(this.t('coordinator.assistant.editHint', { command: commandName }));
-    lines.push(this.t('coordinator.assistant.cancelHint', { command: commandName }));
-    return lines;
-  }
-
-  renderAssistantUpdateAppliedLines(draft: PendingAssistantRecordUpdateDraft, record: AssistantRecord, commandName = '/as'): string[] {
-    const lines = [
-      this.t('coordinator.assistant.updateApplied'),
-      this.t('coordinator.assistant.updateDraftTarget', { title: draft.matchedRecord.title }),
-      this.t('coordinator.assistant.updateDraftAction', {
-        action: this.t(`coordinator.assistant.updateAction.${draft.action}`),
-      }),
-      this.t('coordinator.assistant.statusLine', { value: this.t(`coordinator.assistant.status.${record.status}`) }),
-    ];
-    if (draft.action === 'update') {
-      if (draft.changeSummary) {
-        lines.push(this.t('coordinator.assistant.changeSummary', { value: draft.changeSummary }));
-      }
-      this.pushAssistantContentLines(lines, record);
-      const timeLine = renderAssistantRecordTimeLine(record, this.currentI18n);
-      if (timeLine) {
-        lines.push(timeLine);
-      }
-    }
-    lines.push(this.t('coordinator.assistant.showHint', { command: commandName }));
-    return lines;
-  }
-
-  renderAssistantDetailLines(record: AssistantRecord): string[] {
-    const lines = [
-      this.t('coordinator.assistant.detailTitle', { title: record.title }),
-      this.t('coordinator.assistant.detectedType', { type: this.t(`coordinator.assistant.type.${record.type}`) }),
-      this.t('coordinator.assistant.statusLine', { value: this.t(`coordinator.assistant.status.${record.status}`) }),
-      this.t('coordinator.assistant.priorityLine', { value: this.t(`coordinator.assistant.priority.${record.priority}`) }),
-    ];
-    if (record.content) {
-      this.pushAssistantContentLines(lines, record);
-    }
-    const timeLine = renderAssistantRecordTimeLine(record, this.currentI18n);
-    if (timeLine) {
-      lines.push(timeLine);
-    }
-    if (record.tags.length > 0) {
-      lines.push(this.t('coordinator.assistant.tagsLine', { value: record.tags.join(', ') }));
-    }
-    if (record.attachments.length > 0) {
-      lines.push(this.t('coordinator.assistant.attachmentsTitle', { count: record.attachments.length }));
-      for (const attachment of record.attachments) {
-        lines.push(`${attachment.filename}`);
-        lines.push(attachment.storagePath);
-      }
-    }
-    lines.push(this.t('coordinator.assistant.detailActions'));
-    return lines;
-  }
-
-  pushAssistantContentLines(lines: string[], record: AssistantRecord): void {
-    const content = String(record?.content ?? '').trim();
-    if (!content) {
-      return;
-    }
-    lines.push(this.t('coordinator.assistant.contentLabel'));
-    lines.push(content);
+    return messageResponse(
+      renderAssistantRecordList(records, typeFilter, query, this.currentI18n),
+      this.buildScopedSessionMeta(event),
+    );
   }
 
   resolveActiveUploadContext(scopeRef: PlatformScopeRef): { session: any | null; state: UploadBatchState | null } {
@@ -15659,42 +15487,6 @@ function parseExplicitLocale(value) {
 function normalizeCommandName(value) {
   const normalized = String(value ?? '').trim().toLowerCase();
   return COMMAND_CANONICAL_NAME_MAP.get(normalized) ?? normalized;
-}
-
-function renderAssistantRecordTimeLine(record: AssistantRecord, i18n: Translator): string {
-  if (record.type === 'reminder' && record.remindAt) {
-    return i18n.t('coordinator.assistant.remindAtLine', {
-      value: formatDateTimeForAssistant(record.remindAt, record.timezone),
-    });
-  }
-  if (record.type === 'todo' && record.dueAt) {
-    return i18n.t('coordinator.assistant.dueAtLine', {
-      value: formatDateTimeForAssistant(record.dueAt, record.timezone),
-    });
-  }
-  if (record.recurrence) {
-    return i18n.t('coordinator.assistant.recurrenceLine', {
-      value: record.recurrence,
-    });
-  }
-  return '';
-}
-
-function formatDateTimeForAssistant(timestamp: number, timezone: string | null = null): string {
-  if (!Number.isFinite(timestamp)) {
-    return '';
-  }
-  const resolvedTimezone = normalizeAssistantPromptTimezone(timezone);
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: resolvedTimezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  return `${formatter.format(new Date(timestamp))} ${resolvedTimezone === 'Etc/UTC' ? 'UTC' : resolvedTimezone}`;
 }
 
 function inferAssistantRecordNaturalAction(input: string): AssistantRecordUpdateAction | null {
