@@ -4927,6 +4927,91 @@ test('/uploads plus assistant command archives attachments onto assistant record
   assert.equal((settings?.metadata?.uploads as any) ?? null, null);
 });
 
+test('assistant natural create keeps its original upload snapshot when a later batch starts during routing', async () => {
+  const defaultCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-assistant-upload-race-'));
+  const laterUpload = createTempAttachment('later.pdf', 'later-upload');
+  const scopeId = 'wx-user-assistant-upload-race-1';
+  const { runtime, openai } = makeRuntime({ defaultCwd });
+  const coordinator = runtime.services.bridgeCoordinator;
+
+  await coordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: scopeId,
+    text: '/note existing record',
+  });
+  const existingRecordId = runtime.repositories.assistantRecords.list()[0]?.id;
+  assert.ok(existingRecordId);
+
+  const originalStartTurn = openai.startTurn.bind(openai);
+  let releaseRoute: () => void = () => {};
+  const routeGate = new Promise<void>((resolve) => {
+    releaseRoute = resolve;
+  });
+  let signalRouteStarted: () => void = () => {};
+  const routeStarted = new Promise<void>((resolve) => {
+    signalRouteStarted = resolve;
+  });
+  openai.startTurn = async (args: any) => {
+    const input = normalizeCommandSkillInput(args.inputText);
+    if (input.includes('docs/command-skills/assistant-record.md') && input.includes('"operation": "route_existing_record"')) {
+      signalRouteStarted();
+      await routeGate;
+      return {
+        outputText: JSON.stringify({
+          action: 'create',
+          targetRecordId: null,
+          targetIndex: null,
+          type: 'note',
+          reason: 'new record',
+          confidence: 0.96,
+        }),
+        turnId: `${args.bridgeSession.codexThreadId}-route-race`,
+        threadId: args.bridgeSession.codexThreadId,
+        title: args.bridgeSession.title,
+      };
+    }
+    return originalStartTurn(args);
+  };
+
+  const createResult = coordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: scopeId,
+    text: '/note new record while routing',
+  });
+  await routeStarted;
+
+  await coordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: scopeId,
+    text: '/uploads',
+  });
+  await coordinator.handleInboundEvent({
+    platform: 'weixin',
+    externalScopeId: scopeId,
+    text: '',
+    attachments: [{
+      kind: 'file',
+      localPath: laterUpload,
+      fileName: 'later.pdf',
+      mimeType: 'application/pdf',
+    }],
+  });
+
+  releaseRoute();
+  await createResult;
+
+  const created = runtime.repositories.assistantRecords.list().find((record) => record.id !== existingRecordId);
+  assert.ok(created);
+  assert.equal(created.attachments.length, 0);
+  const session = runtime.services.bridgeSessions.resolveScopeSession({
+    platform: 'weixin',
+    externalScopeId: scopeId,
+  });
+  const uploadState = runtime.services.bridgeSessions.getSessionSettings(session.id)?.metadata?.uploads as any;
+  assert.equal(uploadState?.active, true);
+  assert.equal(uploadState?.items?.length, 1);
+});
+
 test('/models lists available models for the current provider', async () => {
   const { runtime } = makeRuntime();
 
@@ -8270,7 +8355,7 @@ test('BridgeCoordinator delegates assistant update-draft terminal routing to Ass
   assert.match(source, /rejectMutation: \(event\) => this\.rejectIfActiveTurnForCommand\(event, 'assistant'\)/u);
   assert.match(source, /applyUpdateDraft: \(draft\) => this\.applyAssistantRecordUpdateDraft\(draft\)/u);
   assert.match(source, /naturalDecision: \(event, rawInput, forcedType\) => this\.resolveAssistantRecordNaturalDecision\(event, rawInput, forcedType\)/u);
-  assert.match(source, /createPendingRecord: \(event, rawInput, forcedType\) => this\.createAssistantPendingRecord\(event, rawInput, forcedType\)/u);
+  assert.match(source, /createPendingRecord: \(event, rawInput, forcedType, createContext\) => this\.createAssistantPendingRecord\(event, rawInput, forcedType, createContext\)/u);
   assert.match(source, /from '\.\/assistant_record_command_view\.js'/u);
   assert.doesNotMatch(source, /renderAssistantUpdateDraftLines/u);
   assert.doesNotMatch(source, /renderAssistantUpdateAppliedLines/u);

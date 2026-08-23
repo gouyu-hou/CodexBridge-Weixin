@@ -163,3 +163,43 @@ test('assistant record view renders pending, saved, update, and detail records i
     ], locale);
   }
 });
+
+test('assistant record view keeps localized time lines and UTC fallbacks stable', () => {
+  const timestamp = Date.UTC(2026, 0, 2, 3, 4);
+  const expected = {
+    'zh-CN': {
+      due: '到期：2026-01-02, 03:04 UTC',
+      reminder: '提醒：2026-01-02, 03:04 UTC',
+      recurrence: '重复：每周一',
+      recurrenceValue: '每周一',
+    },
+    en: {
+      due: 'Due: 2026-01-02, 03:04 UTC',
+      reminder: 'Remind: 2026-01-02, 03:04 UTC',
+      recurrence: 'Recurrence: every Monday',
+      recurrenceValue: 'every Monday',
+    },
+  } as const;
+  for (const locale of ['zh-CN', 'en'] as const) {
+    const i18n = createI18n(locale);
+    assert.ok(renderAssistantRecordListItem(makeRecord({
+      dueAt: timestamp,
+      timezone: ' ',
+    }), 1, i18n).includes(expected[locale].due));
+    assert.ok(renderAssistantRecordListItem(makeRecord({
+      type: 'reminder',
+      dueAt: null,
+      remindAt: timestamp,
+      timezone: '',
+    }), 1, i18n).includes(expected[locale].reminder));
+    assert.ok(renderAssistantRecordListItem(makeRecord({
+      dueAt: null,
+      recurrence: expected[locale].recurrenceValue,
+    }), 1, i18n).includes(expected[locale].recurrence));
+    const nonFinite = renderAssistantRecordListItem(makeRecord({
+      dueAt: Number.NaN,
+      recurrence: null,
+    }), 1, i18n);
+    assert.equal(nonFinite.some((line) => line.startsWith(locale === 'en' ? 'Due:' : '到期：')), false);
+  }
+});

@@ -632,6 +632,20 @@ type AssistantRecordRouteDecision = {
   type: AssistantRecordType | null;
 };
 
+type AssistantRecordUploadSnapshot = {
+  session: BridgeSession | null;
+  state: UploadBatchState | null;
+};
+
+type AssistantRecordCreateContext = {
+  uploadSnapshot: AssistantRecordUploadSnapshot;
+};
+
+type AssistantRecordNaturalRouteDecision =
+  | { action: 'create' }
+  | { action: 'none' }
+  | { action: AssistantRecordUpdateAction; draft: PendingAssistantRecordUpdateDraft };
+
 type AssistantRecordRewriteCandidate = {
   action: AssistantRecordUpdateAction;
   type: AssistantRecordType;
@@ -897,7 +911,7 @@ export class BridgeCoordinator {
   modelCommands: ModelCommandService<CoordinatorResponse>;
   pendingAutomationDraftsByScope: Map<string, PendingAutomationOperation>;
   pendingAgentDraftsByScope: Map<string, PendingAgentOperation>;
-  assistantRecordCommands: AssistantRecordCommandService<CoordinatorResponse>;
+  assistantRecordCommands: AssistantRecordCommandService<CoordinatorResponse, AssistantRecordCreateContext>;
   pendingNewSessionsByScope: Map<string, PendingNewSessionRequest>;
   localeContext: AsyncLocalStorage<SupportedLocale>;
   i18n: Translator;
@@ -1062,7 +1076,7 @@ export class BridgeCoordinator {
         ? this.handleAssistantConfirmPendingRecordCommand(event, typeFilter)
         : this.handleAssistantCancelPendingRecordCommand(event, typeFilter),
       naturalDecision: (event, rawInput, forcedType) => this.resolveAssistantRecordNaturalDecision(event, rawInput, forcedType),
-      createPendingRecord: (event, rawInput, forcedType) => this.createAssistantPendingRecord(event, rawInput, forcedType),
+      createPendingRecord: (event, rawInput, forcedType, createContext) => this.createAssistantPendingRecord(event, rawInput, forcedType, createContext),
     });
   }
 
@@ -2254,27 +2268,34 @@ export class BridgeCoordinator {
     event,
     rawInput: string,
     forcedType: AssistantRecordType | null,
-  ): Promise<AssistantRecordNaturalDecision> {
+  ): Promise<AssistantRecordNaturalDecision<AssistantRecordCreateContext>> {
     const scopeRef = toScopeRef(event);
-    const uploadContext = this.resolveActiveUploadContext(scopeRef);
-    if (!uploadContext.state?.active) {
+    const createContext: AssistantRecordCreateContext = {
+      uploadSnapshot: this.resolveActiveUploadContext(scopeRef),
+    };
+    if (!createContext.uploadSnapshot.state?.active) {
       const decision = await this.buildAssistantRecordNaturalDecision(event, scopeRef, rawInput, forcedType);
       if (decision) {
-        return decision;
+        return 'draft' in decision ? decision : { ...decision, createContext };
       }
     }
-    return { action: 'none' };
+    return { action: 'none', createContext };
   }
 
-  async createAssistantPendingRecord(event, rawInput: string, forcedType: AssistantRecordType | null): Promise<AssistantRecord> {
+  async createAssistantPendingRecord(
+    event,
+    rawInput: string,
+    forcedType: AssistantRecordType | null,
+    createContext: AssistantRecordCreateContext,
+  ): Promise<AssistantRecord> {
     const scopeRef = toScopeRef(event);
-    const uploadContext = this.resolveActiveUploadContext(scopeRef);
+    const uploadContext = createContext.uploadSnapshot;
     const localDraft = this.assistantRecords.parseDraft(rawInput, forcedType);
     const draft = await this.normalizeAssistantRecordDraft(event, scopeRef, rawInput, forcedType, localDraft);
     const record = await this.assistantRecords.createRecord({
       scopeRef,
       source: event.platform === 'telegram' ? 'telegram' : 'weixin',
-      contextThreadId: uploadContext.session?.codexThreadId ?? this.bridgeSessions.resolveScopeSession(scopeRef)?.codexThreadId ?? null,
+      contextThreadId: uploadContext.session?.codexThreadId ?? null,
       timezone: extractEventTimezone(event),
       draft,
       status: 'pending',
@@ -2481,7 +2502,7 @@ export class BridgeCoordinator {
     scopeRef: PlatformScopeRef,
     rawInput: string,
     forcedType: AssistantRecordType | null,
-  ): Promise<AssistantRecordNaturalDecision | null> {
+  ): Promise<AssistantRecordNaturalRouteDecision | null> {
     const records = this.assistantRecords.listForScope(scopeRef, forcedType);
     if (records.length === 0) {
       return null;
@@ -2876,7 +2897,7 @@ export class BridgeCoordinator {
     );
   }
 
-  resolveActiveUploadContext(scopeRef: PlatformScopeRef): { session: any | null; state: UploadBatchState | null } {
+  resolveActiveUploadContext(scopeRef: PlatformScopeRef): AssistantRecordUploadSnapshot {
     const session = this.bridgeSessions.resolveScopeSession(scopeRef);
     if (!session) {
       return { session: null, state: null };

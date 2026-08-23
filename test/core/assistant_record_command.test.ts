@@ -81,7 +81,7 @@ function createCommandHarness({ supported = true } = {}) {
       typeFilter,
       action,
     ),
-    naturalDecision: async () => ({ action: 'none' }),
+    naturalDecision: async () => ({ action: 'none', createContext: undefined }),
     createPendingRecord: async () => makeAssistantRecord(),
   };
   return {
@@ -145,7 +145,7 @@ function createTerminalHarness({
     getPendingRecord: () => null,
     normalizeEdit: async () => null,
     editPendingRecord: async (_event, record) => record,
-    naturalDecision: async () => ({ action: 'none' }),
+    naturalDecision: async () => ({ action: 'none', createContext: undefined }),
     createPendingRecord: async () => makeAssistantRecord(),
     rejectMutation: async () => {
       calls.push('reject-active');
@@ -489,7 +489,7 @@ test('assistant record service orchestrates explicit record commands through dom
     rejectMutation: async () => null,
     applyUpdateDraft: () => null,
     renderNoPending: async () => 'response:no-pending',
-    naturalDecision: async () => ({ action: 'none' }),
+    naturalDecision: async () => ({ action: 'none', createContext: undefined }),
     createPendingRecord: async () => record,
     resolveRecord: (_event, args, typeFilter) => {
       calls.push(`resolve:${String(args[0] ?? '')}:${typeFilter}`);
@@ -588,7 +588,7 @@ test('assistant record service stages update decisions and keeps create and none
     normalizedBy: 'codex',
     changeSummary: null,
   };
-  let decision: AssistantRecordNaturalDecision = { action: 'none' };
+  let decision: AssistantRecordNaturalDecision = { action: 'none', createContext: undefined };
   const calls: string[] = [];
   const service = new AssistantRecordCommandService<string>({
     isSupported: () => true,
@@ -618,9 +618,9 @@ test('assistant record service stages update decisions and keeps create and none
   assert.equal(service.getPendingUpdateDraft(event), updateDraft);
   assert.deepEqual(calls, []);
 
-  decision = { action: 'create' };
+  decision = { action: 'create', createContext: undefined };
   await service.handle(event, ['new', 'record'], 'todo');
-  decision = { action: 'none' };
+  decision = { action: 'none', createContext: undefined };
   await service.handle(event, ['unrecognized', 'record'], 'todo');
   assert.deepEqual(calls, ['create-pending', 'create-pending']);
 });

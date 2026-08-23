@@ -35,12 +35,12 @@ type AssistantRecordLocalQueryIntent = {
   typeFilter: AssistantRecordType | null;
 };
 
-export type AssistantRecordNaturalDecision =
-  | { action: 'create' }
-  | { action: 'none' }
+export type AssistantRecordNaturalDecision<CreateContext = undefined> =
+  | { action: 'create'; createContext: CreateContext }
+  | { action: 'none'; createContext: CreateContext }
   | { action: AssistantRecordUpdateAction; draft: PendingAssistantRecordUpdateDraft };
 
-export type AssistantRecordCommandDependencies<Response> = {
+export type AssistantRecordCommandDependencies<Response, CreateContext = undefined> = {
   isSupported(): boolean;
   getTranslator(): Translator;
   buildSessionMeta(event: InboundTextEvent): unknown;
@@ -78,18 +78,19 @@ export type AssistantRecordCommandDependencies<Response> = {
     event: InboundTextEvent,
     rawInput: string,
     forcedType: AssistantRecordType | null,
-  ): Promise<AssistantRecordNaturalDecision>;
+  ): Promise<AssistantRecordNaturalDecision<CreateContext>>;
   createPendingRecord(
     event: InboundTextEvent,
     rawInput: string,
     forcedType: AssistantRecordType | null,
+    createContext: CreateContext,
   ): Promise<AssistantRecord>;
 };
 
-export class AssistantRecordCommandService<Response> {
+export class AssistantRecordCommandService<Response, CreateContext = undefined> {
   private readonly pendingUpdateDraftsByScope = new Map<string, PendingAssistantRecordUpdateDraft>();
 
-  constructor(private readonly dependencies: AssistantRecordCommandDependencies<Response>) {}
+  constructor(private readonly dependencies: AssistantRecordCommandDependencies<Response, CreateContext>) {}
 
   async handle(
     event: InboundTextEvent,
@@ -314,7 +315,7 @@ export class AssistantRecordCommandService<Response> {
         this.dependencies.buildSessionMeta(event),
       );
     }
-    const record = await this.dependencies.createPendingRecord(event, rawInput, forcedType);
+    const record = await this.dependencies.createPendingRecord(event, rawInput, forcedType, decision.createContext);
     return this.dependencies.messageResponse(
       renderAssistantPendingRecord(record, commandName, this.dependencies.getTranslator()),
       this.dependencies.buildSessionMeta(event),
