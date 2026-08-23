@@ -32,6 +32,7 @@ import {
   replaceContextTokensForAccount,
 } from './official/context_tokens.js';
 import { renderAdminHtml } from './admin_page.js';
+import { resolveWeixinAdminRoute } from './admin_route.js';
 
 type QrLoginImpl = typeof officialQrLogin;
 
@@ -417,191 +418,139 @@ export class WeixinAdminServer {
       return;
     }
 
-    const modelRoute = pathname.match(/^\/api\/provider-profiles\/([^/]+)\/models(\/refresh)?$/u);
-    if (modelRoute && req.method === 'GET' && !modelRoute[2]) {
-      await this.handleProviderModels(res, modelRoute[1] ?? '', false);
-      return;
-    }
-
-    const usageRoute = pathname.match(/^\/api\/provider-profiles\/([^/]+)\/usage(\/refresh)?$/u);
-    if (usageRoute && req.method === 'GET' && !usageRoute[2]) {
-      await this.handleProviderUsage(res, usageRoute[1] ?? '', false);
-      return;
-    }
-    if (usageRoute && req.method === 'POST' && usageRoute[2] === '/refresh') {
-      await this.handleProviderUsage(res, usageRoute[1] ?? '', true);
-      return;
-    }
-    if (modelRoute && req.method === 'POST' && modelRoute[2] === '/refresh') {
-      await this.handleProviderModels(res, modelRoute[1] ?? '', true);
-      return;
-    }
-
-    if (req.method === 'GET' && pathname === '/') {
-      this.writeHtml(res, renderAdminHtml(this.adminToken, this.cspNonce));
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/admin/admin.css') {
-      this.writeAdminAsset(res, 'admin.css', 'text/css; charset=utf-8');
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/admin/admin.js') {
-      this.writeAdminAsset(res, 'admin.js', 'text/javascript; charset=utf-8');
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/favicon.ico') {
-      this.writeIcon(res);
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/favicon.png') {
-      this.writePngIcon(res);
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/donate/wechat-reward.png') {
-      this.writeDonateQr(res);
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/api/state') {
-      this.writeJson(res, 200, this.buildState());
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/api/metrics') {
-      this.writeJson(res, 200, this.bridgeControl?.getMetrics?.() ?? {});
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/metrics/reset') {
-      if (typeof this.bridgeControl?.resetMetrics !== 'function') {
-        this.writeJson(res, 409, { error: 'metrics reset is unavailable' });
+    const route = resolveWeixinAdminRoute(req.method ?? '', pathname);
+    switch (route.kind) {
+      case 'provider-models':
+        await this.handleProviderModels(res, route.providerProfileId, route.forceRefresh);
         return;
-      }
-      this.writeJson(res, 200, {
-        ok: true,
-        metrics: this.bridgeControl.resetMetrics(),
-      });
-      return;
+      case 'provider-usage':
+        await this.handleProviderUsage(res, route.providerProfileId, route.forceRefresh);
+        return;
+      case 'admin-page':
+        this.writeHtml(res, renderAdminHtml(this.adminToken, this.cspNonce));
+        return;
+      case 'admin-css':
+        this.writeAdminAsset(res, 'admin.css', 'text/css; charset=utf-8');
+        return;
+      case 'admin-js':
+        this.writeAdminAsset(res, 'admin.js', 'text/javascript; charset=utf-8');
+        return;
+      case 'favicon-ico':
+        this.writeIcon(res);
+        return;
+      case 'favicon-png':
+        this.writePngIcon(res);
+        return;
+      case 'donate-qr':
+        this.writeDonateQr(res);
+        return;
+      case 'state':
+        this.writeJson(res, 200, this.buildState());
+        return;
+      case 'metrics':
+        this.writeJson(res, 200, this.bridgeControl?.getMetrics?.() ?? {});
+        return;
+      case 'reset-metrics':
+        if (typeof this.bridgeControl?.resetMetrics !== 'function') {
+          this.writeJson(res, 409, { error: 'metrics reset is unavailable' });
+          return;
+        }
+        this.writeJson(res, 200, { ok: true, metrics: this.bridgeControl.resetMetrics() });
+        return;
+      case 'run-diagnostics':
+        await this.handleRunDiagnostics(res);
+        return;
+      case 'setup-test':
+        await this.handleSetupTest(req, res);
+        return;
+      case 'alert-test':
+        await this.handleAlertTest(req, res);
+        return;
+      case 'page-heartbeat':
+        await this.handlePageHeartbeat(req, res, url.searchParams);
+        return;
+      case 'page-close':
+        await this.handlePageClose(req, res, url.searchParams);
+        return;
+      case 'service-shutdown':
+        await this.handleServiceShutdown(req, res);
+        return;
+      case 'accounts':
+        this.writeJson(res, 200, { accounts: this.listAccounts() });
+        return;
+      case 'sessions':
+        this.writeJson(res, 200, this.buildSessionsResponse(url.searchParams));
+        return;
+      case 'session-history':
+        this.writeJson(res, 200, this.buildSessionHistoryResponse(route.sessionId, url.searchParams));
+        return;
+      case 'patch-session':
+        await this.handlePatchSession(req, res, route.sessionId);
+        return;
+      case 'delete-session':
+        this.handleDeleteSession(res, route.sessionId);
+        return;
+      case 'logs':
+        this.writeJson(res, 200, this.readLogs({
+          lineLimit: parsePositiveInt(url.searchParams.get('limit'), DEFAULT_LOG_LINE_LIMIT, MAX_LOG_LINE_LIMIT),
+        }));
+        return;
+      case 'cleanup-logs':
+        await this.handleCleanupLogs(res);
+        return;
+      case 'update-settings':
+        await this.handleUpdateSettings(req, res);
+        return;
+      case 'sync-ccswitch-provider':
+        await this.handleSyncCcswitchProvider(req, res);
+        return;
+      case 'complete-setup':
+        await this.handleCompleteSetup(req, res);
+        return;
+      case 'export-diagnostic':
+        this.writeJsonDownload(res, this.buildDiagnosticExportPayload(), 'codexbridge-weixin-diagnostic');
+        return;
+      case 'export':
+        this.writeJsonDownload(res, this.buildExportPayload(), 'codexbridge-weixin-backup');
+        return;
+      case 'import':
+        await this.handleImport(req, res);
+        return;
+      case 'patch-account':
+        await this.handlePatchAccount(req, res, route.accountId);
+        return;
+      case 'delete-account':
+        this.handleDeleteAccount(res, route.accountId);
+        return;
+      case 'set-primary':
+        await this.handleSetPrimary(req, res);
+        return;
+      case 'retry-delivery-outbox':
+        await this.handleRetryDeliveryOutbox(res);
+        return;
+      case 'bridge-start':
+        await this.handleBridgeStart(res);
+        return;
+      case 'bridge-stop':
+        await this.handleBridgeStop(res);
+        return;
+      case 'bridge-restart':
+        await this.handleBridgeRestart(res);
+        return;
+      case 'start-pairing':
+        await this.handleStartPairing(req, res);
+        return;
+      case 'current-pairing':
+        this.writeJson(res, 200, { pairing: this.serializePairing(this.currentPairing) });
+        return;
+      case 'cancel-pairing':
+        this.cancelPairing('cancelled');
+        this.writeJson(res, 200, { pairing: this.serializePairing(this.currentPairing) });
+        return;
+      case 'not-found':
+        this.writeJson(res, 404, { error: 'not found' });
+        return;
     }
-    if (req.method === 'POST' && pathname === '/api/diagnostics/run') {
-      await this.handleRunDiagnostics(res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/setup/test') {
-      await this.handleSetupTest(req, res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/alert/test') {
-      await this.handleAlertTest(req, res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/page/heartbeat') {
-      await this.handlePageHeartbeat(req, res, url.searchParams);
-      return;
-    }
-    if ((req.method === 'POST' || req.method === 'GET') && pathname === '/api/page/close') {
-      await this.handlePageClose(req, res, url.searchParams);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/service/shutdown') {
-      await this.handleServiceShutdown(req, res);
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/api/accounts') {
-      this.writeJson(res, 200, { accounts: this.listAccounts() });
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/api/sessions') {
-      this.writeJson(res, 200, this.buildSessionsResponse(url.searchParams));
-      return;
-    }
-    if (req.method === 'GET' && pathname.startsWith('/api/sessions/') && pathname.endsWith('/history')) {
-      const rawSessionId = pathname.slice('/api/sessions/'.length, -'/history'.length);
-      this.writeJson(res, 200, this.buildSessionHistoryResponse(rawSessionId, url.searchParams));
-      return;
-    }
-    if (req.method === 'PATCH' && pathname.startsWith('/api/sessions/')) {
-      await this.handlePatchSession(req, res, pathname.slice('/api/sessions/'.length));
-      return;
-    }
-    if (req.method === 'DELETE' && pathname.startsWith('/api/sessions/')) {
-      this.handleDeleteSession(res, pathname.slice('/api/sessions/'.length));
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/api/logs') {
-      this.writeJson(res, 200, this.readLogs({
-        lineLimit: parsePositiveInt(url.searchParams.get('limit'), DEFAULT_LOG_LINE_LIMIT, MAX_LOG_LINE_LIMIT),
-      }));
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/logs/cleanup') {
-      await this.handleCleanupLogs(res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/settings') {
-      await this.handleUpdateSettings(req, res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/model-provider/sync-ccswitch') {
-      await this.handleSyncCcswitchProvider(req, res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/setup/complete') {
-      await this.handleCompleteSetup(req, res);
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/api/export/diagnostic') {
-      this.writeJsonDownload(res, this.buildDiagnosticExportPayload(), 'codexbridge-weixin-diagnostic');
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/api/export') {
-      this.writeJsonDownload(res, this.buildExportPayload(), 'codexbridge-weixin-backup');
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/import') {
-      await this.handleImport(req, res);
-      return;
-    }
-    if (req.method === 'PATCH' && pathname.startsWith('/api/accounts/')) {
-      await this.handlePatchAccount(req, res, pathname.slice('/api/accounts/'.length));
-      return;
-    }
-    if (req.method === 'DELETE' && pathname.startsWith('/api/accounts/')) {
-      this.handleDeleteAccount(res, pathname.slice('/api/accounts/'.length));
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/primary') {
-      await this.handleSetPrimary(req, res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/delivery-outbox/retry') {
-      await this.handleRetryDeliveryOutbox(res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/bridge/start') {
-      await this.handleBridgeStart(res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/bridge/stop') {
-      await this.handleBridgeStop(res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/bridge/restart') {
-      await this.handleBridgeRestart(res);
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/pairing/start') {
-      await this.handleStartPairing(req, res);
-      return;
-    }
-    if (req.method === 'GET' && pathname === '/api/pairing/current') {
-      this.writeJson(res, 200, { pairing: this.serializePairing(this.currentPairing) });
-      return;
-    }
-    if (req.method === 'POST' && pathname === '/api/pairing/cancel') {
-      this.cancelPairing('cancelled');
-      this.writeJson(res, 200, { pairing: this.serializePairing(this.currentPairing) });
-      return;
-    }
-
-    this.writeJson(res, 404, { error: 'not found' });
   }
 
   private async handleProviderModels(
