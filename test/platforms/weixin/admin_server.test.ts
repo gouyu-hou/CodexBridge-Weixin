@@ -31,6 +31,15 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function fetchAdmin(baseUrl: string, pathname: string, init: RequestInit = {}) {
+  const html = await fetch(baseUrl).then((response) => response.text());
+  const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+  assert.ok(token, 'admin page must expose a token for authorized test requests');
+  const headers = new Headers(init.headers);
+  headers.set('x-codexbridge-admin-token', token);
+  return fetch(`${baseUrl}${pathname}`, { ...init, headers });
+}
+
 function makeProviderModelCatalogFake() {
   const calls: Array<{ providerProfileId: string; forceRefresh: boolean }> = [];
   const invalidations: Array<string | undefined> = [];
@@ -415,7 +424,7 @@ test('WeixinAdminServer lists accounts and renders pairing QR data for the panel
 
   const binding = await server.start();
   try {
-    const startResponse = await fetch(`${binding.url}/api/pairing/start`, {
+    const startResponse = await fetchAdmin(binding.url, '/api/pairing/start', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ displayName: 'Friend A' }),
@@ -466,7 +475,7 @@ test('WeixinAdminServer can rename, disable, and delete non-primary accounts', a
 
   const binding = await server.start();
   try {
-    const patchResponse = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+    const patchResponse = await fetchAdmin(binding.url, '/api/accounts/bot-friend', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ displayName: 'Friend B', disabled: true }),
@@ -475,14 +484,14 @@ test('WeixinAdminServer can rename, disable, and delete non-primary accounts', a
     assert.equal(accountStore.loadAccount('bot-friend')?.display_name, 'Friend B');
     assert.equal(accountStore.loadAccount('bot-friend')?.disabled, true);
 
-    const primaryPatch = await fetch(`${binding.url}/api/accounts/bot-primary`, {
+    const primaryPatch = await fetchAdmin(binding.url, '/api/accounts/bot-primary', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ disabled: true }),
     });
     assert.equal(primaryPatch.status, 400);
 
-    const deleteResponse = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+    const deleteResponse = await fetchAdmin(binding.url, '/api/accounts/bot-friend', {
       method: 'DELETE',
     });
     assert.equal(deleteResponse.status, 200);
@@ -520,7 +529,7 @@ test('WeixinAdminServer updates account group, role, permissions, and model defa
 
   const binding = await server.start();
   try {
-    const patchResponse = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+    const patchResponse = await fetchAdmin(binding.url, '/api/accounts/bot-friend', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -611,7 +620,7 @@ test('WeixinAdminServer validates account model defaults against the automatic p
 
   const binding = await server.start();
   try {
-    const patch = (modelProvider: Record<string, string>) => fetch(`${binding.url}/api/accounts/bot-friend`, {
+    const patch = (modelProvider: Record<string, string>) => fetchAdmin(binding.url, '/api/accounts/bot-friend', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ modelProvider }),
@@ -723,7 +732,7 @@ test('WeixinAdminServer preserves unavailable account model triples only for the
   const server = new WeixinAdminServer({ accountStore, stateDir, repositories, providerModelCatalog: catalog, port: 0 });
   const binding = await server.start();
   const patch = (accountId: string, modelProvider: Record<string, string>, extra: Record<string, unknown> = {}) => (
-    fetch(`${binding.url}/api/accounts/${accountId}`, {
+    fetchAdmin(binding.url, `/api/accounts/${accountId}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ ...extra, modelProvider }),
@@ -794,7 +803,7 @@ test('WeixinAdminServer preserves an unchanged orphan triple when provider profi
   const server = new WeixinAdminServer({ accountStore, stateDir, repositories, providerModelCatalog: catalog, port: 0 });
   const binding = await server.start();
   const patch = (accountId: string, modelProvider: Record<string, string>) => (
-    fetch(`${binding.url}/api/accounts/${accountId}`, {
+    fetchAdmin(binding.url, `/api/accounts/${accountId}`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ modelProvider }),
@@ -847,7 +856,7 @@ test('WeixinAdminServer sanitizes account catalog errors before updating the acc
   const server = new WeixinAdminServer({ accountStore, stateDir, repositories, providerModelCatalog: catalog, port: 0 });
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/accounts/bot-friend`, {
+    const response = await fetchAdmin(binding.url, '/api/accounts/bot-friend', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -905,7 +914,7 @@ test('WeixinAdminServer switches the primary account and persists service env', 
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/primary`, {
+    const response = await fetchAdmin(binding.url, '/api/primary', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ accountId: 'bot-friend' }),
@@ -959,16 +968,16 @@ test('WeixinAdminServer controls bridge start and stop from the panel API', asyn
 
   const binding = await server.start();
   try {
-    const stopResponse = await fetch(`${binding.url}/api/bridge/stop`, { method: 'POST' });
+    const stopResponse = await fetchAdmin(binding.url, '/api/bridge/stop', { method: 'POST' });
     assert.equal(stopResponse.status, 200);
     const stopBody = await stopResponse.json() as any;
     assert.equal(stopBody.bridge.running, false);
 
-    const startResponse = await fetch(`${binding.url}/api/bridge/start`, { method: 'POST' });
+    const startResponse = await fetchAdmin(binding.url, '/api/bridge/start', { method: 'POST' });
     assert.equal(startResponse.status, 200);
     const startBody = await startResponse.json() as any;
     assert.equal(startBody.bridge.running, true);
-    const restartResponse = await fetch(`${binding.url}/api/bridge/restart`, { method: 'POST' });
+    const restartResponse = await fetchAdmin(binding.url, '/api/bridge/restart', { method: 'POST' });
     assert.equal(restartResponse.status, 200);
     const restartBody = await restartResponse.json() as any;
     assert.equal(restartBody.bridge.running, true);
@@ -1266,6 +1275,71 @@ test('WeixinAdminServer protects browser mutations with same-origin token checks
   }
 });
 
+test('WeixinAdminServer requires an admin token for every state-changing request', async () => {
+  const stateDir = makeTempStateDir();
+  const accountStore = new WeixinAccountStore({ rootDir: path.join(stateDir, 'weixin', 'accounts') });
+  let stopCalls = 0;
+  const shutdownReasons: string[] = [];
+  const server = new WeixinAdminServer({
+    accountStore,
+    stateDir,
+    port: 0,
+    bridgeControl: {
+      async start() {},
+      async stop() { stopCalls += 1; },
+      async restart() {},
+      status() { return { running: true }; },
+    },
+    serviceControl: {
+      shutdown(reason) { shutdownReasons.push(String(reason ?? '')); },
+    },
+    pageCloseShutdownGraceMs: 5,
+  });
+  const binding = await server.start();
+  try {
+    const html = await fetch(binding.url).then((response) => response.text());
+    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
+    assert.ok(token);
+
+    const unauthorizedPost = await fetch(`${binding.url}/api/bridge/stop`, { method: 'POST' });
+    assert.equal(unauthorizedPost.status, 403);
+    assert.deepEqual(await unauthorizedPost.json(), { error: 'missing or invalid admin token' });
+    assert.equal(stopCalls, 0);
+
+    const authorizedPost = await fetch(`${binding.url}/api/bridge/stop`, {
+      method: 'POST',
+      headers: { 'x-codexbridge-admin-token': token },
+    });
+    assert.equal(authorizedPost.status, 200);
+    assert.equal(stopCalls, 1);
+
+    for (const request of [
+      { method: 'PATCH', path: '/api/sessions/missing' },
+      { method: 'DELETE', path: '/api/sessions/missing' },
+    ]) {
+      const response = await fetch(`${binding.url}${request.path}`, { method: request.method });
+      assert.equal(response.status, 403, `${request.method} must require a token`);
+      assert.deepEqual(await response.json(), { error: 'missing or invalid admin token' });
+    }
+
+    const unauthorizedBeacon = await fetch(
+      `${binding.url}/api/page/close?pageId=page-unauthorized&shutdownOnClose=1`,
+    );
+    assert.equal(unauthorizedBeacon.status, 403);
+    assert.deepEqual(await unauthorizedBeacon.json(), { error: 'missing or invalid admin token' });
+    assert.deepEqual(shutdownReasons, []);
+
+    const authorizedBeacon = await fetch(
+      `${binding.url}/api/page/close?pageId=page-authorized&shutdownOnClose=1&adminToken=${encodeURIComponent(token)}`,
+    );
+    assert.equal(authorizedBeacon.status, 200);
+    await sleep(10);
+    assert.deepEqual(shutdownReasons, ['admin-page-closed']);
+  } finally {
+    await server.stop();
+  }
+});
+
 test('WeixinAdminServer serves the fixed admin stylesheet with security headers', async () => {
   const stateDir = makeTempStateDir();
   const accountStore = new WeixinAccountStore({
@@ -1356,15 +1430,7 @@ test('WeixinAdminServer accepts browser mutations on the IPv4 loopback range', a
   const server = new WeixinAdminServer({ accountStore, stateDir, host: '127.0.0.2', port: 0 });
   const binding = await server.start();
   try {
-    const html = await fetch(binding.url).then((response) => response.text());
-    const token = html.match(/name="codexbridge-admin-token" content="([a-f0-9]+)"/u)?.[1] ?? '';
-    const response = await fetch(`${binding.url}/api/pairing/cancel`, {
-      method: 'POST',
-      headers: {
-        origin: binding.url,
-        'x-codexbridge-admin-token': token,
-      },
-    });
+    const response = await fetchAdmin(binding.url, '/api/pairing/cancel', { method: 'POST' });
 
     assert.equal(response.status, 200);
   } finally {
@@ -1411,7 +1477,7 @@ test('WeixinAdminServer updates concurrency settings and persists service env', 
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/settings`, {
+    const response = await fetchAdmin(binding.url, '/api/settings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -1512,7 +1578,7 @@ test('WeixinAdminServer exposes structured metrics and resets counters', async (
     assert.equal(metrics.errorBreakdown.poll, 5);
     assert.equal(metrics.replyFailures, 2);
 
-    const resetResponse = await fetch(`${binding.url}/api/metrics/reset`, { method: 'POST' });
+    const resetResponse = await fetchAdmin(binding.url, '/api/metrics/reset', { method: 'POST' });
     assert.equal(resetResponse.status, 200);
     const resetBody = await resetResponse.json() as any;
     assert.equal(resetBody.ok, true);
@@ -1579,7 +1645,7 @@ test('WeixinAdminServer runs diagnostics for service, account, provider, ports, 
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/diagnostics/run`, { method: 'POST' });
+    const response = await fetchAdmin(binding.url, '/api/diagnostics/run', { method: 'POST' });
     assert.equal(response.status, 200);
     const body = await response.json() as any;
     assert.equal(body.summary.failed, 0);
@@ -1645,7 +1711,7 @@ test('WeixinAdminServer exposes focused first-run setup tests with Chinese repai
   const binding = await server.start();
   try {
     for (const target of ['api-key', 'weixin', 'codex-command']) {
-      const response = await fetch(`${binding.url}/api/setup/test`, {
+      const response = await fetchAdmin(binding.url, '/api/setup/test', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ target }),
@@ -1739,7 +1805,7 @@ test('WeixinAdminServer treats Codex Native API degraded health as a warning ins
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/diagnostics/run`, { method: 'POST' });
+    const response = await fetchAdmin(binding.url, '/api/diagnostics/run', { method: 'POST' });
     assert.equal(response.status, 200);
     const body = await response.json() as any;
     const byId = new Map<string, any>(body.checks.map((check: any) => [check.id, check]));
@@ -1831,7 +1897,7 @@ test('WeixinAdminServer ignores degraded native openai-default health when a com
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/diagnostics/run`, { method: 'POST' });
+    const response = await fetchAdmin(binding.url, '/api/diagnostics/run', { method: 'POST' });
     assert.equal(response.status, 200);
     const body = await response.json() as any;
     const byId = new Map<string, any>(body.checks.map((check: any) => [check.id, check]));
@@ -1905,7 +1971,7 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
 
   const binding = await server.start();
   try {
-    const firstResponse = await fetch(`${binding.url}/api/settings`, {
+    const firstResponse = await fetchAdmin(binding.url, '/api/settings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -1948,7 +2014,7 @@ test('WeixinAdminServer updates model provider settings and preserves blank API 
     assert.ok(catalog.invalidations.includes('qwen'));
     assert.ok(providerUsage.invalidations.includes('qwen'));
 
-    const secondResponse = await fetch(`${binding.url}/api/settings`, {
+    const secondResponse = await fetchAdmin(binding.url, '/api/settings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -2021,7 +2087,7 @@ test('WeixinAdminServer preserves official Claude provider capabilities when sav
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/settings`, {
+    const response = await fetchAdmin(binding.url, '/api/settings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -2082,7 +2148,7 @@ test('WeixinAdminServer exposes and completes first-run setup state', async () =
     assert.match(stateBody.setup.checks.node.label, /^Node v/u);
     assert.equal(stateBody.setup.checks.dataDir.path, stateDir);
 
-    const completeResponse = await fetch(`${binding.url}/api/setup/complete`, {
+    const completeResponse = await fetchAdmin(binding.url, '/api/setup/complete', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ skipped: true }),
@@ -2189,7 +2255,7 @@ test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/model-provider/sync-ccswitch`, {
+    const response = await fetchAdmin(binding.url, '/api/model-provider/sync-ccswitch', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ codexHome, persistSource: true }),
@@ -2226,7 +2292,7 @@ test('WeixinAdminServer syncs model provider settings from Codex/CCSwitch config
     assert.equal(unchangedSync.changed, false);
     assert.equal(catalog.invalidations.length, invalidationsAfterManualSync);
 
-    const saveResponse = await fetch(`${binding.url}/api/settings`, {
+    const saveResponse = await fetchAdmin(binding.url, '/api/settings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -2294,7 +2360,7 @@ test('WeixinAdminServer normalizes DeepSeek CCSwitch configs to canonical DeepSe
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/model-provider/sync-ccswitch`, {
+    const response = await fetchAdmin(binding.url, '/api/model-provider/sync-ccswitch', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ codexHome, persistSource: true }),
@@ -2334,7 +2400,7 @@ test('WeixinAdminServer can move model provider settings to a custom service env
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/settings`, {
+    const response = await fetchAdmin(binding.url, '/api/settings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -2395,7 +2461,7 @@ test('WeixinAdminServer compacts large logs and deletes expired rotated logs', a
 
   const binding = await server.start();
   try {
-    const settingsResponse = await fetch(`${binding.url}/api/settings`, {
+    const settingsResponse = await fetchAdmin(binding.url, '/api/settings', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -2441,7 +2507,7 @@ test('WeixinAdminServer manually clears active logs for the panel', async () => 
 
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/logs/cleanup`, { method: 'POST' });
+    const response = await fetchAdmin(binding.url, '/api/logs/cleanup', { method: 'POST' });
     assert.equal(response.status, 200);
     const body = await response.json() as any;
 
@@ -2479,14 +2545,14 @@ test('WeixinAdminServer shuts down the service after an opted-in admin page clos
 
   const binding = await server.start();
   try {
-    const heartbeatResponse = await fetch(`${binding.url}/api/page/heartbeat`, {
+    const heartbeatResponse = await fetchAdmin(binding.url, '/api/page/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pageId: 'page-1', shutdownOnClose: true }),
     });
     assert.equal(heartbeatResponse.status, 200);
 
-    const closeResponse = await fetch(`${binding.url}/api/page/close`, {
+    const closeResponse = await fetchAdmin(binding.url, '/api/page/close', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pageId: 'page-1', shutdownOnClose: true }),
@@ -2520,7 +2586,7 @@ test('WeixinAdminServer accepts a GET close beacon when the admin page unloads',
 
   const binding = await server.start();
   try {
-    const closeResponse = await fetch(`${binding.url}/api/page/close?pageId=page-1&shutdownOnClose=1`);
+    const closeResponse = await fetchAdmin(binding.url, '/api/page/close?pageId=page-1&shutdownOnClose=1');
     assert.equal(closeResponse.status, 200);
 
     await sleep(5);
@@ -2550,9 +2616,9 @@ test('WeixinAdminServer deduplicates close and shutdown requests from the same p
 
   const binding = await server.start();
   try {
-    const closeResponse = await fetch(`${binding.url}/api/page/close?pageId=page-1&shutdownOnClose=1`);
+    const closeResponse = await fetchAdmin(binding.url, '/api/page/close?pageId=page-1&shutdownOnClose=1');
     assert.equal(closeResponse.status, 200);
-    const shutdownResponse = await fetch(`${binding.url}/api/service/shutdown`, {
+    const shutdownResponse = await fetchAdmin(binding.url, '/api/service/shutdown', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ reason: 'admin-page-closed' }),
@@ -2610,12 +2676,12 @@ test('WeixinAdminServer does not shut down for normal admin page heartbeats', as
 
   const binding = await server.start();
   try {
-    await fetch(`${binding.url}/api/page/heartbeat`, {
+    await fetchAdmin(binding.url, '/api/page/heartbeat', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pageId: 'page-1', shutdownOnClose: false }),
     });
-    await fetch(`${binding.url}/api/page/close`, {
+    await fetchAdmin(binding.url, '/api/page/close', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ pageId: 'page-1', shutdownOnClose: false }),
@@ -3018,7 +3084,7 @@ test('WeixinAdminServer archives and restores sessions from the panel API', asyn
 
   const binding = await server.start();
   try {
-    const archiveResponse = await fetch(`${binding.url}/api/sessions/session-archive`, {
+    const archiveResponse = await fetchAdmin(binding.url, '/api/sessions/session-archive', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ archived: true }),
@@ -3031,7 +3097,7 @@ test('WeixinAdminServer archives and restores sessions from the panel API', asyn
     const sessionsBody = await sessionsResponse.json() as any;
     assert.equal(sessionsBody.sessions.find((session: any) => session.id === 'session-archive')?.archived, true);
 
-    const restoreResponse = await fetch(`${binding.url}/api/sessions/session-archive`, {
+    const restoreResponse = await fetchAdmin(binding.url, '/api/sessions/session-archive', {
       method: 'PATCH',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ archived: false }),
@@ -3112,7 +3178,7 @@ test('WeixinAdminServer deletes only local bridge session records from the panel
 
   const binding = await server.start();
   try {
-    const deleteResponse = await fetch(`${binding.url}/api/sessions/session-delete`, {
+    const deleteResponse = await fetchAdmin(binding.url, '/api/sessions/session-delete', {
       method: 'DELETE',
     });
     assert.equal(deleteResponse.status, 200);
@@ -3356,7 +3422,7 @@ test('WeixinAdminServer tests the alert webhook and reports configuration', asyn
   });
   const binding = await server.start();
   const call = (url: string, init: any = {}) =>
-    fetch(`${binding.url}${url}`, { headers: { 'content-type': 'application/json' }, ...init }).then((r) => r.json() as any);
+    fetchAdmin(binding.url, url, { headers: { 'content-type': 'application/json' }, ...init }).then((r) => r.json() as any);
   try {
     const ok = await call('/api/alert/test', { method: 'POST', body: JSON.stringify({ url: `http://127.0.0.1:${catcherPort}/hook` }) });
     assert.equal(ok.configured, true);
@@ -3418,7 +3484,7 @@ test('WeixinAdminServer imports a backup into accounts and repositories', async 
         threadMetadata: [],
       },
     };
-    const result = await fetch(`${binding.url}/api/import`, {
+    const result = await fetchAdmin(binding.url, '/api/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(backup),
@@ -3448,7 +3514,7 @@ test('WeixinAdminServer validates the complete backup before importing any recor
   const server = new WeixinAdminServer({ accountStore, stateDir, port: 0, repositories });
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/import`, {
+    const response = await fetchAdmin(binding.url, '/api/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -3473,7 +3539,7 @@ test('WeixinAdminServer rejects non-http account Base URLs before importing any 
   const server = new WeixinAdminServer({ accountStore, stateDir, port: 0 });
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/import`, {
+    const response = await fetchAdmin(binding.url, '/api/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -3495,7 +3561,7 @@ test('WeixinAdminServer rejects case-insensitive duplicate account ids before im
   const server = new WeixinAdminServer({ accountStore, stateDir, port: 0 });
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/import`, {
+    const response = await fetchAdmin(binding.url, '/api/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -3522,7 +3588,7 @@ test('WeixinAdminServer rejects service environment values containing line break
   const server = new WeixinAdminServer({ accountStore, stateDir, env, port: 0 });
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/import`, {
+    const response = await fetchAdmin(binding.url, '/api/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -3556,7 +3622,7 @@ test('WeixinAdminServer rolls back a failed import and keeps a pre-import restor
   const server = new WeixinAdminServer({ accountStore, stateDir, port: 0, repositories });
   const binding = await server.start();
   try {
-    const response = await fetch(`${binding.url}/api/import`, {
+    const response = await fetchAdmin(binding.url, '/api/import', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({

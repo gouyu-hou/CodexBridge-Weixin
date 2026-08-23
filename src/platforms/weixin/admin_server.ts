@@ -412,7 +412,7 @@ export class WeixinAdminServer {
       this.writeJson(res, 403, { error: browserAuthorizationError });
       return;
     }
-    if (this.requiresExplicitAdminToken(req, pathname) && !this.hasValidAdminToken(req, url)) {
+    if (this.requiresAdminToken(req, pathname) && !this.hasValidAdminToken(req, url)) {
       this.writeJson(res, 403, { error: 'missing or invalid admin token' });
       return;
     }
@@ -655,23 +655,13 @@ export class WeixinAdminServer {
     if ((origin && !isAllowedAdminOrigin(origin, this.binding?.port ?? this.port)) || fetchSite === 'cross-site') {
       return 'invalid admin origin';
     }
-    const pathname = decodeURIComponent(url.pathname);
-    const mutatesState = !['GET', 'HEAD', 'OPTIONS'].includes(String(req.method ?? '').toUpperCase())
-      || pathname === '/api/page/close';
-    if (!mutatesState) {
-      return null;
-    }
-    return this.hasValidAdminToken(req, url)
-      ? null
-      : 'missing or invalid admin token';
+    return null;
   }
 
-  private requiresExplicitAdminToken(req: IncomingMessage, pathname: string): boolean {
-    if (String(req.method ?? '').toUpperCase() !== 'POST') {
-      return false;
-    }
-    return pathname === '/api/delivery-outbox/retry'
-      || /^\/api\/provider-profiles\/[^/]+\/(?:models|usage)\/refresh$/u.test(pathname);
+  private requiresAdminToken(req: IncomingMessage, pathname: string): boolean {
+    const method = String(req.method ?? '').toUpperCase();
+    return ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)
+      || (method === 'GET' && pathname === '/api/page/close');
   }
 
   private hasValidAdminToken(req: IncomingMessage, url: URL): boolean {
