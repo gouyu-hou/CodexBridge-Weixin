@@ -2295,7 +2295,7 @@ export class BridgeCoordinator {
     const record = await this.assistantRecords.createRecord({
       scopeRef,
       source: event.platform === 'telegram' ? 'telegram' : 'weixin',
-      contextThreadId: uploadContext.session?.codexThreadId ?? null,
+      contextThreadId: uploadContext.session?.codexThreadId ?? this.bridgeSessions.resolveScopeSession(scopeRef)?.codexThreadId ?? null,
       timezone: extractEventTimezone(event),
       draft,
       status: 'pending',

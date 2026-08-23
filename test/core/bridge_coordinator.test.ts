@@ -5012,6 +5012,76 @@ test('assistant natural create keeps its original upload snapshot when a later b
   assert.equal(uploadState?.items?.length, 1);
 });
 
+test('assistant natural create keeps a scope thread bound during routing', async () => {
+  const defaultCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-assistant-thread-race-'));
+  const scopeRef = {
+    platform: 'weixin' as const,
+    externalScopeId: 'wx-user-assistant-thread-race-1',
+  };
+  const { runtime, openai } = makeRuntime({ defaultCwd });
+  const coordinator = runtime.services.bridgeCoordinator;
+  const existing = await runtime.services.assistantRecords.createRecord({
+    scopeRef,
+    source: 'weixin',
+    contextThreadId: null,
+    timezone: 'Etc/UTC',
+    draft: runtime.services.assistantRecords.parseDraft('existing record', 'note'),
+    status: 'active',
+    parseStatus: 'auto',
+    uploadItems: [],
+  });
+
+  const originalStartTurn = openai.startTurn.bind(openai);
+  let releaseRoute: () => void = () => {};
+  const routeGate = new Promise<void>((resolve) => {
+    releaseRoute = resolve;
+  });
+  let signalRouteStarted: () => void = () => {};
+  const routeStarted = new Promise<void>((resolve) => {
+    signalRouteStarted = resolve;
+  });
+  openai.startTurn = async (args: any) => {
+    const input = normalizeCommandSkillInput(args.inputText);
+    if (input.includes('docs/command-skills/assistant-record.md') && input.includes('"operation": "route_existing_record"')) {
+      signalRouteStarted();
+      await routeGate;
+      return {
+        outputText: JSON.stringify({
+          action: 'create',
+          targetRecordId: null,
+          targetIndex: null,
+          type: 'note',
+          reason: 'new record',
+          confidence: 0.96,
+        }),
+        turnId: `${args.bridgeSession.codexThreadId}-late-thread-route`,
+        threadId: args.bridgeSession.codexThreadId,
+        title: args.bridgeSession.title,
+      };
+    }
+    return originalStartTurn(args);
+  };
+
+  const createResult = coordinator.handleInboundEvent({
+    ...scopeRef,
+    text: '/note new record with late thread binding',
+  });
+  await routeStarted;
+  assert.equal(runtime.services.bridgeSessions.resolveScopeSession(scopeRef), null);
+
+  const lateSession = await runtime.services.bridgeSessions.createSessionForScope(scopeRef, {
+    providerProfileId: 'openai-default',
+    cwd: defaultCwd,
+    title: 'late-bound assistant thread',
+  });
+  releaseRoute();
+  await createResult;
+
+  const created = runtime.repositories.assistantRecords.list().find((record) => record.id !== existing.id);
+  assert.ok(created);
+  assert.equal(created.contextThreadId, lateSession.codexThreadId);
+});
+
 test('/models lists available models for the current provider', async () => {
   const { runtime } = makeRuntime();
 
