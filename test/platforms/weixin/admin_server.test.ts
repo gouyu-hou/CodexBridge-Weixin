@@ -22,6 +22,46 @@ const adminScript = fs.readFileSync(
   path.join(process.cwd(), 'assets', 'weixin-admin', 'admin.js'),
   'utf8',
 );
+const adminServerSource = fs.readFileSync(
+  path.join(process.cwd(), 'src', 'platforms', 'weixin', 'admin_server.ts'),
+  'utf8',
+);
+
+function sourceForMethod(name: string, nextMethodName: string) {
+  const start = adminServerSource.indexOf(`  private async ${name}(`);
+  const end = adminServerSource.indexOf(`  private async ${nextMethodName}(`, start);
+  assert.notEqual(start, -1, `${name} should exist`);
+  assert.notEqual(end, -1, `${nextMethodName} should follow ${name}`);
+  return adminServerSource.slice(start, end);
+}
+
+test('WeixinAdminServer delegates protected request path matching to the admin route resolver', () => {
+  const handleRequestSource = sourceForMethod('handleRequest', 'handleProviderModels');
+
+  assert.match(handleRequestSource, /const route = resolveWeixinAdminRoute\(req\.method \?\? '', pathname\);/u);
+  assert.match(handleRequestSource, /switch \(route\.kind\)/u);
+  assert.doesNotMatch(
+    handleRequestSource,
+    /(?:pathname|url\.pathname)\s*(?:===|!==|\.startsWith\(|\.endsWith\(|\.includes\(|\.match\()/u,
+  );
+});
+
+test('WeixinAdminServer delegates backup and diagnostics implementation to extracted services', () => {
+  assert.match(adminServerSource, /backupService: WeixinAdminBackupService;/u);
+  assert.match(adminServerSource, /diagnosticsService: WeixinAdminDiagnosticsService;/u);
+  assert.match(adminServerSource, /return this\.backupService\.exportBackup\(\);/u);
+  assert.match(adminServerSource, /const result = this\.backupService\.importBackup\(body\);/u);
+  assert.match(adminServerSource, /const checks = await this\.diagnosticsService\.runAll\(\);/u);
+  assert.match(adminServerSource, /const check = await this\.diagnosticsService\.runSetupTarget\(target\);/u);
+});
+
+test('WeixinAdminServer delegates log maintenance and scheduling to the log maintenance service', () => {
+  assert.match(adminServerSource, /logMaintenanceService: WeixinAdminLogMaintenanceService;/u);
+  assert.match(adminServerSource, /this\.logMaintenanceService\.start\(\);/u);
+  assert.match(adminServerSource, /this\.logMaintenanceService\.stop\(\);/u);
+  assert.match(adminServerSource, /this\.logMaintenanceService\.restart\(\);/u);
+  assert.doesNotMatch(adminServerSource, /logCleanupTimer|scheduleLogCleanup|cleanupLogFiles/u);
+});
 
 function makeTempStateDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-weixin-admin-'));
