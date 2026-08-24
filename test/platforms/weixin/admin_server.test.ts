@@ -53,6 +53,14 @@ test('WeixinAdminServer delegates backup and diagnostics implementation to extra
   assert.match(adminServerSource, /const result = this\.backupService\.importBackup\(body\);/u);
   assert.match(adminServerSource, /const checks = await this\.diagnosticsService\.runAll\(\);/u);
   assert.match(adminServerSource, /const check = await this\.diagnosticsService\.runSetupTarget\(target\);/u);
+  assert.doesNotMatch(
+    adminServerSource,
+    /(?:private (?:async )?(?:createPreImportRestorePoint|captureImportSnapshots|restoreImportSnapshots|captureImportEnvSnapshot|restoreImportEnvSnapshot|importRecords)|function (?:validateImportPayload|validateImportRecordArray|validateImportRequiredStrings|validateUniqueImportRecords|exportFullBackupServiceEnv))/u,
+  );
+  assert.doesNotMatch(
+    adminServerSource,
+    /private (?:async )?(?:runDiagnostics|diagnoseService|diagnoseWeixinAccounts|diagnoseApiKey|diagnoseModelAvailability|diagnosePorts|diagnoseCodexNative)/u,
+  );
 });
 
 test('WeixinAdminServer delegates log maintenance and scheduling to the log maintenance service', () => {
