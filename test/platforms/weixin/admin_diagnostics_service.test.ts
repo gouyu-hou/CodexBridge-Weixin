@@ -152,6 +152,75 @@ test('WeixinAdminDiagnosticsService sanitizes model and Native API network failu
   assert.doesNotMatch(rendered, /secret-api-key|ECONNREFUSED|Authorization/iu);
 });
 
+test('WeixinAdminDiagnosticsService sanitizes credential-bearing non-2xx HTTP response bodies', async (t) => {
+  const providerToken = 'provider-secret-token';
+  const nativeToken = 'native-secret-token';
+  const upstream = http.createServer((req, res) => {
+    if (req.url === '/bad-request/v1/models') {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: `Authorization: Bearer ${providerToken} body-400` } }));
+      return;
+    }
+    if (req.url === '/server-error/v1/models') {
+      res.writeHead(500, { 'content-type': 'text/plain' });
+      res.end(`Bearer ${providerToken} arbitrary body-500`);
+      return;
+    }
+    if (req.url === '/v1/health') {
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ status: 'unavailable', message: `Authorization: Bearer ${nativeToken} body-503` }));
+      return;
+    }
+    res.writeHead(404).end();
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const address = upstream.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+
+  try {
+    for (const statusCode of [400, 500] as const) {
+      await t.test(`provider HTTP ${statusCode}`, async () => {
+        const path = statusCode === 400 ? 'bad-request' : 'server-error';
+        const { service } = makeService({
+          env: {
+            CODEX_COMPAT_API_KEY: providerToken,
+            CODEX_COMPAT_BASE_URL: `http://127.0.0.1:${port}/${path}`,
+            CODEX_COMPAT_DEFAULT_MODEL: 'gpt-test',
+            CODEX_NATIVE_API_ENABLE: '0',
+          },
+          useDefaultRequest: true,
+        });
+
+        const check = await service.runSetupTarget('api-key');
+        assert.equal(check.status, 'fail');
+        assert.equal(check.detail, `模型接口返回 HTTP ${statusCode}`);
+        assert.equal(check.reason, '模型接口不可访问，请检查网络、Base URL 和 API key。');
+        assert.doesNotMatch(JSON.stringify(check), /provider-secret-token|bearer|authorization|body-(?:400|500)/iu);
+      });
+    }
+
+    await t.test('Native HTTP 503', async () => {
+      const { service } = makeService({
+        env: {
+          CODEX_NATIVE_API_ENABLE: '1',
+          CODEX_NATIVE_API_HOST: '127.0.0.1',
+          CODEX_NATIVE_API_PORT: String(port),
+          CODEX_NATIVE_API_AUTH_TOKEN: nativeToken,
+        },
+        useDefaultRequest: true,
+      });
+
+      const check = await service.runSetupTarget('codex-command');
+      assert.equal(check.status, 'fail');
+      assert.equal(check.detail, 'Native API 返回 HTTP 503');
+      assert.equal(check.reason, 'Codex Native API 已启动，但底层 Codex/模型运行时不可用。');
+      assert.doesNotMatch(JSON.stringify(check), /native-secret-token|bearer|authorization|body-503/iu);
+    });
+  } finally {
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  }
+});
+
 test('WeixinAdminDiagnosticsService preserves complete service check branches', async () => {
   const cases: Array<{
     name: string;
@@ -444,7 +513,7 @@ test('WeixinAdminDiagnosticsService preserves complete Codex Native failure and 
     {
       name: 'ordinary HTTP 503', response: { ok: false, statusCode: 503, body: { status: 'unavailable' }, error: 'native unavailable' },
       expected: {
-        id: 'codex-native', title: 'Codex 是否能正常响应', status: 'fail', detail: 'Native API 返回 HTTP 503', reason: 'native unavailable',
+        id: 'codex-native', title: 'Codex 是否能正常响应', status: 'fail', detail: 'Native API 返回 HTTP 503', reason: 'Codex Native API 已启动，但底层 Codex/模型运行时不可用。',
         actions: [{ label: '重启桥接', action: 'restart-bridge' }, { label: '查看日志', action: 'open-page', target: 'logs' }],
       },
     },

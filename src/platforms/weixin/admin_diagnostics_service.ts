@@ -423,13 +423,13 @@ function explainProviderHttpFailure(result: DiagnosticJsonRequestResult | null) 
   if (result.statusCode === 401 || result.statusCode === 403) return 'API key 无效、权限不足，或 Base URL 指向了错误的供应商。';
   if (result.statusCode === 429) return '供应商返回限流或额度不足；更换 key、充值或稍后重试。';
   if (result.statusCode === 502 || result.statusCode === 503) return '供应商上游服务临时不可用，这通常不是本地代码问题。';
-  return result.statusCode ? result.error || '模型接口不可访问，请检查网络、Base URL 和 API key。' : '模型接口不可访问，请检查网络、Base URL 和 API key。';
+  return '模型接口不可访问，请检查网络、Base URL 和 API key。';
 }
 
 function explainNativeApiFailure(result: DiagnosticJsonRequestResult) {
   if (result.statusCode === 401 || result.statusCode === 403) return 'Native API 设置了鉴权，但诊断请求没有通过，请检查 CODEX_NATIVE_API_AUTH_TOKEN。';
-  if (result.statusCode === 503) return result.error || 'Codex Native API 已启动，但底层 Codex/模型运行时不可用。';
-  return result.statusCode ? result.error || '请重启桥接后再检查。' : '请重启桥接后再检查。';
+  if (result.statusCode === 503) return 'Codex Native API 已启动，但底层 Codex/模型运行时不可用。';
+  return '请重启桥接后再检查。';
 }
 
 function extractResponseError(body: unknown, fallbackText: string) {
