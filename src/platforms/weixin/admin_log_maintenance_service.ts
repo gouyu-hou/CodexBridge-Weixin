@@ -295,9 +295,10 @@ export class WeixinAdminLogMaintenanceService {
 
   private compactLogFile(filePath: string, maxBytes: number, { reason, timestamp }: { reason: string; timestamp: string }): void {
     const marker = `[CodexBridge] log compacted at ${timestamp}; reason=${reason}; kept the latest log tail.\n`;
-    const keepBytes = Math.max(0, maxBytes - Buffer.byteLength(marker, 'utf8'));
+    const markerBuffer = Buffer.from(marker, 'utf8').subarray(0, maxBytes);
+    const keepBytes = Math.max(0, maxBytes - markerBuffer.length);
     const tail = this.readTailBuffer(filePath, keepBytes);
-    this.fs.writeFileSync(filePath, Buffer.concat([Buffer.from(marker, 'utf8'), tail]));
+    this.fs.writeFileSync(filePath, Buffer.concat([markerBuffer, tail]));
   }
 
   private readTailBuffer(filePath: string, maxBytes: number): Buffer {
