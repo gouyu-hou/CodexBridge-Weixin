@@ -90,6 +90,66 @@ function validBackup(overrides: Record<string, unknown> = {}) {
   };
 }
 
+interface TypedBackupFixture extends Record<string, unknown> {
+  accounts: Array<Record<string, unknown>>;
+  runtime: {
+    providerProfiles: Array<Record<string, unknown>>;
+    bridgeSessions: Array<Record<string, unknown>>;
+    platformBindings: Array<Record<string, unknown>>;
+    sessionSettings: Array<Record<string, unknown>>;
+    threadMetadata: Array<Record<string, unknown>>;
+  };
+}
+
+function typedBackupFixture(): TypedBackupFixture {
+  return {
+    accounts: [{
+      accountId: 'typed-account',
+      token: 'token',
+      base_url: 'https://typed.example',
+      user_id: 'user-1',
+      display_name: 'Typed account',
+      disabled: false,
+      group: 'operators',
+      role: 'member',
+      permissions: { can_chat: true, can_upload: false, can_execute_commands: true },
+      model_provider: { provider_profile_id: 'profile-1', model: 'model-1', reasoning_effort: 'medium' },
+      context_tokens: { peer: 'context-token' },
+      sync_cursor: 'cursor-1',
+    }],
+    runtime: {
+      providerProfiles: [{
+        id: 'profile-1', providerKind: 'openai-compatible', name: 'Profile', config: {}, createdAt: 1, updatedAt: 2,
+      }],
+      bridgeSessions: [{
+        id: 'session-1', providerProfileId: 'profile-1', codexThreadId: 'thread-1', cwd: null, title: 'Thread', createdAt: 1, updatedAt: 2,
+      }],
+      platformBindings: [{
+        platform: 'weixin', externalScopeId: 'scope-1', bridgeSessionId: 'session-1', updatedAt: 2,
+      }],
+      sessionSettings: [{
+        bridgeSessionId: 'session-1',
+        model: 'model-1',
+        reasoningEffort: 'medium',
+        serviceTier: 'default',
+        collaborationMode: 'default',
+        personality: 'pragmatic',
+        permissionsMode: 'default-permissions',
+        accessPreset: 'default',
+        approvalPolicy: 'on-request',
+        sandboxMode: 'workspace-write',
+        approvalsReviewer: 'user',
+        locale: 'zh-CN',
+        metadata: {},
+        updatedAt: 2,
+      }],
+      threadMetadata: [{
+        providerProfileId: 'profile-1', threadId: 'thread-1', alias: 'main', archivedAt: null, pinnedAt: 1, updatedAt: 2,
+      }],
+    },
+  };
+}
+
 test('WeixinAdminBackupService validates the complete backup before creating a restore point or mutating accounts', () => {
   const { service, accountStore, stateDir } = makeService();
   accountStore.saveAccount({ accountId: 'original', token: 'original-token', baseUrl: 'https://original.example', userId: 'u1' });
@@ -133,6 +193,76 @@ test('WeixinAdminBackupService rejects non-http account and provider URLs', () =
     'accounts[0].base_url must be an http(s) URL',
     'configuration.serviceEnv.CODEX_COMPAT_BASE_URL must be an http(s) URL',
   ]);
+});
+
+test('WeixinAdminBackupService rejects every malformed typed account and runtime field', async (t) => {
+  const malformedCases: Array<{
+    label: string;
+    mutate(fixture: TypedBackupFixture): void;
+  }> = [
+    { label: 'accountId', mutate: (backup) => { backup.accounts[0]!.accountId = 123; } },
+    { label: 'user_id', mutate: (backup) => { backup.accounts[0]!.user_id = 123; } },
+    { label: 'display_name', mutate: (backup) => { backup.accounts[0]!.display_name = 123; } },
+    { label: 'disabled', mutate: (backup) => { backup.accounts[0]!.disabled = 'false'; } },
+    { label: 'group', mutate: (backup) => { backup.accounts[0]!.group = 123; } },
+    { label: 'role', mutate: (backup) => { backup.accounts[0]!.role = 123; } },
+    { label: 'permissions object', mutate: (backup) => { backup.accounts[0]!.permissions = []; } },
+    { label: 'permissions.can_chat', mutate: (backup) => { backup.accounts[0]!.permissions = { can_chat: 'false' }; } },
+    { label: 'permissions.can_upload', mutate: (backup) => { backup.accounts[0]!.permissions = { can_upload: 0 }; } },
+    { label: 'permissions.can_execute_commands', mutate: (backup) => { backup.accounts[0]!.permissions = { can_execute_commands: null }; } },
+    { label: 'model_provider object', mutate: (backup) => { backup.accounts[0]!.model_provider = []; } },
+    { label: 'model_provider.provider_profile_id', mutate: (backup) => { backup.accounts[0]!.model_provider = { provider_profile_id: 123 }; } },
+    { label: 'model_provider.model', mutate: (backup) => { backup.accounts[0]!.model_provider = { model: false }; } },
+    { label: 'model_provider.reasoning_effort', mutate: (backup) => { backup.accounts[0]!.model_provider = { reasoning_effort: {} }; } },
+    { label: 'provider profile name', mutate: (backup) => { backup.runtime.providerProfiles[0]!.name = 123; } },
+    { label: 'provider profile config', mutate: (backup) => { backup.runtime.providerProfiles[0]!.config = []; } },
+    { label: 'provider profile createdAt', mutate: (backup) => { backup.runtime.providerProfiles[0]!.createdAt = Number.NaN; } },
+    { label: 'provider profile updatedAt', mutate: (backup) => { backup.runtime.providerProfiles[0]!.updatedAt = '2'; } },
+    { label: 'bridge session cwd', mutate: (backup) => { backup.runtime.bridgeSessions[0]!.cwd = 123; } },
+    { label: 'bridge session title', mutate: (backup) => { backup.runtime.bridgeSessions[0]!.title = {}; } },
+    { label: 'bridge session createdAt', mutate: (backup) => { backup.runtime.bridgeSessions[0]!.createdAt = Number.POSITIVE_INFINITY; } },
+    { label: 'bridge session updatedAt', mutate: (backup) => { backup.runtime.bridgeSessions[0]!.updatedAt = '2'; } },
+    { label: 'platform binding updatedAt', mutate: (backup) => { backup.runtime.platformBindings[0]!.updatedAt = Number.NEGATIVE_INFINITY; } },
+    { label: 'session settings model', mutate: (backup) => { backup.runtime.sessionSettings[0]!.model = 123; } },
+    { label: 'session settings reasoningEffort', mutate: (backup) => { backup.runtime.sessionSettings[0]!.reasoningEffort = {}; } },
+    { label: 'session settings serviceTier', mutate: (backup) => { backup.runtime.sessionSettings[0]!.serviceTier = false; } },
+    { label: 'session settings collaborationMode', mutate: (backup) => { backup.runtime.sessionSettings[0]!.collaborationMode = 'invalid'; } },
+    { label: 'session settings personality', mutate: (backup) => { backup.runtime.sessionSettings[0]!.personality = 'invalid'; } },
+    { label: 'session settings permissionsMode', mutate: (backup) => { backup.runtime.sessionSettings[0]!.permissionsMode = 'invalid'; } },
+    { label: 'session settings accessPreset', mutate: (backup) => { backup.runtime.sessionSettings[0]!.accessPreset = 'invalid'; } },
+    { label: 'session settings approvalPolicy', mutate: (backup) => { backup.runtime.sessionSettings[0]!.approvalPolicy = 123; } },
+    { label: 'session settings sandboxMode', mutate: (backup) => { backup.runtime.sessionSettings[0]!.sandboxMode = []; } },
+    { label: 'session settings approvalsReviewer', mutate: (backup) => { backup.runtime.sessionSettings[0]!.approvalsReviewer = 'invalid'; } },
+    { label: 'session settings locale', mutate: (backup) => { backup.runtime.sessionSettings[0]!.locale = 123; } },
+    { label: 'session settings metadata', mutate: (backup) => { backup.runtime.sessionSettings[0]!.metadata = []; } },
+    { label: 'session settings updatedAt', mutate: (backup) => { backup.runtime.sessionSettings[0]!.updatedAt = Number.NaN; } },
+    { label: 'thread metadata alias', mutate: (backup) => { backup.runtime.threadMetadata[0]!.alias = 123; } },
+    { label: 'thread metadata archivedAt', mutate: (backup) => { backup.runtime.threadMetadata[0]!.archivedAt = '1'; } },
+    { label: 'thread metadata pinnedAt', mutate: (backup) => { backup.runtime.threadMetadata[0]!.pinnedAt = Number.POSITIVE_INFINITY; } },
+    { label: 'thread metadata updatedAt', mutate: (backup) => { backup.runtime.threadMetadata[0]!.updatedAt = '2'; } },
+  ];
+
+  const { service } = makeService();
+  assert.deepEqual(service.validateImport(typedBackupFixture()).errors, []);
+  for (const malformedCase of malformedCases) {
+    await t.test(malformedCase.label, () => {
+      const backup = typedBackupFixture();
+      malformedCase.mutate(backup);
+      assert.equal(service.importBackup(backup).status, 400);
+    });
+  }
+});
+
+test('WeixinAdminBackupService rejects malformed typed accounts before creating a restore point or mutating accounts', () => {
+  const { service, accountStore, stateDir } = makeService();
+  const backup = typedBackupFixture();
+  backup.accounts[0]!.disabled = 'false';
+
+  const result = service.importBackup(backup);
+
+  assert.equal(result.status, 400);
+  assert.equal(accountStore.loadAccount('typed-account'), null);
+  assert.equal(fs.existsSync(path.join(stateDir, 'backups')), false);
 });
 
 test('WeixinAdminBackupService normalizes validated backup records into typed domain DTOs', () => {

@@ -219,6 +219,20 @@ export class WeixinAdminBackupService {
       (record) => normalizeAccountId(String(record.accountId ?? '')).toLowerCase(),
     );
     const accounts = accountRecords.map((account, index) => {
+      const label = `accounts[${index}]`;
+      validateRequiredString(account, 'accountId', label, errors);
+      validateRequiredString(account, 'token', label, errors);
+      validateOptionalString(account, 'base_url', label, errors);
+      validateOptionalString(account, 'baseUrl', label, errors);
+      validateOptionalString(account, 'user_id', label, errors);
+      validateOptionalString(account, 'userId', label, errors);
+      validateOptionalString(account, 'display_name', label, errors);
+      validateOptionalBoolean(account, 'disabled', label, errors);
+      validateOptionalString(account, 'group', label, errors);
+      validateOptionalString(account, 'role', label, errors);
+      validateAccountPermissions(account.permissions, `${label}.permissions`, errors);
+      validateAccountModelProvider(account.model_provider, `${label}.model_provider`, errors);
+      validateAccountModelProvider(account.modelProvider, `${label}.modelProvider`, errors);
       const accountId = normalizeAccountId(String(account.accountId ?? ''));
       if (!isValidWeixinAccountId(accountId)) {
         errors.push(`accounts[${index}].accountId is invalid`);
@@ -229,8 +243,12 @@ export class WeixinAdminBackupService {
       const baseUrl = normalizeEnvString(account.base_url) ?? normalizeEnvString(account.baseUrl);
       if (!baseUrl) {
         errors.push(`accounts[${index}].base_url is required`);
-      } else if (!isValidHttpUrl(baseUrl)) {
-        errors.push(`accounts[${index}].base_url must be an http(s) URL`);
+      }
+      for (const key of ['base_url', 'baseUrl'] as const) {
+        const value = account[key];
+        if (typeof value === 'string' && value.trim() && !isValidHttpUrl(value.trim())) {
+          errors.push(`${label}.${key} must be an http(s) URL`);
+        }
       }
       if (account.context_tokens !== undefined) {
         if (!isRecord(account.context_tokens)) {
@@ -295,6 +313,11 @@ export class WeixinAdminBackupService {
     validateImportRequiredStrings(platformBindingRecords, 'runtime.platformBindings', ['platform', 'externalScopeId', 'bridgeSessionId'], errors);
     validateImportRequiredStrings(sessionSettingsRecords, 'runtime.sessionSettings', ['bridgeSessionId'], errors);
     validateImportRequiredStrings(threadMetadataRecords, 'runtime.threadMetadata', ['providerProfileId', 'threadId'], errors);
+    validateProviderProfiles(providerProfileRecords, errors);
+    validateBridgeSessions(bridgeSessionRecords, errors);
+    validatePlatformBindings(platformBindingRecords, errors);
+    validateSessionSettings(sessionSettingsRecords, errors);
+    validateThreadMetadata(threadMetadataRecords, errors);
     validateUniqueImportRecords(providerProfileRecords, 'runtime.providerProfiles', errors, (record) => String(record.id ?? ''));
     validateUniqueImportRecords(bridgeSessionRecords, 'runtime.bridgeSessions', errors, (record) => String(record.id ?? ''));
     validateUniqueImportRecords(platformBindingRecords, 'runtime.platformBindings', errors, (record) => `${record.platform}:${record.externalScopeId}`);
@@ -585,6 +608,137 @@ function validateImportRequiredStrings(records: Record<string, unknown>[], label
     for (const key of keys) {
       if (!normalizeEnvString(record[key])) errors.push(`${label}[${index}].${key} is required`);
     }
+  }
+}
+
+function validateRequiredString(record: Record<string, unknown>, key: string, label: string, errors: string[]) {
+  const value = record[key];
+  if (typeof value !== 'string' || !value.trim()) errors.push(`${label}.${key} is required`);
+}
+
+function validateOptionalString(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  errors: string[],
+  { nullable = false }: { nullable?: boolean } = {},
+) {
+  const value = record[key];
+  if (value !== undefined && !(nullable && value === null) && typeof value !== 'string') {
+    errors.push(`${label}.${key} must be ${nullable ? 'a string or null' : 'a string'}`);
+  }
+}
+
+function validateOptionalBoolean(record: Record<string, unknown>, key: string, label: string, errors: string[]) {
+  const value = record[key];
+  if (value !== undefined && typeof value !== 'boolean') errors.push(`${label}.${key} must be a boolean`);
+}
+
+function validateOptionalRecord(record: Record<string, unknown>, key: string, label: string, errors: string[]) {
+  const value = record[key];
+  if (value !== undefined && !isRecord(value)) errors.push(`${label}.${key} must be an object`);
+}
+
+function validateOptionalFiniteNumber(
+  record: Record<string, unknown>,
+  key: string,
+  label: string,
+  errors: string[],
+  { nullable = false }: { nullable?: boolean } = {},
+) {
+  const value = record[key];
+  if (value !== undefined && !(nullable && value === null) && (typeof value !== 'number' || !Number.isFinite(value))) {
+    errors.push(`${label}.${key} must be ${nullable ? 'a finite number or null' : 'a finite number'}`);
+  }
+}
+
+function validateOptionalChoice<T extends string>(
+  record: Record<string, unknown>,
+  key: string,
+  choices: readonly T[],
+  label: string,
+  errors: string[],
+) {
+  const value = record[key];
+  if (value !== undefined && value !== null && (typeof value !== 'string' || !choices.includes(value as T))) {
+    errors.push(`${label}.${key} must be one of: ${choices.join(', ')}`);
+  }
+}
+
+function validateAccountPermissions(value: unknown, label: string, errors: string[]) {
+  if (value === undefined) return;
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  validateOptionalBoolean(value, 'can_chat', label, errors);
+  validateOptionalBoolean(value, 'can_upload', label, errors);
+  validateOptionalBoolean(value, 'can_execute_commands', label, errors);
+}
+
+function validateAccountModelProvider(value: unknown, label: string, errors: string[]) {
+  if (value === undefined) return;
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  validateOptionalString(value, 'provider_profile_id', label, errors);
+  validateOptionalString(value, 'providerProfileId', label, errors);
+  validateOptionalString(value, 'model', label, errors);
+  validateOptionalString(value, 'reasoning_effort', label, errors);
+  validateOptionalString(value, 'reasoningEffort', label, errors);
+}
+
+function validateProviderProfiles(records: Record<string, unknown>[], errors: string[]) {
+  for (const [index, record] of records.entries()) {
+    const label = `runtime.providerProfiles[${index}]`;
+    validateOptionalString(record, 'displayName', label, errors);
+    validateOptionalString(record, 'name', label, errors);
+    validateOptionalRecord(record, 'config', label, errors);
+    validateOptionalFiniteNumber(record, 'createdAt', label, errors);
+    validateOptionalFiniteNumber(record, 'updatedAt', label, errors);
+  }
+}
+
+function validateBridgeSessions(records: Record<string, unknown>[], errors: string[]) {
+  for (const [index, record] of records.entries()) {
+    const label = `runtime.bridgeSessions[${index}]`;
+    validateOptionalString(record, 'cwd', label, errors, { nullable: true });
+    validateOptionalString(record, 'title', label, errors, { nullable: true });
+    validateOptionalFiniteNumber(record, 'createdAt', label, errors);
+    validateOptionalFiniteNumber(record, 'updatedAt', label, errors);
+  }
+}
+
+function validatePlatformBindings(records: Record<string, unknown>[], errors: string[]) {
+  for (const [index, record] of records.entries()) {
+    validateOptionalFiniteNumber(record, 'updatedAt', `runtime.platformBindings[${index}]`, errors);
+  }
+}
+
+function validateSessionSettings(records: Record<string, unknown>[], errors: string[]) {
+  for (const [index, record] of records.entries()) {
+    const label = `runtime.sessionSettings[${index}]`;
+    for (const key of ['model', 'reasoningEffort', 'serviceTier', 'approvalPolicy', 'sandboxMode', 'locale']) {
+      validateOptionalString(record, key, label, errors, { nullable: true });
+    }
+    validateOptionalChoice(record, 'collaborationMode', ['plan', 'default'], label, errors);
+    validateOptionalChoice(record, 'personality', ['friendly', 'pragmatic', 'none'], label, errors);
+    validateOptionalChoice(record, 'permissionsMode', ['default-permissions', 'auto-review', 'full-access', 'custom'], label, errors);
+    validateOptionalChoice(record, 'accessPreset', ['read-only', 'default', 'full-access'], label, errors);
+    validateOptionalChoice(record, 'approvalsReviewer', ['user', 'auto_review'], label, errors);
+    validateOptionalRecord(record, 'metadata', label, errors);
+    validateOptionalFiniteNumber(record, 'updatedAt', label, errors);
+  }
+}
+
+function validateThreadMetadata(records: Record<string, unknown>[], errors: string[]) {
+  for (const [index, record] of records.entries()) {
+    const label = `runtime.threadMetadata[${index}]`;
+    validateOptionalString(record, 'alias', label, errors, { nullable: true });
+    validateOptionalFiniteNumber(record, 'archivedAt', label, errors, { nullable: true });
+    validateOptionalFiniteNumber(record, 'pinnedAt', label, errors, { nullable: true });
+    validateOptionalFiniteNumber(record, 'updatedAt', label, errors);
   }
 }
 
