@@ -8,6 +8,7 @@ import {
   CODEX_NATIVE_API_PACKAGE_NAME,
   CODEX_NATIVE_API_PACKAGE_PHASE,
   CODEX_NATIVE_API_RELEASE_CHANNEL,
+  CodexAppApprovalState,
   CodexNativeApiService,
   CodexNativeApiServer,
   CodexNativeRuntime,
@@ -45,6 +46,7 @@ test('package exports the first extraction metadata', () => {
 test('package exports the core localhost runtime surface', () => {
   const registry = new InMemoryCodexNativeApiContinuationRegistry();
   assert.equal(registry.describe().persistence, 'in_process');
+  assert.equal(typeof CodexAppApprovalState, 'function');
   assert.equal(typeof CodexNativeRuntime, 'function');
   assert.equal(typeof CodexNativeApiServer, 'function');
   assert.equal(typeof CodexNativeApiService, 'function');
