@@ -79,14 +79,15 @@ test('release verification keeps strict service checks between admin and root ty
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
   ) as { scripts?: Record<string, string> };
   const steps = (packageJson.scripts?.['verify:release'] ?? '').split(/\s+&&\s+/u);
+  const rootTypecheckStep = 'npm run typecheck';
   const expectedSteps = [
     'npm run weixin:admin:typecheck',
     'npm run typecheck:command-services:strict',
     'npm run typecheck:weixin-admin-services:strict',
-    'npm run typecheck',
+    rootTypecheckStep,
   ];
   const firstStepIndex = steps.indexOf(expectedSteps[0]);
-  const rootTypecheckIndex = steps.indexOf(expectedSteps.at(-1)!);
+  const rootTypecheckIndex = steps.indexOf(rootTypecheckStep);
 
   assert.deepEqual(
     {
