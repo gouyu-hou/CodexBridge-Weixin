@@ -67,7 +67,9 @@ export function buildInstructionsOperationKey(scopeRef: PlatformScopeRef) {
   return formatPlatformScopeKey(scopeRef.platform, scopeRef.externalScopeId);
 }
 
-export function buildInstructionsEditKey(event) {
+export function buildInstructionsEditKey(
+  event: Pick<InboundTextEvent, 'platform' | 'externalScopeId'>,
+): string {
   return formatPlatformScopeKey(event.platform, event.externalScopeId);
 }
 
@@ -453,7 +455,7 @@ function clampAssistantConfidence(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function compactWhitespace(value) {
+function compactWhitespace(value: unknown): string {
   return String(value ?? '').replace(/\s+/gu, ' ').trim();
 }
 

@@ -22,9 +22,12 @@ export function normalizeConfiguredModelToken(value: unknown): string | null {
   return normalized ? normalized : null;
 }
 
-export function resolveProviderProfileDefaultModel(providerProfile): string | null {
-  const configured = providerProfile?.config && typeof providerProfile.config === 'object'
-    ? providerProfile.config.defaultModel
+export function resolveProviderProfileDefaultModel(
+  providerProfile: { config?: unknown } | null | undefined,
+): string | null {
+  const config = providerProfile?.config;
+  const configured = config && typeof config === 'object'
+    ? (config as Record<string, unknown>).defaultModel
     : null;
   return normalizeConfiguredModelToken(configured);
 }

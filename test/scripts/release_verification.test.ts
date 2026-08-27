@@ -11,6 +11,7 @@ test('release verification covers the root project and every packaged workspace'
   const requiredScripts = [
     'typecheck',
     'typecheck:js',
+    'typecheck:command-services:strict',
     'test',
     'build',
     'codex-gateway:check-boundary',
@@ -36,6 +37,26 @@ test('release verification covers the root project and every packaged workspace'
     assert.match(command, new RegExp(`npm run ${escapeRegExp(script)}(?:\\s|$)`, 'u'));
   }
   assert.match(command, /git diff --check/u);
+});
+
+test('command-service strict typecheck runs before the root typecheck', () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+  ) as { scripts?: Record<string, string> };
+  const scripts = packageJson.scripts ?? {};
+  const command = scripts['verify:release'] ?? '';
+
+  assert.equal(
+    scripts['typecheck:command-services:strict'],
+    'tsc -p tsconfig.command-services-strict.json',
+  );
+  const adminTypecheckIndex = command.indexOf('npm run weixin:admin:typecheck &&');
+  const strictTypecheckIndex = command.indexOf('npm run typecheck:command-services:strict &&');
+  const rootTypecheckIndex = command.indexOf('npm run typecheck &&');
+
+  assert.ok(adminTypecheckIndex >= 0);
+  assert.ok(strictTypecheckIndex > adminTypecheckIndex);
+  assert.ok(rootTypecheckIndex > strictTypecheckIndex);
 });
 
 test('release automation is exposed through the canonical npm command', () => {

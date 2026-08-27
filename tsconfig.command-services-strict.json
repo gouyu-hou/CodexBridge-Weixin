@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "strict": true,
+    "noEmit": true
+  },
+  "include": [
+    "src/core/assistant_record_command_service.ts",
+    "src/core/instructions_command_service.ts",
+    "src/core/model_command_service.ts"
+  ]
+}

@@ -8,7 +8,7 @@ export function parseJsonObject(value: unknown): Record<string, any> | null {
   }
   const fenced = normalizeJsonLikeText(text.match(/```(?:json)?\s*([\s\S]*?)```/iu)?.[1] ?? '');
   const balanced = extractBalancedJsonObject(text);
-  const candidates = [fenced, balanced, text].filter(Boolean);
+  const candidates = [fenced, balanced, text].filter((candidate): candidate is string => Boolean(candidate));
   for (const candidate of candidates) {
     const parsed = tryParseJsonObjectCandidate(candidate);
     if (parsed) {

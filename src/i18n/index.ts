@@ -1,7 +1,7 @@
 export type SupportedLocale = 'zh-CN' | 'en';
 
 type MessageParams = Record<string, unknown>;
-type MessageValue = string | ((params?: MessageParams) => string);
+type MessageValue = string | ((params: MessageParams) => string);
 type MessageCatalog = Record<string, MessageValue>;
 
 const DEFAULT_LOCALE: SupportedLocale = 'zh-CN';
