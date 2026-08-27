@@ -6,17 +6,16 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { writeSequencedStderrLine } from './sequenced_stderr.js';
 import { readCodexAccountIdentity } from './auth_state.js';
+import { CodexAppApprovalState } from './codex_app_approval_state.js';
 import {
   appServerBucketName,
   appServerUsageWindow,
   appServerUsageWindows,
-  buildApprovalResponseResult,
   buildLegacyReviewDecision,
   buildV2CommandApprovalDecision,
   buildV2FileChangeApprovalDecision,
   buildV2PermissionsApprovalDecision,
   classifyApprovedExecutionSignal,
-  createApprovedExecution,
   extractStructuredString,
   extractStructuredText,
   extractTextCandidate,
@@ -73,7 +72,6 @@ import type {
   CodexAppRateLimitsResponse,
   CodexAppSkillErrorInfo,
   CodexAppSkillMetadata,
-  PendingApproval,
 } from './codex_app_protocol.js';
 import {
   buildTurnSnapshotKey,
@@ -254,7 +252,7 @@ export class CodexAppClient extends EventEmitter {
 
   pending: Map<string, PendingRequest>;
 
-  pendingApprovals: Map<string, PendingApproval>;
+  approvalState: CodexAppApprovalState;
 
   approvedExecutions: Map<string, ApprovedExecution>;
 
@@ -310,7 +308,7 @@ export class CodexAppClient extends EventEmitter {
     this.socket = null;
     this.stdioLineBuffer = '';
     this.pending = new Map();
-    this.pendingApprovals = new Map();
+    this.approvalState = new CodexAppApprovalState({ now: this.turnPollNow });
     this.approvedExecutions = new Map();
     this.requestId = 0;
     this.port = null;
@@ -360,7 +358,7 @@ export class CodexAppClient extends EventEmitter {
       await terminateChildProcess(child, this.platform).catch(() => {});
     }
     this.child = null;
-    this.pendingApprovals.clear();
+    this.approvalState.clear();
     this.approvedExecutions.clear();
     this.rejectPending(new Error('Codex app client stopped'));
   }
@@ -626,17 +624,7 @@ export class CodexAppClient extends EventEmitter {
     threadId?: string | null;
     turnId?: string | null;
   } = {}): ProviderApprovalRequest[] {
-    return [...this.pendingApprovals.values()]
-      .map((entry) => entry.request)
-      .filter((entry) => {
-        if (threadId && entry.threadId !== threadId) {
-          return false;
-        }
-        if (turnId && entry.turnId !== turnId) {
-          return false;
-        }
-        return true;
-      });
+    return this.approvalState.list({ threadId, turnId });
   }
 
   async respondToApproval({
@@ -646,12 +634,7 @@ export class CodexAppClient extends EventEmitter {
     requestId: string;
     option: 1 | 2 | 3;
   }): Promise<void> {
-    const pending = this.pendingApprovals.get(String(requestId)) ?? null;
-    if (!pending) {
-      throw new Error(`Unknown approval request: ${requestId}`);
-    }
-    const result = buildApprovalResponseResult(pending, option);
-    const approvedExecution = createApprovedExecution(pending, option, this.turnPollNow());
+    const { pending, result, approvedExecution } = this.approvalState.prepare(requestId, option);
     if (approvedExecution) {
       this.approvedExecutions.set(approvedExecution.requestId, approvedExecution);
     }
@@ -667,7 +650,7 @@ export class CodexAppClient extends EventEmitter {
       }
       throw error;
     }
-    this.pendingApprovals.delete(String(requestId));
+    this.approvalState.remove(requestId);
     if (approvedExecution) {
       this.logDebug('approval_response_sent', summarizeApprovedExecution(approvedExecution));
     }
@@ -1173,7 +1156,7 @@ export class CodexAppClient extends EventEmitter {
       this.emit('server_request', message);
       return false;
     }
-    this.pendingApprovals.set(pendingApproval.rpcId, pendingApproval);
+    this.approvalState.set(pendingApproval);
     this.emit('approval_request', pendingApproval.request);
     return true;
   }

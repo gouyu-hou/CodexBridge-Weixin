@@ -1188,6 +1188,66 @@ test('CodexAppClient preserves numeric JSON-RPC ids when responding to approvals
   }]);
 });
 
+test('CodexAppClient retains approvals and rolls back execution tracking when sending fails', async () => {
+  const client = new CodexAppClient({
+    codexCliBin: 'codex',
+    turnPollNow: () => 42,
+  });
+  client.send = () => {
+    throw new Error('transport unavailable');
+  };
+
+  client.handleMessage(JSON.stringify({
+    jsonrpc: '2.0',
+    id: 'approval-retry',
+    method: 'item/commandExecution/requestApproval',
+    params: {
+      threadId: 'thread-retry',
+      turnId: 'turn-retry',
+      itemId: 'item-retry',
+      command: 'npm test',
+      availableDecisions: ['accept', 'decline'],
+    },
+  }));
+
+  await assert.rejects(
+    client.respondToApproval({ requestId: 'approval-retry', option: 1 }),
+    /transport unavailable/u,
+  );
+  assert.deepEqual(
+    client.getPendingApprovals().map((request) => request.requestId),
+    ['approval-retry'],
+  );
+  assert.equal(client.approvedExecutions.size, 0);
+
+  const sent: any[] = [];
+  client.send = (payload: any) => {
+    sent.push(payload);
+  };
+  await client.respondToApproval({ requestId: 'approval-retry', option: 1 });
+
+  assert.deepEqual(client.getPendingApprovals(), []);
+  assert.deepEqual(sent, [{
+    jsonrpc: '2.0',
+    id: 'approval-retry',
+    result: { decision: 'accept' },
+  }]);
+  assert.deepEqual(client.approvedExecutions.get('approval-retry'), {
+    requestId: 'approval-retry',
+    kind: 'command',
+    threadId: 'thread-retry',
+    turnId: 'turn-retry',
+    itemId: 'item-retry',
+    command: 'npm test',
+    approvedAt: 42,
+    lastSignalAt: 42,
+    lastSignalKind: 'approval_response_sent',
+    signalCount: 0,
+    completedAt: null,
+    lastObservedTurnSnapshotKey: null,
+  });
+});
+
 test('CodexAppClient keeps waiting past the nominal timeout while an approval request is pending', async () => {
   let now = 0;
   let approvalSent = false;

@@ -31,6 +31,8 @@ export type CodexNativeApiOwnedResponsibility = typeof CODEX_NATIVE_API_OWNS[num
 export type CodexNativeApiExcludedResponsibility =
   typeof CODEX_NATIVE_API_DOES_NOT_OWN[number];
 
+export { CodexAppApprovalState } from './codex_app_approval_state.js';
+
 export {
   decodeJwtPayload,
   extractCodexTokenIdentity,
