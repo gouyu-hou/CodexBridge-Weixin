@@ -74,6 +74,29 @@ test('weixin admin service strict typecheck is configured for release verificati
   assert.match(command, /npm run typecheck:weixin-admin-services:strict(?:\s|$)/u);
 });
 
+test('release verification keeps strict service checks between admin and root typechecks', () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+  ) as { scripts?: Record<string, string> };
+  const steps = (packageJson.scripts?.['verify:release'] ?? '').split(/\s+&&\s+/u);
+  const expectedSteps = [
+    'npm run weixin:admin:typecheck',
+    'npm run typecheck:command-services:strict',
+    'npm run typecheck:weixin-admin-services:strict',
+    'npm run typecheck',
+  ];
+  const firstStepIndex = steps.indexOf(expectedSteps[0]);
+  const rootTypecheckIndex = steps.indexOf(expectedSteps.at(-1)!);
+
+  assert.deepEqual(
+    {
+      trackedSteps: steps.filter((step) => expectedSteps.includes(step)),
+      boundarySteps: steps.slice(firstStepIndex, rootTypecheckIndex + 1),
+    },
+    { trackedSteps: expectedSteps, boundarySteps: expectedSteps },
+  );
+});
+
 test('release automation is exposed through the canonical npm command', () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
