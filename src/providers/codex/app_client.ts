@@ -8,6 +8,7 @@ import { writeSequencedStderrLine } from '../../core/sequenced_stderr.js';
 import { readCodexAccountIdentity } from './auth_state.js';
 import { createCodexCliLaunchSpec } from './cli_command.js';
 import { CodexAppApprovalState } from '../../../packages/codex-native-api/src/codex_app_approval_state.js';
+import { decideCodexTurnLifecycle } from '../../../packages/codex-native-api/src/codex_app_turn_lifecycle.js';
 import {
   appServerBucketName,
   appServerUsageWindow,
@@ -2043,14 +2044,18 @@ export class CodexAppClient extends EventEmitter {
         }
         if (turn && isTurnTerminal(turn.status)) {
           const outputText = extractTurnOutputText(turn);
-          if (outputText) {
+          const outputArtifacts = extractTurnOutputArtifacts(turn, extractOutputArtifactFromItem);
+          const terminalOutputDecision = decideCodexTurnLifecycle({
+            isTerminal: true,
+            hasTerminalOutput: Boolean(outputText) || outputArtifacts.length > 0,
+          });
+          if (terminalOutputDecision.kind === 'complete' && outputText) {
             this.noteApprovedExecutionSignal({
               threadId,
               turnId,
               signalKind: 'turn_terminal',
               markCompleted: true,
             });
-            const outputArtifacts = extractTurnOutputArtifacts(turn, extractOutputArtifactFromItem);
             const result = {
               turnId,
               threadId,
@@ -2066,8 +2071,7 @@ export class CodexAppClient extends EventEmitter {
             this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
             return result;
           }
-          const outputArtifacts = extractTurnOutputArtifacts(turn, extractOutputArtifactFromItem);
-          if (outputArtifacts.length > 0) {
+          if (terminalOutputDecision.kind === 'complete' && outputArtifacts.length > 0) {
             this.noteApprovedExecutionSignal({
               threadId,
               turnId,
@@ -2092,6 +2096,10 @@ export class CodexAppClient extends EventEmitter {
           const sessionState = inspectTurnCompletionFromSessionPath(thread?.path ?? null, turnId);
           const hasAssistantVisibleItems = turn.items.some((item) => isAssistantVisibleItem(item));
           const completionState = classifyTurnCompletionState(turn);
+          const interruptedDecision = decideCodexTurnLifecycle({
+            isTerminal: true,
+            isInterrupted: completionState === 'interrupted',
+          });
           this.logDebug('turn_terminal_state', {
             threadId,
             turnId,
@@ -2102,7 +2110,7 @@ export class CodexAppClient extends EventEmitter {
             sessionState: summarizeSessionState(thread?.path ?? null, sessionState),
             progress: summarizeProgressState(progressState),
           });
-          if (completionState === 'interrupted') {
+          if (interruptedDecision.kind === 'interrupted') {
             this.noteApprovedExecutionSignal({
               threadId,
               turnId,
@@ -2153,7 +2161,12 @@ export class CodexAppClient extends EventEmitter {
             sessionState,
             hasAssistantVisibleItems,
           );
-          if (shouldWaitForSettledOutputAfterTerminalTurn(turn, progressState) || sessionTaskCompleteNeedsMaterializationWait) {
+          const terminalSettleDecision = decideCodexTurnLifecycle({
+            isTerminal: true,
+            shouldWaitForTerminalSettle: shouldWaitForSettledOutputAfterTerminalTurn(turn, progressState)
+              || sessionTaskCompleteNeedsMaterializationWait,
+          });
+          if (terminalSettleDecision.kind === 'wait') {
             const snapshotKey = buildTurnSnapshotKey(turn);
             if (snapshotKey === lastTurnSnapshotKey) {
               stableTerminalReadCount += 1;
@@ -2210,7 +2223,13 @@ export class CodexAppClient extends EventEmitter {
               markCompleted: true,
             });
             const previewText = resolveTurnPreviewText(turn, progressState);
-            if (!previewText && sessionState.runtimeError) {
+            const sessionTaskDecision = decideCodexTurnLifecycle({
+              isTerminal: true,
+              providerError: previewText ? null : sessionState.runtimeError,
+              hasTaskComplete: true,
+              previewText,
+            });
+            if (sessionTaskDecision.kind === 'provider_error') {
               const result = {
                 turnId,
                 threadId,
@@ -2220,7 +2239,7 @@ export class CodexAppClient extends EventEmitter {
                 previewText: '',
                 finalSource: 'session_runtime_error',
                 status: turn.status,
-                errorMessage: sessionState.runtimeError,
+                errorMessage: sessionTaskDecision.errorMessage,
               };
               this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
               return result;
@@ -2230,7 +2249,7 @@ export class CodexAppClient extends EventEmitter {
               threadId,
               title: thread?.title ?? null,
               outputText: '',
-              outputState: previewText ? 'partial' : 'missing',
+              outputState: sessionTaskDecision.kind === 'partial' ? 'partial' : 'missing',
               previewText,
               finalSource: progressState.finalAnswerText
                 ? 'progress_only'
@@ -2242,7 +2261,11 @@ export class CodexAppClient extends EventEmitter {
             this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
             return result;
           }
-          if (shouldWaitForTaskCompleteBeforeMissing(thread?.path ?? null, sessionState)) {
+          const taskCompletionDecision = decideCodexTurnLifecycle({
+            isTerminal: true,
+            shouldWaitForTaskComplete: shouldWaitForTaskCompleteBeforeMissing(thread?.path ?? null, sessionState),
+          });
+          if (taskCompletionDecision.kind === 'wait') {
             if (this.turnPollNow() + 1000 < deadline) {
               this.logDebug('turn_wait_continue', {
                 threadId,
@@ -2277,7 +2300,11 @@ export class CodexAppClient extends EventEmitter {
             });
             throw new Error(`Timed out waiting for Codex turn ${turnId}`);
           }
-          if (hasUnsettledAssistantActivity(turn, progressState)) {
+          const unsettledAssistantDecision = decideCodexTurnLifecycle({
+            isTerminal: true,
+            hasUnsettledAssistantActivity: hasUnsettledAssistantActivity(turn, progressState),
+          });
+          if (unsettledAssistantDecision.kind === 'wait') {
             if (this.turnPollNow() + 1000 < deadline) {
               this.logDebug('turn_wait_continue', {
                 threadId,
@@ -2313,12 +2340,13 @@ export class CodexAppClient extends EventEmitter {
             throw new Error(`Timed out waiting for Codex turn ${turnId}`);
           }
           const previewText = resolveTurnPreviewText(turn, progressState);
+          const terminalDecision = decideCodexTurnLifecycle({ isTerminal: true, previewText });
           const result = {
             turnId,
             threadId,
             title: thread?.title ?? null,
             outputText: '',
-            outputState: previewText ? 'partial' : 'missing',
+            outputState: terminalDecision.kind === 'partial' ? 'partial' : 'missing',
             previewText,
             finalSource: progressState.finalAnswerText
               ? 'progress_only'

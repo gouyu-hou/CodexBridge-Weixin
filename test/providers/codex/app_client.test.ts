@@ -7,6 +7,11 @@ import test from 'node:test';
 import { CodexAppClient } from '../../../src/providers/codex/app_client.js';
 import type { CodexTurnInput } from '../../../src/providers/codex/app_client.js';
 
+test('root CodexAppClient imports the shared turn lifecycle helper', () => {
+  const source = fs.readFileSync(new URL('../../../src/providers/codex/app_client.ts', import.meta.url), 'utf8');
+  assert.match(source, /import \{ decideCodexTurnLifecycle \} from ['"][^'"]*codex_app_turn_lifecycle\.js['"];/u);
+});
+
 function expectedProviderNativeImageArtifact(imagePath: string, sizeBytes: number) {
   return {
     kind: 'image',

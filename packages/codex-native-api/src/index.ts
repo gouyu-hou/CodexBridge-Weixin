@@ -32,6 +32,13 @@ export type CodexNativeApiExcludedResponsibility =
   typeof CODEX_NATIVE_API_DOES_NOT_OWN[number];
 
 export { CodexAppApprovalState } from './codex_app_approval_state.js';
+export {
+  decideCodexTurnLifecycle,
+} from './codex_app_turn_lifecycle.js';
+export type {
+  CodexTurnLifecycleDecision,
+  CodexTurnLifecycleSnapshot,
+} from './codex_app_turn_lifecycle.js';
 
 export {
   decodeJwtPayload,

@@ -53,6 +53,20 @@ test('both AppClient implementations delegate approval storage to the shared reg
   }
 });
 
+test('both AppClient implementations delegate terminal lifecycle decisions to the shared helper', () => {
+  const repositoryRoot = path.resolve(import.meta.dirname, '..', '..', '..');
+  const appClients = [
+    path.join(repositoryRoot, 'src', 'providers', 'codex', 'app_client.ts'),
+    path.join(repositoryRoot, 'packages', 'codex-native-api', 'src', 'codex_app_client.ts'),
+  ];
+
+  for (const appClient of appClients) {
+    const source = fs.readFileSync(appClient, 'utf8');
+    assert.match(source, /import \{ decideCodexTurnLifecycle \} from ['"][^'"]*codex_app_turn_lifecycle\.js['"];/u);
+    assert.match(source, /decideCodexTurnLifecycle\(\{/u);
+  }
+});
+
 test('Native CodexAppClient preserves numeric JSON-RPC approval response ids', async () => {
   const client = new CodexAppClient({ codexCliBin: 'codex' });
   const sent: any[] = [];
