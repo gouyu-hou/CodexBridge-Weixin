@@ -221,6 +221,68 @@ test('WeixinAdminDiagnosticsService sanitizes credential-bearing non-2xx HTTP re
   }
 });
 
+test('WeixinAdminDiagnosticsService sanitizes untrusted structured Native health fields', async () => {
+  const apiToken = 'provider-structured-secret';
+  const nativeToken = 'native-structured-secret';
+  let requestCount = 0;
+  const nativeServer = http.createServer((_req, res) => {
+    requestCount += 1;
+    res.writeHead(requestCount === 1 ? 200 : 503, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      status: requestCount === 1
+        ? `Authorization: Bearer ${nativeToken}`
+        : `Bearer ${apiToken}`,
+      native_runtime: {
+        runtime_reachable: requestCount !== 1,
+        provider_profile_id: requestCount === 1
+          ? `Bearer ${apiToken}`
+          : `Authorization: Bearer ${nativeToken}`,
+      },
+    }));
+  });
+  await new Promise<void>((resolve) => nativeServer.listen(0, '127.0.0.1', resolve));
+  const address = nativeServer.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  const { service } = makeService({
+    env: {
+      CODEX_COMPAT_API_KEY: apiToken,
+      CODEX_NATIVE_API_ENABLE: '1',
+      CODEX_NATIVE_API_HOST: '127.0.0.1',
+      CODEX_NATIVE_API_PORT: String(port),
+      CODEX_NATIVE_API_AUTH_TOKEN: nativeToken,
+    },
+    useDefaultRequest: true,
+  });
+
+  try {
+    const successful = await service.runSetupTarget('codex-command');
+    const degraded = await service.runSetupTarget('codex-command');
+
+    assert.deepEqual(successful, {
+      id: 'codex-native',
+      title: 'Codex 是否能正常响应',
+      status: 'warn',
+      detail: 'Native API 已响应，但健康状态未知',
+      reason: `接口：http://127.0.0.1:${port}/v1/health`,
+      actions: [{ label: '查看运行状态', action: 'open-page', target: 'runtime' }],
+    });
+    assert.deepEqual(degraded, {
+      id: 'codex-native',
+      title: 'Codex 是否能正常响应',
+      status: 'warn',
+      detail: 'Native API 返回 HTTP 503（degraded）',
+      reason: '当前桥接仍可用，但健康检查显示为降级状态',
+      actions: [{ label: '查看运行状态', action: 'open-page', target: 'runtime' }, { label: '查看日志', action: 'open-page', target: 'logs' }],
+    });
+    assert.doesNotMatch(
+      JSON.stringify([successful, degraded]),
+      /provider-structured-secret|native-structured-secret|bearer|authorization/iu,
+    );
+  } finally {
+    await new Promise<void>((resolve) => nativeServer.close(() => resolve()));
+  }
+});
+
 test('WeixinAdminDiagnosticsService preserves complete service check branches', async () => {
   const cases: Array<{
     name: string;

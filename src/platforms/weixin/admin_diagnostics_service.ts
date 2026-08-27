@@ -5,6 +5,10 @@ import { WeixinAccountStore } from './account_store.js';
 
 const DEFAULT_NATIVE_API_HOST = '127.0.0.1';
 const DEFAULT_NATIVE_API_PORT = 43182;
+const NATIVE_HEALTH_STATUSES = ['ok', 'degraded', 'unavailable'] as const;
+const SAFE_NATIVE_PROVIDER_PROFILE_IDS = new Set(['openai-default']);
+
+type NativeHealthStatus = typeof NATIVE_HEALTH_STATUSES[number];
 
 export type DiagnosticStatus = 'ok' | 'warn' | 'fail';
 
@@ -297,27 +301,37 @@ export class WeixinAdminDiagnosticsService {
     const result = await this.requestJson(`${native.baseUrl}/v1/health`, { timeoutMs: 25000, headers: native.authToken ? { authorization: `Bearer ${native.authToken}` } : {} });
     const body = isRecord(result.body) ? result.body : {};
     const runtime = isRecord(body.native_runtime) ? body.native_runtime : {};
-    const statusText = normalizeEnvString(body.status) ?? '';
+    const statusText = normalizeNativeHealthStatus(body.status);
     const runtimeReachable = Boolean(runtime.runtime_reachable);
-    const runtimeProviderProfileId = normalizeEnvString(runtime.provider_profile_id) ?? '';
+    const rawRuntimeProviderProfileId = normalizeEnvString(runtime.provider_profile_id) ?? '';
     const provider = this.resolveModelProviderSettings();
     const activeProviderId = normalizeEnvString(provider.profileId) ?? 'openai-default';
     const activeCapabilities = normalizeEnvString(provider.capabilities) ?? 'default';
     const activeProviderIsCompatible = activeProviderId !== 'openai-default' || activeCapabilities !== 'default';
+    const configuredSecrets = [normalizeEnvString(this.env.CODEX_COMPAT_API_KEY), native.authToken].filter((value): value is string => Boolean(value));
+    const safeActiveProviderId = isSafeDiagnosticIdentifier(activeProviderId, configuredSecrets) ? activeProviderId : '';
+    const runtimeProviderProfileId = isSafeNativeProviderProfileId(
+      rawRuntimeProviderProfileId,
+      activeProviderId,
+      configuredSecrets,
+    ) ? rawRuntimeProviderProfileId : '';
     if (result.ok) return makeDiagnosticCheck({
-      id: 'codex-native', title: 'Codex 是否能正常响应', status: statusText === 'ok' ? 'ok' : 'warn', detail: `Native API 响应：${statusText}`,
+      id: 'codex-native', title: 'Codex 是否能正常响应', status: statusText === 'ok' ? 'ok' : 'warn',
+      detail: statusText ? `Native API 响应：${statusText}` : 'Native API 已响应，但健康状态未知',
       reason: runtimeProviderProfileId ? `Provider：${runtimeProviderProfileId}` : `接口：${native.baseUrl}/v1/health`, actions: [{ label: '查看运行状态', action: 'open-page', target: 'runtime' }],
     });
     if (result.statusCode === 503 && (statusText === 'degraded' || runtimeReachable)) {
+      const providerLabel = `${provider.providerName} / ${provider.model}`;
       if (activeProviderIsCompatible) return makeDiagnosticCheck({
-        id: 'codex-native', title: 'Codex 是否能正常响应', status: 'ok', detail: `当前使用 ${provider.providerName} / ${provider.model}`,
-        reason: runtimeProviderProfileId && runtimeProviderProfileId !== activeProviderId
-          ? `Native API 健康检查返回 ${runtimeProviderProfileId} 降级，但当前微信回复走 ${activeProviderId} 兼容模型通道，不影响正常对话。`
+        id: 'codex-native', title: 'Codex 是否能正常响应', status: 'ok',
+        detail: containsSensitiveDiagnosticText(providerLabel, configuredSecrets) ? '当前使用兼容模型通道' : `当前使用 ${providerLabel}`,
+        reason: runtimeProviderProfileId && safeActiveProviderId && runtimeProviderProfileId !== safeActiveProviderId
+          ? `Native API 健康检查返回 ${runtimeProviderProfileId} 降级，但当前微信回复走 ${safeActiveProviderId} 兼容模型通道，不影响正常对话。`
           : 'Native API 健康检查处于降级状态，但当前微信回复走兼容模型通道，不影响正常对话。',
         actions: [{ label: '查看运行状态', action: 'open-page', target: 'runtime' }, { label: '查看日志', action: 'open-page', target: 'logs' }],
       });
       return makeDiagnosticCheck({
-        id: 'codex-native', title: 'Codex 是否能正常响应', status: 'warn', detail: `Native API 返回 HTTP 503（${statusText || 'degraded'}）`,
+        id: 'codex-native', title: 'Codex 是否能正常响应', status: 'warn', detail: `Native API 返回 HTTP 503（${statusText ?? 'degraded'}）`,
         reason: runtimeProviderProfileId ? `当前桥接仍可用，但健康检查显示 Provider：${runtimeProviderProfileId} 处于降级状态` : '当前桥接仍可用，但健康检查显示为降级状态',
         actions: [{ label: '查看运行状态', action: 'open-page', target: 'runtime' }, { label: '查看日志', action: 'open-page', target: 'logs' }],
       });
@@ -430,6 +444,33 @@ function explainNativeApiFailure(result: DiagnosticJsonRequestResult) {
   if (result.statusCode === 401 || result.statusCode === 403) return 'Native API 设置了鉴权，但诊断请求没有通过，请检查 CODEX_NATIVE_API_AUTH_TOKEN。';
   if (result.statusCode === 503) return 'Codex Native API 已启动，但底层 Codex/模型运行时不可用。';
   return '请重启桥接后再检查。';
+}
+
+function normalizeNativeHealthStatus(value: unknown): NativeHealthStatus | null {
+  return typeof value === 'string'
+    ? NATIVE_HEALTH_STATUSES.find((status) => status === value.trim()) ?? null
+    : null;
+}
+
+function isSafeNativeProviderProfileId(
+  value: string,
+  activeProviderId: string,
+  configuredSecrets: string[],
+) {
+  return (value === activeProviderId || SAFE_NATIVE_PROVIDER_PROFILE_IDS.has(value))
+    && isSafeDiagnosticIdentifier(value, configuredSecrets);
+}
+
+function isSafeDiagnosticIdentifier(value: string, configuredSecrets: string[]) {
+  return /^[A-Za-z0-9._-]{1,160}$/u.test(value)
+    && !containsSensitiveDiagnosticText(value, configuredSecrets);
+}
+
+function containsSensitiveDiagnosticText(value: string, configuredSecrets: string[]) {
+  const normalized = value.toLowerCase();
+  return normalized.includes('authorization')
+    || normalized.includes('bearer')
+    || configuredSecrets.some((secret) => secret && value.includes(secret));
 }
 
 function extractResponseError(body: unknown, fallbackText: string) {
