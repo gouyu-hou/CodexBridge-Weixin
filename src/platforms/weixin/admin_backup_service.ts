@@ -222,17 +222,14 @@ export class WeixinAdminBackupService {
       const label = `accounts[${index}]`;
       validateRequiredString(account, 'accountId', label, errors);
       validateRequiredString(account, 'token', label, errors);
-      validateOptionalString(account, 'base_url', label, errors);
-      validateOptionalString(account, 'baseUrl', label, errors);
-      validateOptionalString(account, 'user_id', label, errors);
-      validateOptionalString(account, 'userId', label, errors);
+      const baseUrl = resolveStringAliases(account, ['base_url', 'baseUrl'], label, errors);
+      const userId = resolveStringAliases(account, ['user_id', 'userId'], label, errors);
       validateOptionalString(account, 'display_name', label, errors);
       validateOptionalBoolean(account, 'disabled', label, errors);
       validateOptionalString(account, 'group', label, errors);
       validateOptionalString(account, 'role', label, errors);
       validateAccountPermissions(account.permissions, `${label}.permissions`, errors);
-      validateAccountModelProvider(account.model_provider, `${label}.model_provider`, errors);
-      validateAccountModelProvider(account.modelProvider, `${label}.modelProvider`, errors);
+      const modelProvider = resolveAccountModelProviderAliases(account, label, errors);
       const accountId = normalizeAccountId(String(account.accountId ?? ''));
       if (!isValidWeixinAccountId(accountId)) {
         errors.push(`accounts[${index}].accountId is invalid`);
@@ -240,15 +237,10 @@ export class WeixinAdminBackupService {
       if (!normalizeEnvString(account.token)) {
         errors.push(`accounts[${index}].token is required`);
       }
-      const baseUrl = normalizeEnvString(account.base_url) ?? normalizeEnvString(account.baseUrl);
       if (!baseUrl) {
         errors.push(`accounts[${index}].base_url is required`);
-      }
-      for (const key of ['base_url', 'baseUrl'] as const) {
-        const value = account[key];
-        if (typeof value === 'string' && value.trim() && !isValidHttpUrl(value.trim())) {
-          errors.push(`${label}.${key} must be an http(s) URL`);
-        }
+      } else if (!isValidHttpUrl(baseUrl)) {
+        errors.push(`${label}.base_url must be an http(s) URL`);
       }
       if (account.context_tokens !== undefined) {
         if (!isRecord(account.context_tokens)) {
@@ -265,7 +257,11 @@ export class WeixinAdminBackupService {
       if (account.sync_cursor !== undefined && typeof account.sync_cursor !== 'string') {
         errors.push(`accounts[${index}].sync_cursor must be a string`);
       }
-      return normalizeImportAccount(account);
+      return normalizeImportAccount(account, {
+        baseUrl: baseUrl ?? '',
+        userId: userId ?? '',
+        modelProvider,
+      });
     });
 
     const rawConfiguration = body.configuration === undefined ? {} : body.configuration;
@@ -313,7 +309,7 @@ export class WeixinAdminBackupService {
     validateImportRequiredStrings(platformBindingRecords, 'runtime.platformBindings', ['platform', 'externalScopeId', 'bridgeSessionId'], errors);
     validateImportRequiredStrings(sessionSettingsRecords, 'runtime.sessionSettings', ['bridgeSessionId'], errors);
     validateImportRequiredStrings(threadMetadataRecords, 'runtime.threadMetadata', ['providerProfileId', 'threadId'], errors);
-    validateProviderProfiles(providerProfileRecords, errors);
+    const providerProfileDisplayNames = validateProviderProfiles(providerProfileRecords, errors);
     validateBridgeSessions(bridgeSessionRecords, errors);
     validatePlatformBindings(platformBindingRecords, errors);
     validateSessionSettings(sessionSettingsRecords, errors);
@@ -324,7 +320,9 @@ export class WeixinAdminBackupService {
     validateUniqueImportRecords(sessionSettingsRecords, 'runtime.sessionSettings', errors, (record) => String(record.bridgeSessionId ?? ''));
     validateUniqueImportRecords(threadMetadataRecords, 'runtime.threadMetadata', errors, (record) => `${record.providerProfileId}:${record.threadId}`);
 
-    const providerProfiles = providerProfileRecords.map(normalizeProviderProfile);
+    const providerProfiles = providerProfileRecords.map((record, index) => (
+      normalizeProviderProfile(record, providerProfileDisplayNames[index] ?? null)
+    ));
     const bridgeSessions = bridgeSessionRecords.map(normalizeBridgeSession);
     const platformBindings = platformBindingRecords.map(normalizePlatformBinding);
     const sessionSettings = sessionSettingsRecords.map(normalizeSessionSettings);
@@ -676,28 +674,89 @@ function validateAccountPermissions(value: unknown, label: string, errors: strin
   validateOptionalBoolean(value, 'can_execute_commands', label, errors);
 }
 
-function validateAccountModelProvider(value: unknown, label: string, errors: string[]) {
-  if (value === undefined) return;
-  if (!isRecord(value)) {
-    errors.push(`${label} must be an object`);
-    return;
-  }
-  validateOptionalString(value, 'provider_profile_id', label, errors);
-  validateOptionalString(value, 'providerProfileId', label, errors);
-  validateOptionalString(value, 'model', label, errors);
-  validateOptionalString(value, 'reasoning_effort', label, errors);
-  validateOptionalString(value, 'reasoningEffort', label, errors);
+function resolveStringAliases(
+  record: Record<string, unknown>,
+  keys: readonly [string, string],
+  label: string,
+  errors: string[],
+): string | null {
+  const values = keys.map((key) => {
+    const value = record[key];
+    if (value === undefined) return null;
+    if (typeof value !== 'string') {
+      errors.push(`${label}.${key} must be a string`);
+      return null;
+    }
+    return normalizeOptionalString(value);
+  });
+  const meaningful = [...new Set(values.filter((value): value is string => value !== null))];
+  if (meaningful.length > 1) errors.push(`${label}.${keys[0]} conflicts with ${label}.${keys[1]}`);
+  return meaningful[0] ?? null;
 }
 
-function validateProviderProfiles(records: Record<string, unknown>[], errors: string[]) {
-  for (const [index, record] of records.entries()) {
+function resolveAccountModelProvider(
+  value: unknown,
+  label: string,
+  errors: string[],
+): SavedWeixinAccount['model_provider'] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) {
+    errors.push(`${label} must be an object`);
+    return undefined;
+  }
+  const providerProfileId = resolveStringAliases(
+    value,
+    ['provider_profile_id', 'providerProfileId'],
+    label,
+    errors,
+  );
+  validateOptionalString(value, 'model', label, errors);
+  const model = normalizeOptionalString(value.model);
+  const reasoningEffort = resolveStringAliases(
+    value,
+    ['reasoning_effort', 'reasoningEffort'],
+    label,
+    errors,
+  );
+  if (!providerProfileId && !model && !reasoningEffort) return undefined;
+  return {
+    ...(providerProfileId ? { provider_profile_id: providerProfileId } : {}),
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+  };
+}
+
+function resolveAccountModelProviderAliases(
+  record: Record<string, unknown>,
+  label: string,
+  errors: string[],
+): SavedWeixinAccount['model_provider'] | undefined {
+  const preferred = resolveAccountModelProvider(record.model_provider, `${label}.model_provider`, errors);
+  const fallback = resolveAccountModelProvider(record.modelProvider, `${label}.modelProvider`, errors);
+  if (preferred && fallback && !modelProvidersEqual(preferred, fallback)) {
+    errors.push(`${label}.model_provider conflicts with ${label}.modelProvider`);
+  }
+  return preferred ?? fallback;
+}
+
+function modelProvidersEqual(
+  left: SavedWeixinAccount['model_provider'],
+  right: SavedWeixinAccount['model_provider'],
+) {
+  return left.provider_profile_id === right.provider_profile_id
+    && left.model === right.model
+    && left.reasoning_effort === right.reasoning_effort;
+}
+
+function validateProviderProfiles(records: Record<string, unknown>[], errors: string[]): Array<string | null> {
+  return records.map((record, index) => {
     const label = `runtime.providerProfiles[${index}]`;
-    validateOptionalString(record, 'displayName', label, errors);
-    validateOptionalString(record, 'name', label, errors);
+    const displayName = resolveStringAliases(record, ['displayName', 'name'], label, errors);
     validateOptionalRecord(record, 'config', label, errors);
     validateOptionalFiniteNumber(record, 'createdAt', label, errors);
     validateOptionalFiniteNumber(record, 'updatedAt', label, errors);
-  }
+    return displayName;
+  });
 }
 
 function validateBridgeSessions(records: Record<string, unknown>[], errors: string[]) {
@@ -752,36 +811,40 @@ function validateUniqueImportRecords(records: Record<string, unknown>[], label: 
   }
 }
 
-function normalizeImportAccount(record: Record<string, unknown>): WeixinAdminBackupAccount {
+function normalizeImportAccount(
+  record: Record<string, unknown>,
+  aliases: {
+    baseUrl: string;
+    userId: string;
+    modelProvider: SavedWeixinAccount['model_provider'] | undefined;
+  },
+): WeixinAdminBackupAccount {
   const contextTokens = isRecord(record.context_tokens)
     ? Object.fromEntries(Object.entries(record.context_tokens).filter((entry): entry is [string, string] => typeof entry[1] === 'string'))
     : undefined;
   const permissions = normalizePermissions(record.permissions);
-  const modelProvider = normalizeModelProvider(
-    isRecord(record.model_provider) ? record.model_provider : record.modelProvider,
-  );
   return {
     accountId: normalizeAccountId(String(record.accountId ?? '')),
     token: String(record.token ?? '').trim(),
-    baseUrl: String(record.base_url ?? record.baseUrl ?? '').trim(),
-    userId: String(record.user_id ?? record.userId ?? ''),
+    baseUrl: aliases.baseUrl,
+    userId: aliases.userId,
     ...(typeof record.display_name === 'string' ? { displayName: record.display_name } : {}),
     ...(typeof record.disabled === 'boolean' ? { disabled: record.disabled } : {}),
     ...(typeof record.group === 'string' ? { group: record.group } : {}),
     ...(typeof record.role === 'string' ? { role: record.role } : {}),
     ...(permissions ? { permissions } : {}),
-    ...(modelProvider ? { modelProvider } : {}),
+    ...(aliases.modelProvider ? { modelProvider: aliases.modelProvider } : {}),
     ...(contextTokens ? { contextTokens } : {}),
     ...(typeof record.sync_cursor === 'string' ? { syncCursor: record.sync_cursor } : {}),
   };
 }
 
-function normalizeProviderProfile(record: Record<string, unknown>): ProviderProfile {
+function normalizeProviderProfile(record: Record<string, unknown>, displayName: string | null): ProviderProfile {
   const id = normalizeRequiredString(record.id);
   return {
     id,
     providerKind: normalizeRequiredString(record.providerKind),
-    displayName: normalizeOptionalString(record.displayName) ?? normalizeOptionalString(record.name) ?? id,
+    displayName: displayName ?? id,
     config: isRecord(record.config) ? record.config : {},
     createdAt: normalizeNumber(record.createdAt),
     updatedAt: normalizeNumber(record.updatedAt),
@@ -871,19 +934,6 @@ function normalizePermissions(value: unknown): SavedWeixinAccount['permissions']
     ...(value.can_chat !== undefined ? { can_chat: Boolean(value.can_chat) } : {}),
     ...(value.can_upload !== undefined ? { can_upload: Boolean(value.can_upload) } : {}),
     ...(value.can_execute_commands !== undefined ? { can_execute_commands: Boolean(value.can_execute_commands) } : {}),
-  };
-}
-
-function normalizeModelProvider(value: unknown): SavedWeixinAccount['model_provider'] | undefined {
-  if (!isRecord(value)) return undefined;
-  const providerProfileId = normalizeOptionalString(value.provider_profile_id ?? value.providerProfileId);
-  const model = normalizeOptionalString(value.model);
-  const reasoningEffort = normalizeOptionalString(value.reasoning_effort ?? value.reasoningEffort);
-  if (!providerProfileId && !model && !reasoningEffort) return undefined;
-  return {
-    ...(providerProfileId ? { provider_profile_id: providerProfileId } : {}),
-    ...(model ? { model } : {}),
-    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
   };
 }
 

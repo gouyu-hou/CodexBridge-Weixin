@@ -195,6 +195,130 @@ test('WeixinAdminBackupService rejects non-http account and provider URLs', () =
   ]);
 });
 
+test('WeixinAdminBackupService resolves blank preferred aliases through valid normalized fallbacks', () => {
+  const { service, accountStore } = makeService();
+  const backup = typedBackupFixture();
+  Object.assign(backup.accounts[0]!, {
+    base_url: '   ',
+    baseUrl: ' https://fallback.example ',
+    user_id: ' ',
+    userId: ' fallback-user ',
+    model_provider: {},
+    modelProvider: {
+      provider_profile_id: ' ',
+      providerProfileId: ' fallback-profile ',
+      model: ' fallback-model ',
+      reasoning_effort: ' ',
+      reasoningEffort: ' high ',
+    },
+  });
+  Object.assign(backup.runtime.providerProfiles[0]!, {
+    id: 'fallback-profile',
+    displayName: ' ',
+    name: ' Fallback profile ',
+  });
+
+  const validation = service.validateImport(backup);
+
+  assert.deepEqual(validation.errors, []);
+  assert.equal(validation.payload.accounts[0]?.baseUrl, 'https://fallback.example');
+  assert.equal(validation.payload.accounts[0]?.userId, 'fallback-user');
+  assert.deepEqual(validation.payload.accounts[0]?.modelProvider, {
+    provider_profile_id: 'fallback-profile',
+    model: 'fallback-model',
+    reasoning_effort: 'high',
+  });
+  assert.equal(validation.payload.runtime.providerProfiles[0]?.displayName, 'Fallback profile');
+  assert.equal(service.importBackup(backup).status, 200);
+  assert.equal(accountStore.loadAccount('typed-account')?.base_url, 'https://fallback.example');
+  assert.equal(accountStore.loadAccount('typed-account')?.user_id, 'fallback-user');
+});
+
+test('WeixinAdminBackupService rejects every conflicting meaningful compatibility alias before mutation', async (t) => {
+  const conflicts: Array<{
+    label: string;
+    mutate(fixture: TypedBackupFixture): void;
+  }> = [
+    {
+      label: 'account base URL',
+      mutate: (backup) => { backup.accounts[0]!.baseUrl = 'https://other.example'; },
+    },
+    {
+      label: 'account user ID',
+      mutate: (backup) => { backup.accounts[0]!.userId = 'other-user'; },
+    },
+    {
+      label: 'account model-provider object',
+      mutate: (backup) => {
+        backup.accounts[0]!.modelProvider = { providerProfileId: 'profile-2', model: 'model-2', reasoningEffort: 'high' };
+      },
+    },
+    {
+      label: 'nested provider profile ID',
+      mutate: (backup) => {
+        backup.accounts[0]!.model_provider = { provider_profile_id: 'profile-1', providerProfileId: 'profile-2' };
+      },
+    },
+    {
+      label: 'nested reasoning effort',
+      mutate: (backup) => {
+        backup.accounts[0]!.model_provider = { reasoning_effort: 'medium', reasoningEffort: 'high' };
+      },
+    },
+    {
+      label: 'provider profile display name',
+      mutate: (backup) => { backup.runtime.providerProfiles[0]!.displayName = 'Other profile'; },
+    },
+  ];
+
+  for (const conflict of conflicts) {
+    await t.test(conflict.label, () => {
+      const { service, accountStore, stateDir } = makeService();
+      const backup = typedBackupFixture();
+      conflict.mutate(backup);
+
+      const result = service.importBackup(backup);
+
+      assert.equal(result.status, 400);
+      assert.equal(accountStore.loadAccount('typed-account'), null);
+      assert.equal(fs.existsSync(path.join(stateDir, 'backups')), false);
+    });
+  }
+});
+
+test('WeixinAdminBackupService accepts matching meaningful compatibility aliases', () => {
+  const { service } = makeService();
+  const backup = typedBackupFixture();
+  Object.assign(backup.accounts[0]!, {
+    baseUrl: ' https://typed.example ',
+    userId: ' user-1 ',
+    model_provider: {
+      provider_profile_id: 'profile-1',
+      providerProfileId: ' profile-1 ',
+      model: 'model-1',
+      reasoning_effort: 'medium',
+      reasoningEffort: ' medium ',
+    },
+    modelProvider: {
+      providerProfileId: 'profile-1',
+      model: ' model-1 ',
+      reasoningEffort: 'medium',
+    },
+  });
+  backup.runtime.providerProfiles[0]!.displayName = ' Profile ';
+
+  const validation = service.validateImport(backup);
+
+  assert.deepEqual(validation.errors, []);
+  assert.equal(validation.payload.accounts[0]?.baseUrl, 'https://typed.example');
+  assert.deepEqual(validation.payload.accounts[0]?.modelProvider, {
+    provider_profile_id: 'profile-1',
+    model: 'model-1',
+    reasoning_effort: 'medium',
+  });
+  assert.equal(validation.payload.runtime.providerProfiles[0]?.displayName, 'Profile');
+});
+
 test('WeixinAdminBackupService rejects every malformed typed account and runtime field', async (t) => {
   const malformedCases: Array<{
     label: string;
