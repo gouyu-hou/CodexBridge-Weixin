@@ -12,6 +12,7 @@ test('release verification covers the root project and every packaged workspace'
     'typecheck',
     'typecheck:js',
     'typecheck:command-services:strict',
+    'typecheck:weixin-admin-services:strict',
     'test',
     'build',
     'codex-gateway:check-boundary',
@@ -57,6 +58,20 @@ test('command-service strict typecheck runs before the root typecheck', () => {
   assert.ok(adminTypecheckIndex >= 0);
   assert.ok(strictTypecheckIndex > adminTypecheckIndex);
   assert.ok(rootTypecheckIndex > strictTypecheckIndex);
+});
+
+test('weixin admin service strict typecheck is configured for release verification', () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'),
+  ) as { scripts?: Record<string, string> };
+  const scripts = packageJson.scripts ?? {};
+  const command = scripts['verify:release'] ?? '';
+
+  assert.equal(
+    scripts['typecheck:weixin-admin-services:strict'],
+    'tsc -p tsconfig.weixin-admin-services-strict.json',
+  );
+  assert.match(command, /npm run typecheck:weixin-admin-services:strict(?:\s|$)/u);
 });
 
 test('release automation is exposed through the canonical npm command', () => {

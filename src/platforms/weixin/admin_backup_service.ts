@@ -740,8 +740,8 @@ function resolveAccountModelProviderAliases(
 }
 
 function modelProvidersEqual(
-  left: SavedWeixinAccount['model_provider'],
-  right: SavedWeixinAccount['model_provider'],
+  left: NonNullable<SavedWeixinAccount['model_provider']>,
+  right: NonNullable<SavedWeixinAccount['model_provider']>,
 ) {
   return left.provider_profile_id === right.provider_profile_id
     && left.model === right.model
@@ -878,13 +878,13 @@ function normalizeSessionSettings(record: Record<string, unknown>): SessionSetti
     model: normalizeNullableString(record.model),
     reasoningEffort: normalizeNullableString(record.reasoningEffort),
     serviceTier: normalizeNullableString(record.serviceTier),
-    collaborationMode: normalizeChoice(record.collaborationMode, ['plan', 'default']),
-    personality: normalizeChoice(record.personality, ['friendly', 'pragmatic', 'none']),
-    permissionsMode: normalizeChoice(record.permissionsMode, ['default-permissions', 'auto-review', 'full-access', 'custom']),
-    accessPreset: normalizeChoice(record.accessPreset, ['read-only', 'default', 'full-access']),
+    collaborationMode: normalizeChoice(record.collaborationMode, ['plan', 'default'] as const),
+    personality: normalizeChoice(record.personality, ['friendly', 'pragmatic', 'none'] as const),
+    permissionsMode: normalizeChoice(record.permissionsMode, ['default-permissions', 'auto-review', 'full-access', 'custom'] as const),
+    accessPreset: normalizeChoice(record.accessPreset, ['read-only', 'default', 'full-access'] as const),
     approvalPolicy: normalizeNullableString(record.approvalPolicy),
     sandboxMode: normalizeNullableString(record.sandboxMode),
-    approvalsReviewer: normalizeChoice(record.approvalsReviewer, ['user', 'auto_review']),
+    approvalsReviewer: normalizeChoice(record.approvalsReviewer, ['user', 'auto_review'] as const),
     locale: normalizeNullableString(record.locale),
     metadata: isRecord(record.metadata) ? record.metadata : {},
     updatedAt: normalizeNumber(record.updatedAt),

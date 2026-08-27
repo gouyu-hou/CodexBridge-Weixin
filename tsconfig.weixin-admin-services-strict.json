@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": false,
+    "strict": true,
+    "noEmit": true
+  },
+  "include": [
+    "src/platforms/weixin/admin_route.ts",
+    "src/platforms/weixin/admin_backup_service.ts",
+    "src/platforms/weixin/admin_diagnostics_service.ts",
+    "src/platforms/weixin/admin_log_maintenance_service.ts"
+  ]
+}
