@@ -426,7 +426,9 @@ export async function verifyPackagedAdminDom(cdp) {
       refreshRequests = (window.__codexbridgeSmokeRequests || [])
         .slice(requestStart)
         .filter((request) => request.pathname === '/api/state');
-      if (refreshRequests.some((request) => request.ok !== null)) break;
+      const navigationSettled = window.location.hash === '#runtime'
+        && String(document.querySelector('.page-heading h1')?.textContent || '').trim() === '运行状态';
+      if (refreshRequests.some((request) => request.ok !== null) && navigationSettled) break;
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     const pageTitle = String(document.querySelector('.page-heading h1')?.textContent || '').trim();

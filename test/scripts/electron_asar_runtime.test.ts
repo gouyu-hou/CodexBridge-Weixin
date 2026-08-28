@@ -304,6 +304,19 @@ test('packaged smoke drives the real admin DOM through loopback-only CDP', () =>
   assert.match(mainSource, /smokeTest\s*&&\s*!smokeTestUi/u);
 });
 
+test('packaged DOM smoke waits for route navigation before finishing interaction checks', () => {
+  const smokeSource = fs.readFileSync(
+    path.join(process.cwd(), 'scripts', 'release', 'smoke_packaged.mjs'),
+    'utf8',
+  );
+
+  assert.match(smokeSource, /const navigationSettled\s*=\s*window\.location\.hash\s*===\s*['"]#runtime['"]/u);
+  assert.match(
+    smokeSource,
+    /refreshRequests\.some\(\(request\)\s*=>\s*request\.ok\s*!==\s*null\)\s*&&\s*navigationSettled/u,
+  );
+});
+
 test('packaged DOM smoke reloads with initialization error capture installed', async () => {
   const { verifyPackagedAdminDom } = packagedSmoke as PackagedSmokeModule;
   assert.equal(typeof verifyPackagedAdminDom, 'function');
