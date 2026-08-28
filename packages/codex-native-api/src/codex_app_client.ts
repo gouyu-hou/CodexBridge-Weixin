@@ -1797,7 +1797,7 @@ export class CodexAppClient extends EventEmitter {
             const previewText = resolveTurnPreviewText(turn, progressState);
             const sessionTaskDecision = decideCodexTurnLifecycle({
               isTerminal: true,
-              providerError: previewText ? null : sessionState.runtimeError,
+              providerError: sessionState.runtimeError,
               hasTaskComplete: true,
               previewText,
             });

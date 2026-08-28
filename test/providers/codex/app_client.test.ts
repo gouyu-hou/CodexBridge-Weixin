@@ -3728,6 +3728,108 @@ test('CodexAppClient surfaces exhausted subscription credits from session rate l
   assert.equal(result.errorMessage, 'Codex subscription credits are exhausted (premium balance 0).');
 });
 
+test('CodexAppClient keeps terminal preview text ahead of a session provider error', async (t) => {
+  const sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codexbridge-session-log-preview-error-'));
+  const sessionPath = path.join(sessionDir, 'rollout.jsonl');
+  fs.writeFileSync(sessionPath, [
+    JSON.stringify({
+      type: 'turn_context',
+      payload: { turn_id: 'turn-1' },
+    }),
+    JSON.stringify({
+      type: 'event_msg',
+      payload: {
+        type: 'token_count',
+        rate_limits: {
+          limit_id: 'premium',
+          credits: { has_credits: false, unlimited: false, balance: '0' },
+          plan_type: 'plus',
+          rate_limit_reached_type: null,
+        },
+      },
+    }),
+    JSON.stringify({
+      type: 'event_msg',
+      payload: { type: 'task_complete', turn_id: 'turn-1', last_agent_message: null },
+    }),
+  ].join('\n') + '\n', 'utf8');
+  t.after(() => fs.rmSync(sessionDir, { recursive: true, force: true }));
+
+  const client = new CodexAppClient({ codexCliBin: 'codex' });
+  client.readThread = async () => ({
+    title: 'Preview precedence',
+    path: sessionPath,
+    turns: [{
+      id: 'turn-1',
+      status: 'completed',
+      items: [{
+        type: 'message',
+        role: 'assistant',
+        phase: 'commentary',
+        text: 'root preview survives',
+      }],
+    }],
+  } as any);
+
+  const result = await client.waitForTurnResult({
+    threadId: 'thread-1',
+    turnId: 'turn-1',
+    timeoutMs: 2_500,
+  });
+
+  assert.equal(result.outputState, 'partial');
+  assert.equal(result.previewText, 'root preview survives');
+  assert.equal(result.errorMessage, undefined);
+});
+
+test('CodexAppClient clears turn listeners and approved executions after terminal output', async () => {
+  const client = new CodexAppClient({
+    codexCliBin: 'codex',
+    turnPollNow: () => 0,
+  });
+  const notificationListeners = client.listenerCount('notification');
+  const approvalListeners = client.listenerCount('approval_request');
+  client.approvedExecutions.set('approved-execution', {
+    requestId: 'approved-execution',
+    kind: 'command',
+    threadId: 'thread-1',
+    turnId: 'turn-1',
+    itemId: 'item-approved-execution',
+    command: 'npm test',
+    approvedAt: 0,
+    lastSignalAt: 0,
+    lastSignalKind: 'approval_response_sent',
+    signalCount: 0,
+    completedAt: null,
+    lastObservedTurnSnapshotKey: null,
+  });
+  client.readThread = async () => ({
+    title: 'Cleanup',
+    path: null,
+    turns: [{
+      id: 'turn-1',
+      status: 'completed',
+      items: [{
+        type: 'message',
+        role: 'assistant',
+        phase: 'final_answer',
+        text: 'done',
+      }],
+    }],
+  } as any);
+
+  const result = await client.waitForTurnResult({
+    threadId: 'thread-1',
+    turnId: 'turn-1',
+    timeoutMs: 2_500,
+  });
+
+  assert.equal(result.outputState, 'complete');
+  assert.equal(client.listenerCount('notification'), notificationListeners);
+  assert.equal(client.listenerCount('approval_request'), approvalListeners);
+  assert.equal(client.approvedExecutions.size, 0);
+});
+
 test('CodexAppClient returns provider_error immediately when an error notification arrives for the active stdio turn', async () => {
   const client = new CodexAppClient({
     codexCliBin: 'codex',

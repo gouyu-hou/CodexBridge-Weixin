@@ -50,6 +50,15 @@ test('turn lifecycle classifies normalized terminal snapshots', () => {
       expected: { kind: 'partial', previewText: 'I am checking that now.' },
     },
     {
+      name: 'task completion keeps preview text ahead of a session provider error',
+      snapshot: {
+        hasTaskComplete: true,
+        providerError: 'Codex subscription credits are exhausted.',
+        previewText: 'I am checking that now.',
+      },
+      expected: { kind: 'partial', previewText: 'I am checking that now.' },
+    },
+    {
       name: 'empty task completion is missing',
       snapshot: { hasTaskComplete: true },
       expected: { kind: 'missing' },

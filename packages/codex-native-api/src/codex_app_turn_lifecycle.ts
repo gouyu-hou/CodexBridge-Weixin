@@ -44,13 +44,14 @@ export function decideCodexTurnLifecycle(
   if (shouldWaitForTerminalSettle) {
     return { kind: 'wait', reason: 'terminal_settle' };
   }
-  if (hasTaskComplete && providerError) {
-    return { kind: 'provider_error', errorMessage: providerError };
-  }
   if (hasTaskComplete) {
-    return previewText
-      ? { kind: 'partial', previewText }
-      : { kind: 'missing' };
+    if (previewText) {
+      return { kind: 'partial', previewText };
+    }
+    if (providerError) {
+      return { kind: 'provider_error', errorMessage: providerError };
+    }
+    return { kind: 'missing' };
   }
   if (shouldWaitForTaskComplete) {
     return { kind: 'wait', reason: 'session_task_complete' };
