@@ -2045,60 +2045,61 @@ export class CodexAppClient extends EventEmitter {
         if (turn && isTurnTerminal(turn.status)) {
           const outputText = extractTurnOutputText(turn);
           const outputArtifacts = extractTurnOutputArtifacts(turn, extractOutputArtifactFromItem);
-          const terminalOutputDecision = decideCodexTurnLifecycle({
-            isTerminal: true,
-            hasTerminalOutput: Boolean(outputText) || outputArtifacts.length > 0,
-          });
-          if (terminalOutputDecision.kind === 'complete' && outputText) {
-            this.noteApprovedExecutionSignal({
-              threadId,
-              turnId,
-              signalKind: 'turn_terminal',
-              markCompleted: true,
-            });
-            const result = {
-              turnId,
-              threadId,
-              title: thread?.title ?? null,
-              outputText,
-              outputArtifacts,
-              outputMedia: normalizeLegacyImageMedia(outputArtifacts),
-              outputState: 'complete',
-              previewText: progressState.finalAnswerText,
-              finalSource: 'thread_items',
-              status: turn.status,
-            };
-            this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
-            return result;
-          }
-          if (terminalOutputDecision.kind === 'complete' && outputArtifacts.length > 0) {
-            this.noteApprovedExecutionSignal({
-              threadId,
-              turnId,
-              signalKind: 'turn_terminal',
-              markCompleted: true,
-            });
-            const result = {
-              turnId,
-              threadId,
-              title: thread?.title ?? null,
-              outputText: '',
-              outputArtifacts,
-              outputMedia: normalizeLegacyImageMedia(outputArtifacts),
-              outputState: 'complete',
-              previewText: progressState.finalAnswerText,
-              finalSource: 'thread_items_media',
-              status: turn.status,
-            };
-            this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
-            return result;
-          }
           const sessionState = inspectTurnCompletionFromSessionPath(thread?.path ?? null, turnId);
           const hasAssistantVisibleItems = turn.items.some((item) => isAssistantVisibleItem(item));
           const completionState = classifyTurnCompletionState(turn);
-          const interruptedDecision = decideCodexTurnLifecycle({
+          const previewText = resolveTurnPreviewText(turn, progressState);
+          const hasImmediatelyAvailableTaskOutput = Boolean(
+            sessionState.lastAgentMessage && hasAssistantVisibleItems,
+          );
+          const sessionTaskCompleteNeedsMaterializationWait = shouldWaitForSessionTaskMaterialization(
+            sessionState,
+            hasAssistantVisibleItems,
+          );
+          const terminalSettlePending = !hasImmediatelyAvailableTaskOutput
+            && (
+              shouldWaitForSettledOutputAfterTerminalTurn(turn, progressState)
+              || sessionTaskCompleteNeedsMaterializationWait
+            );
+          const evaluationNow = this.turnPollNow();
+          if (terminalSettlePending) {
+            const snapshotKey = buildTurnSnapshotKey(turn);
+            if (snapshotKey === lastTurnSnapshotKey) {
+              stableTerminalReadCount += 1;
+            } else {
+              lastTurnSnapshotKey = snapshotKey;
+              stableTerminalReadCount = 1;
+            }
+            firstTerminalWithoutOutputAt ??= evaluationNow;
+          }
+          const canPollAgain = evaluationNow + 1000 < deadline;
+          const shouldContinueTerminalSettle = terminalSettlePending
+            && (
+              evaluationNow - (firstTerminalWithoutOutputAt ?? evaluationNow) < terminalSettleMs
+              || stableTerminalReadCount < 3
+            )
+            && canPollAgain;
+          const taskCompletionPending = shouldWaitForTaskCompleteBeforeMissing(
+            thread?.path ?? null,
+            sessionState,
+          );
+          const unsettledAssistantActivity = hasUnsettledAssistantActivity(turn, progressState);
+          const lifecycleDecision = decideCodexTurnLifecycle({
             isTerminal: true,
+            hasTerminalOutput: Boolean(outputText) || outputArtifacts.length > 0,
             isInterrupted: completionState === 'interrupted',
+            turnError: turn.error,
+            providerError: sessionState.runtimeError,
+            shouldWaitForTerminalSettle: shouldContinueTerminalSettle,
+            hasTaskCompleteOutput: Boolean(
+              sessionState.lastAgentMessage || sessionState.outputArtifacts.length > 0,
+            ),
+            hasTaskComplete: sessionState.hasTaskComplete,
+            shouldWaitForTaskComplete: taskCompletionPending && canPollAgain,
+            taskCompletionWaitExpired: taskCompletionPending && !canPollAgain,
+            hasUnsettledAssistantActivity: unsettledAssistantActivity && canPollAgain,
+            unsettledAssistantActivityWaitExpired: unsettledAssistantActivity && !canPollAgain,
+            previewText,
           });
           this.logDebug('turn_terminal_state', {
             threadId,
@@ -2110,126 +2111,83 @@ export class CodexAppClient extends EventEmitter {
             sessionState: summarizeSessionState(thread?.path ?? null, sessionState),
             progress: summarizeProgressState(progressState),
           });
-          if (interruptedDecision.kind === 'interrupted') {
-            this.noteApprovedExecutionSignal({
-              threadId,
-              turnId,
-              signalKind: 'turn_terminal',
-              markCompleted: true,
-            });
-            const result = {
-              turnId,
-              threadId,
-              title: thread?.title ?? null,
-              outputText: '',
-              outputState: 'interrupted',
-              previewText: progressState.finalAnswerText,
-              finalSource: progressState.finalAnswerText ? 'progress_only' : 'none',
-              status: turn.status,
-            };
-            this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
-            return result;
-          }
-          if (turn.error) {
-            this.logDebug('turn_wait_error', {
-              threadId,
-              turnId,
-              pollCount,
-              error: turn.error,
-            });
-            throw new Error(turn.error);
-          }
-          if (sessionState.lastAgentMessage && hasAssistantVisibleItems) {
-            this.noteApprovedExecutionSignal({
-              threadId,
-              turnId,
-              signalKind: 'session_task_complete',
-              markCompleted: true,
-            });
-            const result = buildSessionTaskCompleteResult({
-              turnId,
-              threadId,
-              title: thread?.title ?? null,
-              status: turn.status,
-              previewText: progressState.finalAnswerText,
-              sessionState,
-            });
-            this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
-            return result;
-          }
-          const sessionTaskCompleteNeedsMaterializationWait = shouldWaitForSessionTaskMaterialization(
-            sessionState,
-            hasAssistantVisibleItems,
-          );
-          const terminalSettleDecision = decideCodexTurnLifecycle({
-            isTerminal: true,
-            shouldWaitForTerminalSettle: shouldWaitForSettledOutputAfterTerminalTurn(turn, progressState)
-              || sessionTaskCompleteNeedsMaterializationWait,
-          });
-          if (terminalSettleDecision.kind === 'wait') {
-            const snapshotKey = buildTurnSnapshotKey(turn);
-            if (snapshotKey === lastTurnSnapshotKey) {
-              stableTerminalReadCount += 1;
-            } else {
-              lastTurnSnapshotKey = snapshotKey;
-              stableTerminalReadCount = 1;
+
+          switch (lifecycleDecision.kind) {
+            case 'complete': {
+              this.noteApprovedExecutionSignal({
+                threadId,
+                turnId,
+                signalKind: 'turn_terminal',
+                markCompleted: true,
+              });
+              const result = {
+                turnId,
+                threadId,
+                title: thread?.title ?? null,
+                outputText,
+                outputArtifacts,
+                outputMedia: normalizeLegacyImageMedia(outputArtifacts),
+                outputState: 'complete',
+                previewText: progressState.finalAnswerText,
+                finalSource: outputText ? 'thread_items' : 'thread_items_media',
+                status: turn.status,
+              };
+              this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
+              return result;
             }
-            firstTerminalWithoutOutputAt ??= this.turnPollNow();
-            if (
-              (
-                this.turnPollNow() - firstTerminalWithoutOutputAt < terminalSettleMs
-                || stableTerminalReadCount < 3
-              )
-              && this.turnPollNow() + 1000 < deadline
-            ) {
-              this.logDebug('turn_wait_continue', {
+            case 'interrupted': {
+              this.noteApprovedExecutionSignal({
+                threadId,
+                turnId,
+                signalKind: 'turn_terminal',
+                markCompleted: true,
+              });
+              const result = {
+                turnId,
+                threadId,
+                title: thread?.title ?? null,
+                outputText: '',
+                outputState: 'interrupted',
+                previewText: progressState.finalAnswerText,
+                finalSource: progressState.finalAnswerText ? 'progress_only' : 'none',
+                status: turn.status,
+              };
+              this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
+              return result;
+            }
+            case 'turn_error':
+              this.logDebug('turn_wait_error', {
                 threadId,
                 turnId,
                 pollCount,
-                reason: sessionTaskCompleteNeedsMaterializationWait
-                  ? 'session_task_materialization_wait'
-                  : 'terminal_settle_wait',
-                stableTerminalReadCount,
-                terminalElapsedMs: this.turnPollNow() - firstTerminalWithoutOutputAt,
-                terminalSettleMs,
+                error: lifecycleDecision.errorMessage,
               });
-              await this.turnPollSleep(1000);
-              continue;
+              throw new Error(lifecycleDecision.errorMessage);
+            case 'task_complete': {
+              this.noteApprovedExecutionSignal({
+                threadId,
+                turnId,
+                signalKind: 'session_task_complete',
+                markCompleted: true,
+              });
+              const result = buildSessionTaskCompleteResult({
+                turnId,
+                threadId,
+                title: thread?.title ?? null,
+                status: turn.status,
+                previewText: progressState.finalAnswerText,
+                sessionState,
+              });
+              this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
+              return result;
             }
-          }
-          if (sessionState.lastAgentMessage || sessionState.outputArtifacts.length > 0) {
-            this.noteApprovedExecutionSignal({
-              threadId,
-              turnId,
-              signalKind: 'session_task_complete',
-              markCompleted: true,
-            });
-            const result = buildSessionTaskCompleteResult({
-              turnId,
-              threadId,
-              title: thread?.title ?? null,
-              status: turn.status,
-              previewText: progressState.finalAnswerText,
-              sessionState,
-            });
-            this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
-            return result;
-          }
-          if (sessionState.hasTaskComplete) {
-            this.noteApprovedExecutionSignal({
-              threadId,
-              turnId,
-              signalKind: 'session_task_complete',
-              markCompleted: true,
-            });
-            const previewText = resolveTurnPreviewText(turn, progressState);
-            const sessionTaskDecision = decideCodexTurnLifecycle({
-              isTerminal: true,
-              providerError: sessionState.runtimeError,
-              hasTaskComplete: true,
-              previewText,
-            });
-            if (sessionTaskDecision.kind === 'provider_error') {
+            case 'provider_error': {
+              this.noteApprovedExecutionSignal({
+                threadId,
+                turnId,
+                signalKind: 'session_task_complete',
+                markCompleted: true,
+              });
               const result = {
                 turnId,
                 threadId,
@@ -2239,124 +2197,110 @@ export class CodexAppClient extends EventEmitter {
                 previewText: '',
                 finalSource: 'session_runtime_error',
                 status: turn.status,
-                errorMessage: sessionTaskDecision.errorMessage,
+                errorMessage: lifecycleDecision.errorMessage,
               };
               this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
               return result;
             }
-            const result = {
-              turnId,
-              threadId,
-              title: thread?.title ?? null,
-              outputText: '',
-              outputState: sessionTaskDecision.kind === 'partial' ? 'partial' : 'missing',
-              previewText,
-              finalSource: progressState.finalAnswerText
-                ? 'progress_only'
-                : progressState.commentaryText
-                  ? 'commentary_only'
-                  : 'session_task_complete_empty',
-              status: turn.status,
-            };
-            this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
-            return result;
-          }
-          const taskCompletionDecision = decideCodexTurnLifecycle({
-            isTerminal: true,
-            shouldWaitForTaskComplete: shouldWaitForTaskCompleteBeforeMissing(thread?.path ?? null, sessionState),
-          });
-          if (taskCompletionDecision.kind === 'wait') {
-            if (this.turnPollNow() + 1000 < deadline) {
-              this.logDebug('turn_wait_continue', {
-                threadId,
-                turnId,
-                pollCount,
-                reason: 'waiting_for_session_task_complete',
-                sessionPath: thread?.path ?? null,
-              });
-              await this.turnPollSleep(1000);
-              continue;
-            }
-            const previewText = resolveTurnPreviewText(turn, progressState);
-            if (previewText) {
+            case 'partial': {
+              if (sessionState.hasTaskComplete) {
+                this.noteApprovedExecutionSignal({
+                  threadId,
+                  turnId,
+                  signalKind: 'session_task_complete',
+                  markCompleted: true,
+                });
+              }
               const result = {
                 turnId,
                 threadId,
                 title: thread?.title ?? null,
                 outputText: '',
                 outputState: 'partial',
-                previewText,
-                finalSource: progressState.finalAnswerText ? 'progress_only' : 'commentary_only',
+                previewText: lifecycleDecision.previewText,
+                finalSource: sessionState.hasTaskComplete
+                  ? progressState.finalAnswerText
+                    ? 'progress_only'
+                    : progressState.commentaryText
+                      ? 'commentary_only'
+                      : 'session_task_complete_empty'
+                  : progressState.finalAnswerText
+                    ? 'progress_only'
+                    : 'commentary_only',
                 status: turn.status,
               };
               this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
               return result;
             }
-            this.logDebug('turn_wait_error', {
-              threadId,
-              turnId,
-              pollCount,
-              reason: 'task_complete_timeout_without_preview',
-            });
-            throw new Error(`Timed out waiting for Codex turn ${turnId}`);
-          }
-          const unsettledAssistantDecision = decideCodexTurnLifecycle({
-            isTerminal: true,
-            hasUnsettledAssistantActivity: hasUnsettledAssistantActivity(turn, progressState),
-          });
-          if (unsettledAssistantDecision.kind === 'wait') {
-            if (this.turnPollNow() + 1000 < deadline) {
-              this.logDebug('turn_wait_continue', {
-                threadId,
-                turnId,
-                pollCount,
-                reason: 'unsettled_assistant_activity',
-                progress: summarizeProgressState(progressState),
-              });
-              await this.turnPollSleep(1000);
-              continue;
-            }
-            const previewText = resolveTurnPreviewText(turn, progressState);
-            if (previewText) {
+            case 'missing': {
+              if (sessionState.hasTaskComplete) {
+                this.noteApprovedExecutionSignal({
+                  threadId,
+                  turnId,
+                  signalKind: 'session_task_complete',
+                  markCompleted: true,
+                });
+              }
               const result = {
                 turnId,
                 threadId,
                 title: thread?.title ?? null,
                 outputText: '',
-                outputState: 'partial',
-                previewText,
-                finalSource: progressState.finalAnswerText ? 'progress_only' : 'commentary_only',
+                outputState: 'missing',
+                previewText: '',
+                finalSource: sessionState.hasTaskComplete ? 'session_task_complete_empty' : 'none',
                 status: turn.status,
               };
               this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
               return result;
             }
-            this.logDebug('turn_wait_error', {
-              threadId,
-              turnId,
-              pollCount,
-              reason: 'assistant_activity_timeout_without_preview',
-            });
-            throw new Error(`Timed out waiting for Codex turn ${turnId}`);
+            case 'wait':
+              if (lifecycleDecision.reason === 'terminal_settle') {
+                this.logDebug('turn_wait_continue', {
+                  threadId,
+                  turnId,
+                  pollCount,
+                  reason: sessionTaskCompleteNeedsMaterializationWait
+                    ? 'session_task_materialization_wait'
+                    : 'terminal_settle_wait',
+                  stableTerminalReadCount,
+                  terminalElapsedMs: evaluationNow - (firstTerminalWithoutOutputAt ?? evaluationNow),
+                  terminalSettleMs,
+                });
+              } else if (lifecycleDecision.reason === 'session_task_complete') {
+                this.logDebug('turn_wait_continue', {
+                  threadId,
+                  turnId,
+                  pollCount,
+                  reason: 'waiting_for_session_task_complete',
+                  sessionPath: thread?.path ?? null,
+                });
+              } else if (lifecycleDecision.reason === 'unsettled_assistant_activity') {
+                this.logDebug('turn_wait_continue', {
+                  threadId,
+                  turnId,
+                  pollCount,
+                  reason: 'unsettled_assistant_activity',
+                  progress: summarizeProgressState(progressState),
+                });
+              }
+              await this.turnPollSleep(1000);
+              continue;
+            case 'timeout':
+              this.logDebug('turn_wait_error', {
+                threadId,
+                turnId,
+                pollCount,
+                reason: lifecycleDecision.reason === 'session_task_complete'
+                  ? 'task_complete_timeout_without_preview'
+                  : 'assistant_activity_timeout_without_preview',
+              });
+              throw new Error(`Timed out waiting for Codex turn ${turnId}`);
+            default: {
+              const exhaustiveDecision: never = lifecycleDecision;
+              throw new Error(`Unhandled Codex turn lifecycle decision: ${String(exhaustiveDecision)}`);
+            }
           }
-          const previewText = resolveTurnPreviewText(turn, progressState);
-          const terminalDecision = decideCodexTurnLifecycle({ isTerminal: true, previewText });
-          const result = {
-            turnId,
-            threadId,
-            title: thread?.title ?? null,
-            outputText: '',
-            outputState: terminalDecision.kind === 'partial' ? 'partial' : 'missing',
-            previewText,
-            finalSource: progressState.finalAnswerText
-              ? 'progress_only'
-              : progressState.commentaryText
-                ? 'commentary_only'
-                : 'none',
-            status: turn.status,
-          };
-          this.logDebug('turn_wait_return', summarizeTurnResultForDebug(result));
-          return result;
         }
         await this.turnPollSleep(1000);
       }

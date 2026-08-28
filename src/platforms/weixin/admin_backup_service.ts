@@ -328,10 +328,72 @@ export class WeixinAdminBackupService {
     const sessionSettings = sessionSettingsRecords.map(normalizeSessionSettings);
     const threadMetadata = threadMetadataRecords.map(normalizeThreadMetadata);
 
+    const payload = {
+      accounts,
+      serviceEnv,
+      runtime: { providerProfiles, bridgeSessions, platformBindings, sessionSettings, threadMetadata },
+    };
+    this.validateEffectiveImportReferences(payload, errors);
+
     return {
-      payload: { accounts, serviceEnv, runtime: { providerProfiles, bridgeSessions, platformBindings, sessionSettings, threadMetadata } },
+      payload,
       errors,
     };
+  }
+
+  private validateEffectiveImportReferences(
+    payload: ValidatedWeixinAdminBackupImport,
+    errors: string[],
+  ) {
+    const providerProfileIds = new Set([
+      ...(this.repositories?.providerProfiles?.list() ?? []).map((record) => record.id),
+      ...payload.runtime.providerProfiles.map((record) => record.id),
+    ]);
+    const bridgeSessionIds = new Set([
+      ...(this.repositories?.bridgeSessions?.list() ?? []).map((record) => record.id),
+      ...payload.runtime.bridgeSessions.map((record) => record.id),
+    ]);
+    const accountIds = new Set([
+      ...this.accountStore.listAccounts(),
+      ...payload.accounts.map((account) => account.accountId),
+    ]);
+
+    for (const [index, session] of payload.runtime.bridgeSessions.entries()) {
+      if (session.providerProfileId && !providerProfileIds.has(session.providerProfileId)) {
+        errors.push(`runtime.bridgeSessions[${index}].providerProfileId does not reference an available provider profile: ${session.providerProfileId}`);
+      }
+    }
+    for (const [index, binding] of payload.runtime.platformBindings.entries()) {
+      if (binding.bridgeSessionId && !bridgeSessionIds.has(binding.bridgeSessionId)) {
+        errors.push(`runtime.platformBindings[${index}].bridgeSessionId does not reference an available bridge session: ${binding.bridgeSessionId}`);
+      }
+    }
+    for (const [index, settings] of payload.runtime.sessionSettings.entries()) {
+      if (settings.bridgeSessionId && !bridgeSessionIds.has(settings.bridgeSessionId)) {
+        errors.push(`runtime.sessionSettings[${index}].bridgeSessionId does not reference an available bridge session: ${settings.bridgeSessionId}`);
+      }
+    }
+    for (const [index, metadata] of payload.runtime.threadMetadata.entries()) {
+      if (metadata.providerProfileId && !providerProfileIds.has(metadata.providerProfileId)) {
+        errors.push(`runtime.threadMetadata[${index}].providerProfileId does not reference an available provider profile: ${metadata.providerProfileId}`);
+      }
+    }
+    for (const [index, account] of payload.accounts.entries()) {
+      const providerProfileId = account.modelProvider?.provider_profile_id;
+      if (providerProfileId && !providerProfileIds.has(providerProfileId)) {
+        errors.push(`accounts[${index}].model_provider.provider_profile_id does not reference an available provider profile: ${providerProfileId}`);
+      }
+    }
+    for (const key of ['WEIXIN_ACCOUNT_ID', 'WEIXIN_PRIMARY_ACCOUNT_ID'] as const) {
+      if (!(key in payload.serviceEnv)) continue;
+      for (const accountId of normalizeCsv(payload.serviceEnv[key])) {
+        if (!isValidWeixinAccountId(accountId)) {
+          errors.push(`configuration.serviceEnv.${key} contains an invalid account id: ${accountId}`);
+        } else if (!accountIds.has(accountId)) {
+          errors.push(`configuration.serviceEnv.${key} does not reference an available account: ${accountId}`);
+        }
+      }
+    }
   }
 
   importBackup(body: Record<string, unknown>): WeixinAdminBackupImportResult {
@@ -939,6 +1001,13 @@ function normalizePermissions(value: unknown): SavedWeixinAccount['permissions']
 
 function normalizeAccountId(raw: string) {
   return String(raw ?? '').trim();
+}
+
+function normalizeCsv(value: unknown) {
+  return String(value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function normalizeEnvString(value: unknown) {

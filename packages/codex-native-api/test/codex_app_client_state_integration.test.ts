@@ -101,7 +101,16 @@ test('both AppClient implementations delegate terminal lifecycle decisions to th
   for (const appClient of appClients) {
     const source = fs.readFileSync(appClient, 'utf8');
     assert.match(source, /import \{ decideCodexTurnLifecycle \} from ['"][^'"]*codex_app_turn_lifecycle\.js['"];/u);
-    assert.match(source, /decideCodexTurnLifecycle\(\{/u);
+    const methodStart = source.indexOf('  async waitForTurnResult({');
+    const methodEnd = source.indexOf('\n}\n\nfunction ', methodStart);
+    assert.notEqual(methodStart, -1);
+    assert.notEqual(methodEnd, -1);
+    const methodSource = source.slice(methodStart, methodEnd);
+    assert.equal(
+      methodSource.match(/decideCodexTurnLifecycle\(/gu)?.length ?? 0,
+      1,
+      `${appClient} must make exactly one lifecycle decision per terminal evaluation`,
+    );
   }
 });
 
@@ -214,6 +223,7 @@ test('Native CodexAppClient selects terminal text before media and clears turn l
   assert.equal(textResult.outputText, 'native final text');
   assert.equal(textResult.outputState, 'complete');
   assert.equal(textResult.finalSource, 'thread_items');
+  assert.deepEqual(textResult.outputMedia?.map((artifact) => artifact.path), [imagePath]);
 
   const mediaClient = new CodexAppClient({
     codexCliBin: 'codex',

@@ -3525,7 +3525,7 @@ test('WeixinAdminServer imports a backup into accounts and repositories', async 
         },
       },
       runtime: {
-        providerProfiles: [],
+        providerProfiles: [{ id: 'p', providerKind: 'native' }],
         bridgeSessions: [{ id: 's2', providerProfileId: 'p', codexThreadId: 'th2', cwd: '/c', createdAt: 1, updatedAt: 2 }],
         platformBindings: [],
         sessionSettings: [],
@@ -3684,6 +3684,7 @@ test('WeixinAdminServer rolls back a failed import and keeps a pre-import restor
           { accountId: 'bot-2', token: 'new-token', base_url: 'https://y' },
         ],
         runtime: {
+          providerProfiles: [{ id: 'p', providerKind: 'native' }],
           bridgeSessions: [{ id: 's2', providerProfileId: 'p', codexThreadId: 'th2', cwd: '/c', createdAt: 1, updatedAt: 2 }],
         },
       }),

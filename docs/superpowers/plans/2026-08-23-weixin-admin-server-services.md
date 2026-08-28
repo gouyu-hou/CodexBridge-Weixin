@@ -91,4 +91,3 @@
 - [ ] Run `npm run weixin:admin:test`, `npm run typecheck`, `npm run typecheck:js`, and `git diff --check`.
 - [ ] Request independent review and fix all Critical/Important findings.
 - [ ] Commit integration-only fixes as `test: lock weixin admin service boundaries`.
-

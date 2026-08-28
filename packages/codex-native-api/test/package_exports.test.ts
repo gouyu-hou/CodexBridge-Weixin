@@ -13,6 +13,7 @@ import {
   CodexNativeApiServer,
   CodexNativeRuntime,
   InMemoryCodexNativeApiContinuationRegistry,
+  decideCodexTurnLifecycle,
   loadDefaultCodexNativeProviderProfile,
 } from '../src/index.js';
 import { parseCliArgs } from '../src/cli.js';
@@ -50,6 +51,7 @@ test('package exports the core localhost runtime surface', () => {
   assert.equal(typeof CodexNativeRuntime, 'function');
   assert.equal(typeof CodexNativeApiServer, 'function');
   assert.equal(typeof CodexNativeApiService, 'function');
+  assert.equal(typeof decideCodexTurnLifecycle, 'function');
 });
 
 test('service can bootstrap the default Codex provider and auth path automatically', () => {

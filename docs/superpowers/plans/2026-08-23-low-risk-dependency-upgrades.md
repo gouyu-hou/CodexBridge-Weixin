@@ -60,4 +60,3 @@
 - [ ] Confirm `npm ls electron @testing-library/user-event @openai/codex --depth=0` reports exactly the approved versions.
 - [ ] Confirm `git diff` contains no application version, release tag, Electron major, TypeScript, Vite, or agents upgrade.
 - [ ] Request independent dependency-diff review and fix all Critical/Important findings.
-

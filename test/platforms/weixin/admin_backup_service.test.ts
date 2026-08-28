@@ -150,6 +150,56 @@ function typedBackupFixture(): TypedBackupFixture {
   };
 }
 
+function assertRejectedImportLeavesStateUntouched(backup: Record<string, unknown>) {
+  const stateDir = makeTempStateDir();
+  const serviceEnvFile = path.join(stateDir, 'service.env');
+  fs.writeFileSync(serviceEnvFile, 'WEIXIN_ACCOUNT_ID=existing-account\n', 'utf8');
+  const env: Record<string, string> = {
+    CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: serviceEnvFile,
+    WEIXIN_ACCOUNT_ID: 'existing-account',
+  };
+  const { service, accountStore, repositories } = makeService({ stateDir, env });
+  accountStore.saveAccount({
+    accountId: 'existing-account',
+    token: 'existing-token',
+    baseUrl: 'https://existing.example',
+    userId: 'existing-user',
+  });
+  repositories.providerProfiles.save({
+    id: 'existing-profile',
+    providerKind: 'native',
+    displayName: 'Existing profile',
+    config: {},
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  repositories.bridgeSessions.save({
+    id: 'existing-session',
+    providerProfileId: 'existing-profile',
+    codexThreadId: 'existing-thread',
+    cwd: null,
+    title: null,
+    createdAt: 1,
+    updatedAt: 1,
+  });
+
+  const result = service.importBackup(validBackup(backup));
+
+  assert.equal(result.status, 400);
+  assert.equal(fs.existsSync(path.join(stateDir, 'backups')), false);
+  assert.deepEqual(accountStore.listAccounts(), ['existing-account']);
+  assert.equal(accountStore.loadAccount('existing-account')?.token, 'existing-token');
+  assert.deepEqual(repositories.providerProfiles.list().map((record) => record.id), ['existing-profile']);
+  assert.deepEqual(repositories.bridgeSessions.list().map((record) => record.id), ['existing-session']);
+  assert.deepEqual(repositories.platformBindings.list(), []);
+  assert.deepEqual(repositories.sessionSettings.listAll(), []);
+  assert.deepEqual(repositories.threadMetadata.listAll(), []);
+  assert.equal(env.WEIXIN_ACCOUNT_ID, 'existing-account');
+  assert.equal(env.WEIXIN_PRIMARY_ACCOUNT_ID, undefined);
+  assert.equal(fs.readFileSync(serviceEnvFile, 'utf8'), 'WEIXIN_ACCOUNT_ID=existing-account\n');
+  return result;
+}
+
 test('WeixinAdminBackupService validates the complete backup before creating a restore point or mutating accounts', () => {
   const { service, accountStore, stateDir } = makeService();
   accountStore.saveAccount({ accountId: 'original', token: 'original-token', baseUrl: 'https://original.example', userId: 'u1' });
@@ -217,6 +267,8 @@ test('WeixinAdminBackupService resolves blank preferred aliases through valid no
     displayName: ' ',
     name: ' Fallback profile ',
   });
+  backup.runtime.bridgeSessions[0]!.providerProfileId = 'fallback-profile';
+  backup.runtime.threadMetadata[0]!.providerProfileId = 'fallback-profile';
 
   const validation = service.validateImport(backup);
 
@@ -415,6 +467,149 @@ test('WeixinAdminBackupService normalizes validated backup records into typed do
   assert.equal(platformBinding?.updatedAt, 0);
   assert.deepEqual(sessionSettings?.metadata, {});
   assert.equal(threadMetadata?.alias, null);
+});
+
+test('WeixinAdminBackupService rejects every dangling additive runtime reference before mutation', async (t) => {
+  const cases: Array<{ name: string; backup: Record<string, unknown>; expectedError: RegExp }> = [
+    {
+      name: 'bridge session provider profile',
+      backup: {
+        runtime: {
+          bridgeSessions: [{ id: 'imported-session', providerProfileId: 'missing-profile', codexThreadId: 'thread-1' }],
+        },
+      },
+      expectedError: /runtime\.bridgeSessions\[0\]\.providerProfileId.*missing-profile/u,
+    },
+    {
+      name: 'platform binding bridge session',
+      backup: {
+        runtime: {
+          platformBindings: [{ platform: 'weixin', externalScopeId: 'scope-1', bridgeSessionId: 'missing-session' }],
+        },
+      },
+      expectedError: /runtime\.platformBindings\[0\]\.bridgeSessionId.*missing-session/u,
+    },
+    {
+      name: 'session settings bridge session',
+      backup: {
+        runtime: {
+          sessionSettings: [{ bridgeSessionId: 'missing-session' }],
+        },
+      },
+      expectedError: /runtime\.sessionSettings\[0\]\.bridgeSessionId.*missing-session/u,
+    },
+    {
+      name: 'thread metadata provider profile',
+      backup: {
+        runtime: {
+          threadMetadata: [{ providerProfileId: 'missing-profile', threadId: 'unbound-provider-thread' }],
+        },
+      },
+      expectedError: /runtime\.threadMetadata\[0\]\.providerProfileId.*missing-profile/u,
+    },
+    {
+      name: 'account model provider profile',
+      backup: {
+        accounts: [{
+          accountId: 'imported-account',
+          token: 'imported-token',
+          base_url: 'https://imported.example',
+          model_provider: { provider_profile_id: 'missing-profile' },
+        }],
+      },
+      expectedError: /accounts\[0\]\.model_provider\.provider_profile_id.*missing-profile/u,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, () => {
+      const result = assertRejectedImportLeavesStateUntouched(scenario.backup);
+      assert.match(JSON.stringify(result.body), scenario.expectedError);
+    });
+  }
+});
+
+test('WeixinAdminBackupService rejects malformed and absent imported account selections before mutation', async (t) => {
+  for (const key of ['WEIXIN_ACCOUNT_ID', 'WEIXIN_PRIMARY_ACCOUNT_ID'] as const) {
+    await t.test(`${key} rejects a malformed selected id`, () => {
+      const result = assertRejectedImportLeavesStateUntouched({
+        configuration: { serviceEnv: { [key]: 'existing-account, invalid account!' } },
+      });
+      assert.match(JSON.stringify(result.body), new RegExp(`configuration\\.serviceEnv\\.${key}.*invalid account!`, 'u'));
+    });
+
+    await t.test(`${key} rejects an absent well-formed selected id`, () => {
+      const result = assertRejectedImportLeavesStateUntouched({
+        configuration: { serviceEnv: { [key]: 'existing-account, missing-account' } },
+      });
+      assert.match(JSON.stringify(result.body), new RegExp(`configuration\\.serviceEnv\\.${key}.*missing-account`, 'u'));
+    });
+  }
+});
+
+test('WeixinAdminBackupService accepts CSV account selections resolving to existing and imported accounts', () => {
+  const stateDir = makeTempStateDir();
+  const serviceEnvFile = path.join(stateDir, 'service.env');
+  const env: Record<string, string> = { CODEXBRIDGE_WEIXIN_SERVICE_ENV_FILE: serviceEnvFile };
+  const { service, accountStore } = makeService({ stateDir, env });
+  accountStore.saveAccount({
+    accountId: 'existing-account',
+    token: 'existing-token',
+    baseUrl: 'https://existing.example',
+    userId: 'existing-user',
+  });
+
+  const result = service.importBackup(validBackup({
+    accounts: [{ accountId: 'imported-account', token: 'token', base_url: 'https://imported.example' }],
+    configuration: {
+      serviceEnv: {
+        WEIXIN_ACCOUNT_ID: ' existing-account, imported-account ',
+        WEIXIN_PRIMARY_ACCOUNT_ID: 'imported-account,existing-account',
+      },
+    },
+  }));
+
+  assert.equal(result.status, 200);
+  assert.deepEqual(accountStore.listAccounts().sort(), ['existing-account', 'imported-account']);
+  assert.equal(env.WEIXIN_ACCOUNT_ID, ' existing-account, imported-account ');
+  assert.equal(env.WEIXIN_PRIMARY_ACCOUNT_ID, 'imported-account,existing-account');
+});
+
+test('WeixinAdminBackupService resolves additive references against existing and imported identities', () => {
+  const { service, accountStore, repositories } = makeService();
+  accountStore.saveAccount({ accountId: 'existing-account', token: 'token', baseUrl: 'https://existing.example', userId: 'user' });
+  repositories.providerProfiles.save({
+    id: 'existing-profile', providerKind: 'native', displayName: 'Existing', config: {}, createdAt: 1, updatedAt: 1,
+  });
+  repositories.bridgeSessions.save({
+    id: 'existing-session', providerProfileId: 'existing-profile', codexThreadId: 'existing-thread', cwd: null, title: null, createdAt: 1, updatedAt: 1,
+  });
+
+  const result = service.importBackup(validBackup({
+    accounts: [{
+      accountId: 'imported-account',
+      token: 'token',
+      base_url: 'https://imported.example',
+      model_provider: { provider_profile_id: 'imported-profile' },
+    }],
+    runtime: {
+      providerProfiles: [{ id: 'imported-profile', providerKind: 'native' }],
+      bridgeSessions: [{ id: 'imported-session', providerProfileId: 'existing-profile', codexThreadId: 'imported-thread' }],
+      platformBindings: [
+        { platform: 'weixin', externalScopeId: 'existing-scope', bridgeSessionId: 'existing-session' },
+        { platform: 'weixin', externalScopeId: 'imported-scope', bridgeSessionId: 'imported-session' },
+      ],
+      sessionSettings: [{ bridgeSessionId: 'existing-session' }, { bridgeSessionId: 'imported-session' }],
+      threadMetadata: [
+        { providerProfileId: 'existing-profile', threadId: 'unbound-existing-provider-thread' },
+        { providerProfileId: 'imported-profile', threadId: 'unbound-imported-provider-thread' },
+      ],
+    },
+  }));
+
+  assert.equal(result.status, 200);
+  assert.ok(repositories.threadMetadata.getByThread('existing-profile', 'unbound-existing-provider-thread'));
+  assert.ok(repositories.threadMetadata.getByThread('imported-profile', 'unbound-imported-provider-thread'));
 });
 
 test('WeixinAdminServer exports records from a list-only runtime repository', async () => {
@@ -733,6 +928,9 @@ test('WeixinAdminBackupService restores every state surface when getState fails 
 
 test('WeixinAdminBackupService sanitizes failed transaction errors', () => {
   const { service, repositories } = makeService();
+  repositories.providerProfiles.save({
+    id: 'profile-1', providerKind: 'native', displayName: 'Existing', config: {}, createdAt: 1, updatedAt: 1,
+  });
   repositories.bridgeSessions.save = () => { throw new Error('repository failed with secret-token and C:/private/path'); };
 
   const result = service.importBackup(validBackup({
